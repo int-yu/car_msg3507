@@ -1,6 +1,7 @@
 #include "ti_msp_dl_config.h"
 
 #include "Application/Comms/BluetoothDebug.h"
+#include "Application/Comms/K230Link.h"
 #include "Application/Control/Nav.h"
 #include "Application/Debug/DebugDisplay.h"
 #include "Application/Servo/Servo.h"
@@ -101,6 +102,7 @@ static void App_Init(void)
     Motor_Init();
     Servo_Init();
     Serial1_Init();
+    K230Link_Init();
     Odometry_Init();
 
     __enable_irq();
@@ -135,15 +137,19 @@ static void App_RunTick(uint8_t elapsedTicks)
 
     Heading_Update(elapsedSeconds);
     Odometry_Update(elapsedTicks);
+    K230Link_Update(elapsedTicks);
 
     keyMask = Key_GetPressedMask();
     pressedEdges = (uint8_t)(keyMask & (uint8_t)~s_previousKeyMask);
     s_previousKeyMask = keyMask;
-    App_HandleNavKeys(pressedEdges);
 
-    /* 当前主流程只运行 Nav 测试；直线和巡线模式不更新电机。 */
-    Nav_Update(elapsedSeconds);
-    BluetoothDebug_Update(elapsedTicks);
+    /* 握手完成前只更新基础状态，不允许运动控制进入正式流程。 */
+    if (K230Link_IsReady() != 0U)
+    {
+        App_HandleNavKeys(pressedEdges);
+        Nav_Update(elapsedSeconds);
+        BluetoothDebug_Update(elapsedTicks);
+    }
     App_ReportNavState();
 
     for (index = 0U; index < elapsedTicks; index++)

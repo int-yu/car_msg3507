@@ -1,5 +1,5 @@
 #include "Application/Debug/DebugDisplay.h"
-#include "Application/Servo/Servo.h"
+#include "Application/Comms/K230Link.h"
 #include "Application/State/Heading.h"
 #include "Application/State/Odometry.h"
 #include "Hardware/Board/Key.h"
@@ -42,6 +42,29 @@ static void DebugDisplay_ShowMotionValue(int16_t y,
     OLED_ShowString(0, y, label, OLED_6X8);
     OLED_ShowFloatNum(18, y, value, 5U, 1U, OLED_6X8);
     OLED_ShowString(72, y, unit, OLED_6X8);
+}
+
+static void DebugDisplay_ShowK230Target(void)
+{
+    K230Link_Target_t target;
+
+    if (K230Link_IsReady() == 0U)
+    {
+        OLED_ShowString(0, 56, "K230:WAIT", OLED_6X8);
+        return;
+    }
+    if (K230Link_GetTarget(&target) == 0U)
+    {
+        OLED_ShowString(0, 56, "K230:READY", OLED_6X8);
+        return;
+    }
+
+    OLED_ShowString(0, 56, "K:", OLED_6X8);
+    OLED_ShowNum(12, 56, target.valid, 1U, OLED_6X8);
+    OLED_ShowString(18, 56, " X:", OLED_6X8);
+    OLED_ShowSignedNum(36, 56, target.offsetX, 4U, OLED_6X8);
+    OLED_ShowString(66, 56, " Y:", OLED_6X8);
+    OLED_ShowSignedNum(84, 56, target.offsetY, 4U, OLED_6X8);
 }
 
 void DebugDisplay_Init(void)
@@ -104,9 +127,6 @@ void DebugDisplay_Update(uint8_t elapsedTicks)
     DebugDisplay_ShowMotionValue(40, "RD:", Odometry_GetDistanceRMM(), "mm");
     DebugDisplay_ShowMotionValue(48, "RV:", Odometry_GetSpeedR(), "mm/s");
 
-    OLED_ShowString(0, 56, "O:", OLED_6X8);
-    OLED_ShowNum(12, 56, Servo_GetVerticalAngle(), 3U, OLED_6X8);
-    OLED_ShowString(36, 56, "D:", OLED_6X8);
-    OLED_ShowNum(48, 56, Servo_GetHorizontalAngle(), 3U, OLED_6X8);
+    DebugDisplay_ShowK230Target();
     OLED_Update();
 }

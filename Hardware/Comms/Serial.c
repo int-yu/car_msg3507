@@ -9,6 +9,10 @@ static volatile uint32_t s_writeIndex;
 static volatile uint32_t s_readIndex;
 static uint8_t s_rxBuffer[SERIAL1_RX_BUFFER_SIZE];
 
+static volatile uint32_t s_serial2WriteIndex;
+static volatile uint32_t s_serial2ReadIndex;
+static uint8_t s_serial2RxBuffer[SERIAL2_RX_BUFFER_SIZE];
+
 void Serial1_Init(void)
 {
     s_writeIndex = 0U;
@@ -68,6 +72,56 @@ void Serial1_Printf(const char *format, ...)
     Serial1_SendString(string);
 }
 
+void Serial2_Init(void)
+{
+    s_serial2WriteIndex = 0U;
+    s_serial2ReadIndex = 0U;
+    /* K230 未上电时保持 RX 为确定的高电平，避免悬空产生伪字节。 */
+    DL_GPIO_initPeripheralInputFunctionFeatures(
+        GPIO_K230_IOMUX_RX, GPIO_K230_IOMUX_RX_FUNC,
+        DL_GPIO_INVERSION_DISABLE, DL_GPIO_RESISTOR_PULL_UP,
+        DL_GPIO_HYSTERESIS_DISABLE, DL_GPIO_WAKEUP_DISABLE);
+    NVIC_ClearPendingIRQ(K230_INST_INT_IRQN);
+    NVIC_EnableIRQ(K230_INST_INT_IRQN);
+}
+
+uint32_t Serial2_Available(void)
+{
+    return s_serial2WriteIndex - s_serial2ReadIndex;
+}
+
+uint8_t Serial2_ReadByte(uint8_t *byte)
+{
+    if ((byte == NULL) ||
+        (s_serial2ReadIndex == s_serial2WriteIndex))
+    {
+        return 0U;
+    }
+    *byte = s_serial2RxBuffer[
+        s_serial2ReadIndex % SERIAL2_RX_BUFFER_SIZE];
+    s_serial2ReadIndex++;
+    return 1U;
+}
+
+void Serial2_SendByte(uint8_t byte)
+{
+    DL_UART_Main_transmitDataBlocking(K230_INST, byte);
+}
+
+void Serial2_SendArray(const uint8_t *array, uint16_t length)
+{
+    uint16_t index;
+
+    if (array == NULL)
+    {
+        return;
+    }
+    for (index = 0U; index < length; index++)
+    {
+        Serial2_SendByte(array[index]);
+    }
+}
+
 void UART1_IRQHandler(void)
 {
     while (!DL_UART_Main_isRXFIFOEmpty(BLUETOOTH_UART_INST))
@@ -80,5 +134,22 @@ void UART1_IRQHandler(void)
             s_readIndex = s_writeIndex - SERIAL1_RX_BUFFER_SIZE;
         }
         Serial1_RxFlag = 1U;
+    }
+}
+
+void UART2_IRQHandler(void)
+{
+    while (!DL_UART_Main_isRXFIFOEmpty(K230_INST))
+    {
+        uint8_t data = DL_UART_Main_receiveData(K230_INST);
+        s_serial2RxBuffer[
+            s_serial2WriteIndex % SERIAL2_RX_BUFFER_SIZE] = data;
+        s_serial2WriteIndex++;
+        if ((s_serial2WriteIndex - s_serial2ReadIndex) >
+            SERIAL2_RX_BUFFER_SIZE)
+        {
+            s_serial2ReadIndex =
+                s_serial2WriteIndex - SERIAL2_RX_BUFFER_SIZE;
+        }
     }
 }

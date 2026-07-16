@@ -11,12 +11,12 @@
 | 时钟/外设资源 | 当前配置 | 占用模块 | 用途 |
 |---|---:|---|---|
 | CPUCLK / SYSCLK | 32 MHz | 全工程 | SysConfig 默认时钟源；延时、总线外设和 SysTick 的基准时钟 |
-| SysTick | 32 MHz / 320000 = 100 Hz | `System/Tick`、`main.c`、`Nav`、`MotionWheel`；`MotionStraight`、`MotionLine` 预留 | 10 ms 系统节拍；当前调用 `Nav_Update()` 测试目标角转向 |
+| SysTick | 32 MHz / 320000 = 100 Hz | `System/Tick`、`main.c`、`K230Link`、`Nav`、`MotionWheel`；`MotionStraight`、`MotionLine` 预留 | 10 ms 系统节拍；驱动 K230 握手重发、主循环门控和 Nav 更新 |
 | TIMG8 | 32 MHz，周期 1600 = 20 kHz | `Hardware/Motor/PWM`、`MotionWheel`、`Nav` | 当前由 Nav 通过公共轮速层输出双轮等速反向 PWM；CCP0/PB15 右轮，CCP1/PB16 左轮 |
 | TIMA0 | BUSCLK / 32 = 1 MHz，周期 20000 = 50 Hz | `Application/Servo` | 双路舵机 PWM；1 个计数等于 1 us |
 | I2C0 | BUSCLK 32 MHz，SCL 400 kHz | `Hardware/Display/OLED` | OLED 控制器通信 |
 | UART1 | BUSCLK 32 MHz，9600 baud，8N1，RX 中断 | `Hardware/Comms/Serial`、`Application/Comms/BluetoothDebug` | 蓝牙调试命令和应答 |
-| UART2 | BUSCLK 32 MHz，115200 baud，8N1，RX 外设中断已配置 | `main.syscfg` 预留 | K230 接口预留；当前 `main.c` 不启用 NVIC、不解析数据 |
+| UART2 | BUSCLK 32 MHz，115200 baud，8N1，RX 中断 | `Hardware/Comms/Serial`、`Application/Comms/K230Link` | K230 二进制帧、CRC8、双向 READY/READY_ACK 握手和 TARGET 接收 |
 | GPIO 软件 I2C | CPU 延时产生时序 | `Hardware/Sensors/MPU6050`、`MotionStraight`、`Nav`（间接） | MPU6050 连续多圈航向反馈；Nav 使用该角度闭环转向；不占用 I2C 外设实例 |
 | GPIOA GROUP1 IRQ | A/B 相双边沿 | `Hardware/Motor/Encoder`、`MotionWheel` | 左右编码器软件正交解码，为公共双轮速度 PI 提供速度反馈 |
 
@@ -34,8 +34,8 @@
 | PA17 | GPIO 输入、上拉、双边沿中断 | 左编码器 A | GPIOA GROUP1 IRQ；`MotionWheel` 左轮反馈 |
 | PA19 | SWDIO | 下载调试 | 不作为普通 GPIO 使用 |
 | PA20 | SWCLK | 下载调试 | 不作为普通 GPIO 使用 |
-| PA21 | UART2 TX | K230 预留 | 当前主程序不发送 K230 数据 |
-| PA22 | UART2 RX | K230 预留 | 当前主程序不接收 K230 数据 |
+| PA21 | UART2 TX | K230 RX | 天猛星发送 READY 和 READY_ACK；连接 K230 GPIO4（RX） |
+| PA22 | UART2 RX、上拉 | K230 TX | 接收 K230 READY、READY_ACK 和 TARGET；连接 K230 GPIO3（TX） |
 | PA24 | GPIO 输入、上拉、双边沿中断 | 左编码器 B | GPIOA GROUP1 IRQ；`MotionWheel` 左轮反馈 |
 | PA28 | I2C0 SDA | OLED | 400 kHz |
 | PA30 | GPIO 输入、上拉 | KEY1 | 低电平按下，按键位图 bit0；`Nav_StartTo()` 绝对角双轮转向测试 |
@@ -66,7 +66,7 @@
 `main.c::App_Init()` 按以下顺序运行：
 
 1. `SYSCFG_DL_init()` 应用 `main.syscfg` 生成的时钟、PinMux 和外设配置。
-2. 初始化 Tick、LED、蜂鸣器、按键、灰度、电机、舵机、蓝牙串口和编码器里程计。
+2. 初始化 Tick、LED、蜂鸣器、按键、灰度、电机、舵机、蓝牙 UART1、K230 UART2 帧链路和编码器里程计。
 3. 开启全局中断并初始化 OLED。
 4. 初始化 MPU6050；OLED 显示 `ZERO CALIBRATING...`，要求小车保持静止。
 5. `Heading_Calibrate()` 采集 400 次 Z 轴陀螺仪零偏，采样间隔 2 ms；若 MPU6050 不在线，OLED 显示 `OFFLINE`。
@@ -78,7 +78,8 @@
 `Tick_PollCount()` 每次取出累计节拍，随后依次调用：
 
 ```text
-Heading_Update -> Odometry_Update -> 按键边沿检测 -> Nav_Update
+Heading_Update -> Odometry_Update -> K230Link_Update
+               -> 握手完成后按键边沿检测与 Nav_Update
                -> BluetoothDebug_Update -> 状态蜂鸣提示
                -> Beep_Tick -> DebugDisplay_Update
 ```
@@ -86,6 +87,8 @@ Heading_Update -> Odometry_Update -> 按键边沿检测 -> Nav_Update
 当前 Nav 测试参数集中在 `main.c` 顶部：绝对目标角 `-90.0°`、相对转角 `-90.0°`、基础测试速度 `80.0 mm/s`。KEY1 转到绝对角，KEY2 从当前角度转 `-90.0°`，KEY3 从当前角度转 `+90.0°`，KEY4 立即停止。Nav 只保留双轮等速反向转向。
 
 当前 `main.c` 只初始化和更新 `Nav`，不初始化、不更新 `MotionStraight` 或 `MotionLine`，因此三种上层模式不会争用电机。
+
+K230 和天猛星在本地初始化完成后都每 100 ms 发送一次 READY，收到对方 READY 后立即回复 READY_ACK。只有双方都收到对方 READY，并且自己的 READY 已得到确认，`K230Link_IsReady()` 才返回 1。握手前 KEY1~KEY3 不会启动 Nav；握手不设置自动放行超时。
 
 OLED 每 10 个系统节拍刷新一次，即 10 Hz。页面内容为：
 
@@ -98,7 +101,19 @@ OLED 每 10 个系统节拍刷新一次，即 10 Hz。页面内容为：
 | 4 | 左轮编码器实测速度 `LV`，单位 mm/s |
 | 5 | 右轮累计路程 `RD`，单位 mm |
 | 6 | 右轮编码器实测速度 `RV`，单位 mm/s |
-| 7 | 纵向舵机角度 `O`、横向舵机角度 `D` |
+| 7 | K230 状态：未握手显示 `K230:WAIT`，握手后未收到目标显示 `K230:READY`；收到测试目标显示 `K:1 X:+0123 Y:-0045` |
+
+K230 与天猛星统一帧格式：
+
+```text
+AA 55 | VER | TYPE | SEQ | LEN | PAYLOAD | CRC8
+```
+
+- `VER=0x01`；`TYPE` 为 `READY=0x01`、`READY_ACK=0x02` 或 `TARGET=0x10`。
+- `SEQ` 为 8 位帧序号，`LEN` 最大为 32。
+- CRC 使用 CRC-8/ATM，多项式 `0x07`、初始值 0，校验范围为 `VER` 到 `PAYLOAD`。
+- TARGET 的 PAYLOAD 固定为 `valid:u8 + offsetX:int16_LE + offsetY:int16_LE`，共 5 字节。
+- 当前 K230 `uart_io.py` 测试入口在握手后持续发送 `valid=1、offsetX=123、offsetY=-45`。
 
 ### 3.3 蓝牙调试协议
 
@@ -287,17 +302,17 @@ Nav_Stop();
 
 | 文件或目录 | 类型 | 职责 |
 |---|---|---|
-| `main.c` | C 源文件 | 系统初始化、MPU6050 零漂、KEY1~KEY4 Nav 测试入口和 100 Hz 主循环调度 |
+| `main.c` | C 源文件 | 系统初始化、MPU6050 零漂、K230 握手门控、KEY1~KEY4 Nav 测试入口和 100 Hz 主循环调度 |
 | `main.syscfg` | TI SysConfig | 时钟树、GPIO、UART、I2C、PWM、SysTick 和 PinMux 的唯一配置源 |
 | `.project`、`.cproject`、`.settings/` | CCS 工程元数据 | 工程名、TI Arm Clang 选项、SDK/SysConfig 依赖和 IDE 设置 |
 | `targetConfigs/*.ccxml` | CCS 目标配置 | MSPM0G3507 调试连接配置 |
-| `Application/Comms/` | 应用层 C 模块 | 蓝牙调试命令解析、限幅、执行与应答 |
+| `Application/Comms/` | 应用层 C 模块 | 蓝牙调试命令；K230 二进制帧、CRC8、握手和目标解析 |
 | `Application/Control/` | 应用层 C 模块 | 通用 PID、公共双轮速度闭环、直线行驶、灰度巡线和目标角转向控制 |
 | `Application/Debug/` | 应用层 C 模块 | OLED 调试页面编排与 10 Hz 刷新 |
 | `Application/Servo/` | 舵机硬件模块 | TIMA0 双通道 PWM、角度限位和脉宽换算 |
 | `Application/State/` | 状态层 C 模块 | Z 轴航向角解算、编码器里程与速度状态 |
 | `Hardware/Board/` | 板级驱动 | 按键、LED、蜂鸣器 |
-| `Hardware/Comms/` | 通信驱动 | UART1 中断接收环形缓冲区和发送接口 |
+| `Hardware/Comms/` | 通信驱动 | UART1 蓝牙和 UART2 K230 的中断接收环形缓冲区与发送接口 |
 | `Hardware/Display/` | 显示驱动与数据 | OLED I2C 驱动、帧缓冲、字模和图像数据 |
 | `Hardware/Motor/` | 电机驱动 | TIMG8 PWM、TB6612 方向控制、编码器正交解码 |
 | `Hardware/Sensors/` | 传感器驱动 | 五路灰度 GPIO、MPU6050 软件 I2C |
@@ -311,19 +326,20 @@ Nav_Stop();
 | 源文件 / 头文件 | 文件职责 |
 |---|---|
 | `Application/Comms/BluetoothDebug.c/.h` | 解析 `L/R/U/O/D` 命令，完成空闲帧判定、参数限幅、执行和串口应答 |
+| `Application/Comms/K230Link.c/.h` | 解析 `AA 55` 二进制帧和 CRC8，执行 READY/READY_ACK 双向握手，保存最新 TARGET |
 | `Application/Control/PID.c/.h` | 通用 PID 初始化、调参、复位和单步计算 |
 | `Application/Control/MotionStraight.c/.h` | 头文件顶部保存直线参数；源文件实现距离规划、5/6 末段减速、可选终点速度、MPU6050 航向 PD 和软停车状态机 |
 | `Application/Control/MotionWheel.c/.h` | 头文件顶部保存公共轮速参数；源文件实现 MotionStraight、MotionLine 与 Nav 共用的双轮速度 PI、前馈、差速修正合成和 PWM 限幅 |
 | `Application/Control/MotionLine.c/.h` | 头文件顶部保存巡线参数；源文件实现五路灰度误差 PD 巡线、丢线停车和状态管理；当前未接入主流程 |
 | `Application/Control/Nav.c/.h` | 头文件顶部保存转向参数；源文件实现连续航向目标、双轮等速反向转向和到角稳定判定 |
-| `Application/Debug/DebugDisplay.c/.h` | 组织启动零漂提示和 OLED 八行调试数据 |
+| `Application/Debug/DebugDisplay.c/.h` | 组织启动零漂提示、基础状态和 K230 握手/目标的 OLED 八行调试数据 |
 | `Application/Servo/Servo.c/.h` | 将舵机角度换算为 TIMA0 比较值，并执行纵向/横向限位 |
 | `Application/State/Heading.c/.h` | MPU6050 Z 轴零漂标定、角速度积分和尺度标定 |
 | `Application/State/Odometry.c/.h` | 读取编码器增量，累计左右路程并计算 mm/s 速度 |
 | `Hardware/Board/Beep.c/.h` | 蜂鸣器与 LED2 的非阻塞提示状态机 |
 | `Hardware/Board/Key.c/.h` | 四个低有效按键的非阻塞状态读取 |
 | `Hardware/Board/LED.c/.h` | LED1、LED2 的开、关、翻转接口 |
-| `Hardware/Comms/Serial.c/.h` | UART1 RX 中断、1024 字节环形缓冲区和阻塞发送 |
+| `Hardware/Comms/Serial.c/.h` | UART1/UART2 RX 中断、独立环形缓冲区和阻塞发送 |
 | `Hardware/Display/OLED.c/.h` | OLED I2C 传输、128×64 帧缓冲、文本和图形绘制 |
 | `Hardware/Display/OLED_Data.c/.h` | ASCII/中文字模和公共位图常量 |
 | `Hardware/Motor/Encoder.c/.h` | GPIOA 中断中的左右编码器四倍频正交解码 |
@@ -345,6 +361,23 @@ void BluetoothDebug_Init(void);
 void BluetoothDebug_Update(uint8_t elapsedTicks);
 int16_t BluetoothDebug_GetLeftCommand(void);
 int16_t BluetoothDebug_GetRightCommand(void);
+```
+
+### 5.1.1 `Application/Comms/K230Link.h`
+
+```c
+typedef struct
+{
+    uint8_t valid;
+    int16_t offsetX;
+    int16_t offsetY;
+    uint8_t sequence;
+} K230Link_Target_t;
+
+void K230Link_Init(void);
+void K230Link_Update(uint8_t elapsedTicks);
+uint8_t K230Link_IsReady(void);
+uint8_t K230Link_GetTarget(K230Link_Target_t *target);
 ```
 
 ### 5.2 `Application/Control/PID.h`
@@ -531,6 +564,11 @@ void Serial1_SendByte(uint8_t byte);
 void Serial1_SendArray(const uint8_t *array, uint16_t length);
 void Serial1_SendString(const char *string);
 void Serial1_Printf(const char *format, ...);
+void Serial2_Init(void);
+uint32_t Serial2_Available(void);
+uint8_t Serial2_ReadByte(uint8_t *byte);
+void Serial2_SendByte(uint8_t byte);
+void Serial2_SendArray(const uint8_t *array, uint16_t length);
 ```
 
 ### 5.15 `Hardware/Display/OLED.h`
@@ -645,6 +683,11 @@ uint8_t Tick_PollCount(void);
 | 所在头文件 | 名称 | 当前值/类型 | 含义 |
 |---|---|---:|---|
 | `BluetoothDebug.h` | `BLUETOOTH_COMMAND_IDLE_TICKS` | `3U` | 无结束符命令的 30 ms 空闲判定 |
+| `K230Link.h` | `K230_LINK_FRAME_MAGIC_0/1` | `0xAAU` / `0x55U` | K230 帧头 |
+| `K230Link.h` | `K230_LINK_FRAME_VERSION` | `0x01U` | 当前通信协议版本 |
+| `K230Link.h` | `K230_LINK_MAX_PAYLOAD_LENGTH` | `32U` | 允许接收的最大 PAYLOAD 长度 |
+| `K230Link.h` | `K230_LINK_READY_RETRY_TICKS` | `10U` | 100 Hz 下每 100 ms 重发 READY |
+| `K230Link.h` | `K230_LINK_MESSAGE_READY/READY_ACK/TARGET` | `0x01U` / `0x02U` / `0x10U` | 消息类型编号 |
 | `DebugDisplay.h` | `DEBUG_DISPLAY_REFRESH_TICKS` | `10U` | OLED 10 Hz 刷新间隔 |
 | `MotionStraight.h` | `MOTION_STRAIGHT_*` | 见 6.2 | 航向 PD、直线速度规划、减速起点比例和距离允许误差 |
 | `MotionWheel.h` | `MOTION_WHEEL_*` | 见 6.1 | MotionStraight、MotionLine 与 Nav 共用的速度 PI、前馈和 PWM 限幅 |
@@ -659,6 +702,7 @@ uint8_t Tick_PollCount(void);
 | `Heading.h` | `HEADING_CALIBRATION_INTERVAL_MS` | `2U` | 零漂采样间隔 |
 | `Odometry.h` | `Odometry_CountsPerMM` | `float`，初值 `6.23f` | 每毫米编码器计数，必须按实车标定 |
 | `Serial.h` | `SERIAL1_RX_BUFFER_SIZE` | `1024U` | UART1 环形接收缓冲区容量 |
+| `Serial.h` | `SERIAL2_RX_BUFFER_SIZE` | `256U` | UART2 K230 环形接收缓冲区容量 |
 | `Serial.h` | `Serial1_RxFlag` | `volatile uint8_t` | UART1 存在未读数据标志 |
 | `PWM.h` | `PWM_MAX_DUTY` | `1000U` | 电机 PWM 指令绝对值上限 |
 | `Graydetect.h` | `GRAY_SIDE_ALL/LEFT/RIGHT` | `0/1/2` | 灰度误差计算的通道范围 |
