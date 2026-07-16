@@ -1,12 +1,10 @@
 #include "Application/Control/MotionStraight.h"
-#include "Application/Control/MotionStraightConfig.h"
 #include "Application/Control/MotionWheel.h"
 #include "Application/Control/PID.h"
 #include "Application/State/Heading.h"
 #include "Application/State/Odometry.h"
 #include "Hardware/Motor/Motor.h"
 #include <math.h>
-#include <stddef.h>
 
 /* 直线任务的全部运行状态集中保存，便于检查状态转换和速度规划。 */
 typedef struct
@@ -32,7 +30,6 @@ typedef struct
     uint8_t targetReached;
 } MotionStraight_Context_t;
 
-static MotionStraight_Config_t s_config;
 static PID_t s_headingPID;
 static MotionStraight_Context_t s_context = {
     .state = MOTION_STRAIGHT_STATE_IDLE,
@@ -69,39 +66,34 @@ static float MotionStraight_Approach(
 }
 
 /* 检查所有公共调参，防止非法值进入速度规划和电机控制。 */
-static uint8_t MotionStraight_ConfigIsValid(
-    const MotionStraight_Config_t *config)
+static uint8_t MotionStraight_ParametersAreValid(void)
 {
-    if (config == NULL)
+    if ((!isfinite(MOTION_STRAIGHT_MAX_SPEED_MMPS)) ||
+        (!isfinite(MOTION_STRAIGHT_ACCELERATION_MMPS2)) ||
+        (!isfinite(MOTION_STRAIGHT_DECELERATION_MMPS2)) ||
+        (!isfinite(MOTION_STRAIGHT_DECELERATION_START_RATIO)) ||
+        (!isfinite(MOTION_STRAIGHT_DISTANCE_TOLERANCE_MM)) ||
+        (!isfinite(MOTION_STRAIGHT_HEADING_KP)) ||
+        (!isfinite(MOTION_STRAIGHT_HEADING_KD)) ||
+        (!isfinite(MOTION_STRAIGHT_HEADING_LIMIT_PWM)))
     {
         return 0U;
     }
-    if ((!isfinite(config->maximumSpeedMMps)) ||
-        (!isfinite(config->accelerationMMps2)) ||
-        (!isfinite(config->decelerationMMps2)) ||
-        (!isfinite(config->decelerationStartRatio)) ||
-        (!isfinite(config->distanceToleranceMM)) ||
-        (!isfinite(config->heading.kp)) ||
-        (!isfinite(config->heading.kd)) ||
-        (!isfinite(config->heading.correctionLimitPWM)))
-    {
-        return 0U;
-    }
-    if ((config->maximumSpeedMMps <= 0.0f) ||
-        (config->accelerationMMps2 <= 0.0f) ||
-        (config->decelerationMMps2 <= 0.0f) ||
-        (config->decelerationStartRatio <= 0.0f) ||
-        (config->decelerationStartRatio >= 1.0f) ||
-        (config->distanceToleranceMM < 0.0f) ||
-        (config->heading.kp < 0.0f) ||
-        (config->heading.kd < 0.0f) ||
-        ((config->heading.kp == 0.0f) &&
-         (config->heading.kd == 0.0f)) ||
-        (config->heading.correctionLimitPWM <= 0.0f) ||
-        (config->heading.correctionLimitPWM >
+    if ((MOTION_STRAIGHT_MAX_SPEED_MMPS <= 0.0f) ||
+        (MOTION_STRAIGHT_ACCELERATION_MMPS2 <= 0.0f) ||
+        (MOTION_STRAIGHT_DECELERATION_MMPS2 <= 0.0f) ||
+        (MOTION_STRAIGHT_DECELERATION_START_RATIO <= 0.0f) ||
+        (MOTION_STRAIGHT_DECELERATION_START_RATIO >= 1.0f) ||
+        (MOTION_STRAIGHT_DISTANCE_TOLERANCE_MM < 0.0f) ||
+        (MOTION_STRAIGHT_HEADING_KP < 0.0f) ||
+        (MOTION_STRAIGHT_HEADING_KD < 0.0f) ||
+        ((MOTION_STRAIGHT_HEADING_KP == 0.0f) &&
+         (MOTION_STRAIGHT_HEADING_KD == 0.0f)) ||
+        (MOTION_STRAIGHT_HEADING_LIMIT_PWM <= 0.0f) ||
+        (MOTION_STRAIGHT_HEADING_LIMIT_PWM >
          MotionWheel_GetMaximumCommandPWM()) ||
-        ((config->heading.correctionSign != 1) &&
-         (config->heading.correctionSign != -1)))
+        ((MOTION_STRAIGHT_CORRECTION_SIGN != 1) &&
+         (MOTION_STRAIGHT_CORRECTION_SIGN != -1)))
     {
         return 0U;
     }
@@ -137,17 +129,17 @@ static void MotionStraight_PrepareProfile(
     s_context.direction = (distanceMM >= 0.0f) ? 1.0f : -1.0f;
 
     s_context.cruiseSpeedMMps = MotionStraight_Clamp(
-        speedMMps, 0.0f, s_config.maximumSpeedMMps);
+        speedMMps, 0.0f, MOTION_STRAIGHT_MAX_SPEED_MMPS);
     s_context.endSpeedMMps = MotionStraight_Clamp(
         endSpeedMMps, 0.0f, s_context.cruiseSpeedMMps);
 
     preferredDecelerationDistanceMM = s_context.totalDistanceMM *
-        (1.0f - s_config.decelerationStartRatio);
+        (1.0f - MOTION_STRAIGHT_DECELERATION_START_RATIO);
     speedSquaredDifference =
         s_context.cruiseSpeedMMps * s_context.cruiseSpeedMMps -
         s_context.endSpeedMMps * s_context.endSpeedMMps;
     requiredDecelerationDistanceMM = speedSquaredDifference /
-        (2.0f * s_config.decelerationMMps2);
+        (2.0f * MOTION_STRAIGHT_DECELERATION_MMPS2);
 
     if (requiredDecelerationDistanceMM > preferredDecelerationDistanceMM)
     {
@@ -160,7 +152,7 @@ static void MotionStraight_PrepareProfile(
     s_context.decelerationStartDistanceMM =
         s_context.totalDistanceMM - preferredDecelerationDistanceMM;
     s_context.effectiveDecelerationMMps2 =
-        s_config.decelerationMMps2;
+        MOTION_STRAIGHT_DECELERATION_MMPS2;
     s_context.decelerationActive = 0U;
     s_context.targetReached = 0U;
 }
@@ -202,7 +194,7 @@ static void MotionStraight_StartDecelerationIfNeeded(
             (2.0f * remainingDistanceMM);
         s_context.effectiveDecelerationMMps2 = MotionStraight_Clamp(
             s_context.effectiveDecelerationMMps2,
-            0.001f, s_config.decelerationMMps2);
+            0.001f, MOTION_STRAIGHT_DECELERATION_MMPS2);
     }
 }
 
@@ -228,7 +220,7 @@ static float MotionStraight_CalculateTargetSpeedMagnitude(void)
     MotionStraight_StartDecelerationIfNeeded(
         travelledDistanceMM, remainingDistanceMM);
 
-    if (remainingDistanceMM <= s_config.distanceToleranceMM)
+    if (remainingDistanceMM <= MOTION_STRAIGHT_DISTANCE_TOLERANCE_MM)
     {
         /* 到点后继续完成速度斜坡，但不再调用满占空比主动制动。 */
         s_context.targetReached = 1U;
@@ -256,11 +248,11 @@ static float MotionStraight_UpdateProfileSpeed(
 
     if (fabsf(targetSpeedMMps) > fabsf(s_context.profileSpeedMMps))
     {
-        speedStepMMps = s_config.accelerationMMps2 * dt;
+        speedStepMMps = MOTION_STRAIGHT_ACCELERATION_MMPS2 * dt;
     }
     else
     {
-        speedStepMMps = s_config.decelerationMMps2 * dt;
+        speedStepMMps = MOTION_STRAIGHT_DECELERATION_MMPS2 * dt;
     }
     s_context.profileSpeedMMps = MotionStraight_Approach(
         s_context.profileSpeedMMps, targetSpeedMMps, speedStepMMps);
@@ -300,7 +292,7 @@ static MotionWheel_Result_t MotionStraight_ApplyWheelCommand(float dt)
         &s_headingPID,
         s_context.targetHeadingDeg,
         Heading_GetYaw(), dt);
-    headingCorrectionPWM *= (float)s_config.heading.correctionSign;
+    headingCorrectionPWM *= (float)MOTION_STRAIGHT_CORRECTION_SIGN;
 
     command.targetSpeedLMMps = s_context.profileSpeedMMps;
     command.targetSpeedRMMps = s_context.profileSpeedMMps;
@@ -309,8 +301,7 @@ static MotionWheel_Result_t MotionStraight_ApplyWheelCommand(float dt)
     return MotionWheel_Update(&command, dt);
 }
 
-MotionStraight_Result_t MotionStraight_Init(
-    const MotionStraight_Config_t *config)
+MotionStraight_Result_t MotionStraight_Init(void)
 {
     MotionWheel_Result_t wheelResult;
 
@@ -319,26 +310,21 @@ MotionStraight_Result_t MotionStraight_Init(
     s_context.state = MOTION_STRAIGHT_STATE_IDLE;
     s_context.error = MOTION_STRAIGHT_ERROR_NONE;
 
-    wheelResult = MotionWheel_InitDefault();
+    wheelResult = MotionWheel_Init();
     if ((wheelResult != MOTION_WHEEL_RESULT_OK) ||
-        (MotionStraight_ConfigIsValid(config) == 0U))
+        (MotionStraight_ParametersAreValid() == 0U))
     {
         return MOTION_STRAIGHT_RESULT_INVALID_ARGUMENT;
     }
 
-    s_config = *config;
     PID_Init(&s_headingPID,
-             s_config.heading.kp, 0.0f, s_config.heading.kd,
-             s_config.heading.correctionLimitPWM, 0.0f);
+             MOTION_STRAIGHT_HEADING_KP, 0.0f,
+             MOTION_STRAIGHT_HEADING_KD,
+             MOTION_STRAIGHT_HEADING_LIMIT_PWM, 0.0f);
     MotionStraight_ResetControllers();
     s_context.remainingDistanceMM = 0.0f;
     s_context.configured = 1U;
     return MOTION_STRAIGHT_RESULT_OK;
-}
-
-MotionStraight_Result_t MotionStraight_InitDefault(void)
-{
-    return MotionStraight_Init(&g_motionStraightConfig);
 }
 
 MotionStraight_Result_t MotionStraight_Start(
@@ -370,7 +356,7 @@ MotionStraight_Result_t MotionStraight_Start(
     s_context.targetHeadingDeg = Heading_GetYaw();
     MotionStraight_PrepareProfile(distanceMM, speedMMps, endSpeedMMps);
 
-    if (fabsf(distanceMM) <= s_config.distanceToleranceMM)
+    if (fabsf(distanceMM) <= MOTION_STRAIGHT_DISTANCE_TOLERANCE_MM)
     {
         s_context.remainingDistanceMM = 0.0f;
         if (s_context.endSpeedMMps <= 0.001f)

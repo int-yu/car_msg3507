@@ -3,25 +3,15 @@
 
 #include <stdint.h>
 
-/* Nav 的两种转向机构。 */
-typedef enum
-{
-    NAV_MODE_PIVOT = 0, /* 单轮保持不动，另一侧车轮向前转动。 */
-    NAV_MODE_SPIN       /* 两轮等速反向，车体中心基本保持不动。 */
-} Nav_Mode_t;
-
-/* 转向调参；当前默认值必须经过实车验证后再用于比赛任务。 */
-typedef struct
-{
-    float maximumTurnSpeedMMps; /* 转向接口允许请求的最大轮速。 */
-    float minimumTurnSpeedMMps; /* 接近目标角时克服静摩擦的最低轮速。 */
-    float slowdownAngleDeg;     /* 剩余角小于该值时开始按比例降低轮速。 */
-    float accelerationMMps2;    /* 转向轮速上升斜率。 */
-    float decelerationMMps2;    /* 转向轮速下降斜率。 */
-    float angleToleranceDeg;    /* 判断到达目标角度的允许误差。 */
-    uint8_t settleTicks;        /* 连续稳定在误差范围内的 100 Hz 周期数。 */
-    int8_t rotationCommandSign; /* 角度正方向与车轮指令映射，只能为 1 或 -1。 */
-} Nav_Config_t;
+/* 双轮反向转向参数：若角度误差持续增大，只翻转方向符号。 */
+#define NAV_MAX_TURN_SPEED_MMPS   200.0f /* 每侧轮允许的最高转向速度。 */
+#define NAV_MIN_TURN_SPEED_MMPS   40.0f  /* 接近目标角时的最低轮速。 */
+#define NAV_SLOWDOWN_ANGLE_DEG    45.0f  /* 进入低速区的剩余角度。 */
+#define NAV_ACCELERATION_MMPS2    150.0f /* 起转轮速上升斜率。 */
+#define NAV_DECELERATION_MMPS2    600.0f /* 接近目标时的轮速下降斜率。 */
+#define NAV_ANGLE_TOLERANCE_DEG   2.0f   /* 到达目标角的允许误差。 */
+#define NAV_SETTLE_TICKS          3U     /* 连续稳定 30 ms 后完成。 */
+#define NAV_ROTATION_COMMAND_SIGN 1      /* 误差增大时翻转为 -1。 */
 
 typedef enum
 {
@@ -48,16 +38,13 @@ typedef enum
     NAV_RESULT_SENSOR_NOT_READY
 } Nav_Result_t;
 
-Nav_Result_t Nav_Init(const Nav_Config_t *config);
-Nav_Result_t Nav_InitDefault(void);
+Nav_Result_t Nav_Init(void);
 
-/* To：目标为 Heading 连续累计角中的绝对角度，不做 ±180° 归一化。 */
-Nav_Result_t Nav_StartPivotTo(float targetYawDeg, float speedMMps);
-Nav_Result_t Nav_StartSpinTo(float targetYawDeg, float speedMMps);
+/* To：转到 Heading 连续累计角中的绝对角度，不做 ±180° 归一化。 */
+Nav_Result_t Nav_StartTo(float targetYawDeg, float speedMMps);
 
-/* By：目标为相对当前角度再旋转 deltaYawDeg，可填写正数或负数。 */
-Nav_Result_t Nav_StartPivotBy(float deltaYawDeg, float speedMMps);
-Nav_Result_t Nav_StartSpinBy(float deltaYawDeg, float speedMMps);
+/* By：从当前角度再旋转 deltaYawDeg，可填写正数、负数或多圈角度。 */
+Nav_Result_t Nav_StartBy(float deltaYawDeg, float speedMMps);
 
 void Nav_Update(float dt);
 void Nav_Stop(void);
@@ -67,7 +54,6 @@ uint8_t Nav_IsBusy(void);
 uint8_t Nav_IsFinished(void);
 Nav_State_t Nav_GetState(void);
 Nav_Error_t Nav_GetError(void);
-Nav_Mode_t Nav_GetMode(void);
 float Nav_GetTargetYawDeg(void);
 float Nav_GetAngleErrorDeg(void);
 

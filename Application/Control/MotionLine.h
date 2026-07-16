@@ -3,14 +3,12 @@
 
 #include <stdint.h>
 
-typedef struct
-{
-    float kp;                  /* 灰度位置误差比例增益。 */
-    float kd;                  /* 灰度误差变化率增益。 */
-    float correctionLimitPWM;  /* 左右轮附加差速绝对值上限。 */
-    int8_t correctionSign;     /* 巡线修正方向，只能填写 1 或 -1。 */
-    float maximumSpeedMMps;    /* MotionLine_Start() 可请求的速度上限。 */
-} MotionLine_Config_t;
+/* 五路灰度巡线参数：首次实车测试从低速开始，每次只调整一项。 */
+#define MOTION_LINE_KP                   6.0f   /* 偏线后的回线力度。 */
+#define MOTION_LINE_KD                   0.0f   /* 抑制快速摆动；当前关闭。 */
+#define MOTION_LINE_CORRECTION_LIMIT_PWM 300.0f /* 左右轮附加差速上限。 */
+#define MOTION_LINE_CORRECTION_SIGN      (-1)   /* 越修越偏时翻转符号。 */
+#define MOTION_LINE_MAX_SPEED_MMPS       600.0f /* 巡线请求速度上限。 */
 
 typedef enum
 {
@@ -35,8 +33,7 @@ typedef enum
     MOTION_LINE_RESULT_NOT_CONFIGURED
 } MotionLine_Result_t;
 
-MotionLine_Result_t MotionLine_Init(const MotionLine_Config_t *config);
-MotionLine_Result_t MotionLine_InitDefault(void);
+MotionLine_Result_t MotionLine_Init(void);
 /* 持续巡线，直到调用 MotionLine_Stop() 或检测到丢线。 */
 MotionLine_Result_t MotionLine_Start(float speedMMps);
 void MotionLine_Update(float dt);

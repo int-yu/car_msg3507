@@ -3,16 +3,13 @@
 
 #include <stdint.h>
 
-/* 双轮速度 PI、前馈和最终 PWM 限幅参数。 */
-typedef struct
-{
-    float kp;
-    float ki;
-    float integralLimit;
-    float feedforwardPWMPerMMps;
-    float staticFrictionPWM;
-    float maximumCommandPWM;
-} MotionWheel_Config_t;
+/* 双轮速度控制参数：直线、巡线和转向共用。 */
+#define MOTION_WHEEL_KP                       1.0f    /* 轮速误差的即时修正力度。 */
+#define MOTION_WHEEL_KI                       0.0f    /* 消除稳态轮速误差；当前关闭。 */
+#define MOTION_WHEEL_INTEGRAL_LIMIT           0.0f    /* KI 开启后限制积分累积。 */
+#define MOTION_WHEEL_FEEDFORWARD_PWM_PER_MMPS 2.0f    /* 每 1 mm/s 对应的基础 PWM。 */
+#define MOTION_WHEEL_STATIC_FRICTION_PWM      0.0f    /* 非零目标速度的静摩擦补偿。 */
+#define MOTION_WHEEL_MAX_COMMAND_PWM          1000.0f /* 每侧车轮最终 PWM 上限。 */
 
 /* 上层控制器每个周期提交的左右轮目标和附加差速修正。 */
 typedef struct
@@ -31,8 +28,7 @@ typedef enum
     MOTION_WHEEL_RESULT_ODOMETRY_INVALID
 } MotionWheel_Result_t;
 
-MotionWheel_Result_t MotionWheel_Init(const MotionWheel_Config_t *config);
-MotionWheel_Result_t MotionWheel_InitDefault(void);
+MotionWheel_Result_t MotionWheel_Init(void);
 MotionWheel_Result_t MotionWheel_Update(
     const MotionWheel_Command_t *command, float dt);
 void MotionWheel_Reset(void);

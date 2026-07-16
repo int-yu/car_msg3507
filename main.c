@@ -1,7 +1,7 @@
 #include "ti_msp_dl_config.h"
 
 #include "Application/Comms/BluetoothDebug.h"
-#include "Application/Control/MotionStraight.h"
+#include "Application/Control/Nav.h"
 #include "Application/Debug/DebugDisplay.h"
 #include "Application/Servo/Servo.h"
 #include "Application/State/Heading.h"
@@ -14,65 +14,82 @@
 #include "Hardware/Sensors/Graydetect.h"
 #include "System/Tick.h"
 
-/* 用户上机测试参数：请求速度超过 MotionStraight 上限时会自动限幅。 */
-#define MOTION_STRAIGHT_TEST_DISTANCE_MM   1200U
-#define MOTION_STRAIGHT_TEST_SPEED_MMPS    300.0f
-#define MOTION_STRAIGHT_TEST_END_SPEED_MMPS 0.0f
-#define MOTION_STRAIGHT_TEST_START_KEY     0x01U
-#define MOTION_STRAIGHT_TEST_STOP_KEY      0x02U
+/* 用户上机测试参数：角度和轮速均可在此处直接修改。 */
+#define NAV_TEST_ABSOLUTE_YAW_DEG  -90.0f
+#define NAV_TEST_RELATIVE_YAW_DEG  -90.0f
+#define NAV_TEST_BASE_SPEED_MMPS   80.0f
+
+#define NAV_TEST_TO_KEY          0x01U /* KEY1：转到绝对角。 */
+#define NAV_TEST_BY_KEY          0x02U /* KEY2：按设定相对角转向。 */
+#define NAV_TEST_BY_REVERSE_KEY  0x04U /* KEY3：向相反方向转相同角度。 */
+#define NAV_TEST_STOP_KEY        0x08U /* KEY4：立即停止当前转向。 */
 
 static uint8_t s_previousKeyMask;
-static MotionStraight_State_t s_previousStraightState;
+static Nav_State_t s_previousNavState;
 
-static void App_HandleStraightKeys(uint8_t pressedEdges)
+static void App_HandleNavKeys(uint8_t pressedEdges)
 {
-    MotionStraight_Result_t result;
+    Nav_Result_t result;
 
-    if ((pressedEdges & MOTION_STRAIGHT_TEST_STOP_KEY) != 0U)
+    if ((pressedEdges & NAV_TEST_STOP_KEY) != 0U)
     {
-        MotionStraight_Stop();
+        Nav_Stop();
         return;
     }
 
-    if ((pressedEdges & MOTION_STRAIGHT_TEST_START_KEY) == 0U)
+    if ((pressedEdges & NAV_TEST_TO_KEY) != 0U)
+    {
+        result = Nav_StartTo(
+            NAV_TEST_ABSOLUTE_YAW_DEG,
+            NAV_TEST_BASE_SPEED_MMPS);
+    }
+    else if ((pressedEdges & NAV_TEST_BY_KEY) != 0U)
+    {
+        result = Nav_StartBy(
+            NAV_TEST_RELATIVE_YAW_DEG,
+            NAV_TEST_BASE_SPEED_MMPS);
+    }
+    else if ((pressedEdges & NAV_TEST_BY_REVERSE_KEY) != 0U)
+    {
+        result = Nav_StartBy(
+            -NAV_TEST_RELATIVE_YAW_DEG,
+            NAV_TEST_BASE_SPEED_MMPS);
+    }
+    else
     {
         return;
     }
 
-    result = MotionStraight_StartForward(
-        MOTION_STRAIGHT_TEST_DISTANCE_MM,
-        MOTION_STRAIGHT_TEST_SPEED_MMPS,
-        MOTION_STRAIGHT_TEST_END_SPEED_MMPS);
-    if (result != MOTION_STRAIGHT_RESULT_OK)
+    if (result != NAV_RESULT_OK)
     {
         Beep_Long();
     }
 }
 
-static void App_ReportStraightState(void)
+static void App_ReportNavState(void)
 {
-    MotionStraight_State_t state = MotionStraight_GetState();
+    Nav_State_t state = Nav_GetState();
 
-    if (state == s_previousStraightState)
+    if (state == s_previousNavState)
     {
         return;
     }
 
-    if (state == MOTION_STRAIGHT_STATE_COMPLETED)
+    if (state == NAV_STATE_COMPLETED)
     {
         Beep_Notify(2U);
     }
-    else if (state == MOTION_STRAIGHT_STATE_ERROR)
+    else if (state == NAV_STATE_ERROR)
     {
         Beep_Long();
     }
 
-    s_previousStraightState = state;
+    s_previousNavState = state;
 }
 
 static void App_Init(void)
 {
-    MotionStraight_Result_t straightResult;
+    Nav_Result_t navResult;
 
     SYSCFG_DL_init();
     Tick_Init();
@@ -98,13 +115,14 @@ static void App_Init(void)
     Odometry_Reset();
 
     BluetoothDebug_Init();
-    straightResult = MotionStraight_InitDefault();
-    if (straightResult != MOTION_STRAIGHT_RESULT_OK)
+    navResult = Nav_Init();
+    if (navResult != NAV_RESULT_OK)
     {
         Beep_Long();
     }
+
     s_previousKeyMask = Key_GetPressedMask();
-    s_previousStraightState = MotionStraight_GetState();
+    s_previousNavState = Nav_GetState();
     DebugDisplay_Update(DEBUG_DISPLAY_REFRESH_TICKS);
 }
 
@@ -121,12 +139,12 @@ static void App_RunTick(uint8_t elapsedTicks)
     keyMask = Key_GetPressedMask();
     pressedEdges = (uint8_t)(keyMask & (uint8_t)~s_previousKeyMask);
     s_previousKeyMask = keyMask;
-    App_HandleStraightKeys(pressedEdges);
+    App_HandleNavKeys(pressedEdges);
 
-    /* 当前只运行直线模式；MotionLine 尚未接入主流程。 */
-    MotionStraight_Update(elapsedSeconds);
+    /* 当前主流程只运行 Nav 测试；直线和巡线模式不更新电机。 */
+    Nav_Update(elapsedSeconds);
     BluetoothDebug_Update(elapsedTicks);
-    App_ReportStraightState();
+    App_ReportNavState();
 
     for (index = 0U; index < elapsedTicks; index++)
     {

@@ -1,15 +1,12 @@
 #include "Application/Control/Nav.h"
-#include "Application/Control/NavConfig.h"
 #include "Application/Control/MotionWheel.h"
 #include "Application/State/Heading.h"
 #include <math.h>
-#include <stddef.h>
 
 typedef struct
 {
     Nav_State_t state;
     Nav_Error_t error;
-    Nav_Mode_t mode;
     float targetYawDeg;
     float angleErrorDeg;
     float requestedSpeedMMps;
@@ -18,11 +15,9 @@ typedef struct
     uint8_t configured;
 } Nav_Context_t;
 
-static Nav_Config_t s_config;
 static Nav_Context_t s_context = {
     .state = NAV_STATE_IDLE,
     .error = NAV_ERROR_NONE,
-    .mode = NAV_MODE_PIVOT,
 };
 
 static float Nav_Clamp(float value, float minimum, float maximum)
@@ -53,31 +48,27 @@ static float Nav_Approach(float current, float target, float maximumStep)
     return current;
 }
 
-static uint8_t Nav_ConfigIsValid(const Nav_Config_t *config)
+static uint8_t Nav_ParametersAreValid(void)
 {
-    if (config == NULL)
+    if ((!isfinite(NAV_MAX_TURN_SPEED_MMPS)) ||
+        (!isfinite(NAV_MIN_TURN_SPEED_MMPS)) ||
+        (!isfinite(NAV_SLOWDOWN_ANGLE_DEG)) ||
+        (!isfinite(NAV_ACCELERATION_MMPS2)) ||
+        (!isfinite(NAV_DECELERATION_MMPS2)) ||
+        (!isfinite(NAV_ANGLE_TOLERANCE_DEG)))
     {
         return 0U;
     }
-    if ((!isfinite(config->maximumTurnSpeedMMps)) ||
-        (!isfinite(config->minimumTurnSpeedMMps)) ||
-        (!isfinite(config->slowdownAngleDeg)) ||
-        (!isfinite(config->accelerationMMps2)) ||
-        (!isfinite(config->decelerationMMps2)) ||
-        (!isfinite(config->angleToleranceDeg)))
-    {
-        return 0U;
-    }
-    if ((config->maximumTurnSpeedMMps <= 0.0f) ||
-        (config->minimumTurnSpeedMMps <= 0.0f) ||
-        (config->minimumTurnSpeedMMps > config->maximumTurnSpeedMMps) ||
-        (config->slowdownAngleDeg <= config->angleToleranceDeg) ||
-        (config->accelerationMMps2 <= 0.0f) ||
-        (config->decelerationMMps2 <= 0.0f) ||
-        (config->angleToleranceDeg <= 0.0f) ||
-        (config->settleTicks == 0U) ||
-        ((config->rotationCommandSign != 1) &&
-         (config->rotationCommandSign != -1)))
+    if ((NAV_MAX_TURN_SPEED_MMPS <= 0.0f) ||
+        (NAV_MIN_TURN_SPEED_MMPS <= 0.0f) ||
+        (NAV_MIN_TURN_SPEED_MMPS > NAV_MAX_TURN_SPEED_MMPS) ||
+        (NAV_SLOWDOWN_ANGLE_DEG <= NAV_ANGLE_TOLERANCE_DEG) ||
+        (NAV_ACCELERATION_MMPS2 <= 0.0f) ||
+        (NAV_DECELERATION_MMPS2 <= 0.0f) ||
+        (NAV_ANGLE_TOLERANCE_DEG <= 0.0f) ||
+        (NAV_SETTLE_TICKS == 0U) ||
+        ((NAV_ROTATION_COMMAND_SIGN != 1) &&
+         (NAV_ROTATION_COMMAND_SIGN != -1)))
     {
         return 0U;
     }
@@ -101,8 +92,7 @@ static void Nav_SetError(Nav_Error_t error)
     s_context.state = NAV_STATE_ERROR;
 }
 
-static Nav_Result_t Nav_Start(
-    float targetYawDeg, float speedMMps, Nav_Mode_t mode)
+static Nav_Result_t Nav_Start(float targetYawDeg, float speedMMps)
 {
     if (s_context.configured == 0U)
     {
@@ -113,8 +103,7 @@ static Nav_Result_t Nav_Start(
         return NAV_RESULT_BUSY;
     }
     if ((!isfinite(targetYawDeg)) || (!isfinite(speedMMps)) ||
-        (speedMMps <= 0.0f) ||
-        ((mode != NAV_MODE_PIVOT) && (mode != NAV_MODE_SPIN)))
+        (speedMMps <= 0.0f))
     {
         return NAV_RESULT_INVALID_ARGUMENT;
     }
@@ -128,8 +117,7 @@ static Nav_Result_t Nav_Start(
     s_context.targetYawDeg = targetYawDeg;
     s_context.angleErrorDeg = targetYawDeg - Heading_GetYaw();
     s_context.requestedSpeedMMps = Nav_Clamp(
-        speedMMps, 0.0f, s_config.maximumTurnSpeedMMps);
-    s_context.mode = mode;
+        speedMMps, 0.0f, NAV_MAX_TURN_SPEED_MMPS);
     s_context.error = NAV_ERROR_NONE;
     s_context.state = NAV_STATE_RUNNING;
     return NAV_RESULT_OK;
@@ -144,23 +132,23 @@ static float Nav_CalculateTargetTurnSpeed(void)
     float speedMagnitudeMMps;
     float direction;
 
-    if (absoluteErrorDeg <= s_config.angleToleranceDeg)
+    if (absoluteErrorDeg <= NAV_ANGLE_TOLERANCE_DEG)
     {
         return 0.0f;
     }
 
     minimumSpeedMMps = Nav_Clamp(
-        s_config.minimumTurnSpeedMMps,
+        NAV_MIN_TURN_SPEED_MMPS,
         0.0f, s_context.requestedSpeedMMps);
     slowdownRatio = Nav_Clamp(
-        absoluteErrorDeg / s_config.slowdownAngleDeg,
+        absoluteErrorDeg / NAV_SLOWDOWN_ANGLE_DEG,
         0.0f, 1.0f);
     speedMagnitudeMMps = minimumSpeedMMps +
         (s_context.requestedSpeedMMps - minimumSpeedMMps) *
         slowdownRatio;
 
     direction = (s_context.angleErrorDeg >= 0.0f) ? 1.0f : -1.0f;
-    return direction * (float)s_config.rotationCommandSign *
+    return direction * (float)NAV_ROTATION_COMMAND_SIGN *
            speedMagnitudeMMps;
 }
 
@@ -175,11 +163,11 @@ static void Nav_UpdateSpeedProfile(float targetTurnSpeedMMps, float dt)
         (fabsf(targetTurnSpeedMMps) <
          fabsf(s_context.profileTurnSpeedMMps)))
     {
-        speedStepMMps = s_config.decelerationMMps2 * dt;
+        speedStepMMps = NAV_DECELERATION_MMPS2 * dt;
     }
     else
     {
-        speedStepMMps = s_config.accelerationMMps2 * dt;
+        speedStepMMps = NAV_ACCELERATION_MMPS2 * dt;
     }
     s_context.profileTurnSpeedMMps = Nav_Approach(
         s_context.profileTurnSpeedMMps,
@@ -192,26 +180,14 @@ static MotionWheel_Result_t Nav_ApplyWheelCommand(float dt)
     MotionWheel_Command_t command = {0};
     float turnSpeedMMps = s_context.profileTurnSpeedMMps;
 
-    if (s_context.mode == NAV_MODE_SPIN)
-    {
-        command.targetSpeedLMMps = turnSpeedMMps;
-        command.targetSpeedRMMps = -turnSpeedMMps;
-    }
-    else if (turnSpeedMMps >= 0.0f)
-    {
-        command.targetSpeedLMMps = turnSpeedMMps;
-        command.targetSpeedRMMps = 0.0f;
-    }
-    else
-    {
-        command.targetSpeedLMMps = 0.0f;
-        command.targetSpeedRMMps = -turnSpeedMMps;
-    }
+    /* 左右轮使用大小相等、方向相反的目标速度。 */
+    command.targetSpeedLMMps = turnSpeedMMps;
+    command.targetSpeedRMMps = -turnSpeedMMps;
 
     return MotionWheel_Update(&command, dt);
 }
 
-Nav_Result_t Nav_Init(const Nav_Config_t *config)
+Nav_Result_t Nav_Init(void)
 {
     MotionWheel_Result_t wheelResult;
 
@@ -221,34 +197,23 @@ Nav_Result_t Nav_Init(const Nav_Config_t *config)
     s_context.error = NAV_ERROR_NONE;
     Nav_ResetRuntime();
 
-    wheelResult = MotionWheel_InitDefault();
+    wheelResult = MotionWheel_Init();
     if ((wheelResult != MOTION_WHEEL_RESULT_OK) ||
-        (Nav_ConfigIsValid(config) == 0U))
+        (Nav_ParametersAreValid() == 0U))
     {
         return NAV_RESULT_INVALID_ARGUMENT;
     }
 
-    s_config = *config;
     s_context.configured = 1U;
     return NAV_RESULT_OK;
 }
 
-Nav_Result_t Nav_InitDefault(void)
+Nav_Result_t Nav_StartTo(float targetYawDeg, float speedMMps)
 {
-    return Nav_Init(&g_navConfig);
+    return Nav_Start(targetYawDeg, speedMMps);
 }
 
-Nav_Result_t Nav_StartPivotTo(float targetYawDeg, float speedMMps)
-{
-    return Nav_Start(targetYawDeg, speedMMps, NAV_MODE_PIVOT);
-}
-
-Nav_Result_t Nav_StartSpinTo(float targetYawDeg, float speedMMps)
-{
-    return Nav_Start(targetYawDeg, speedMMps, NAV_MODE_SPIN);
-}
-
-Nav_Result_t Nav_StartPivotBy(float deltaYawDeg, float speedMMps)
+Nav_Result_t Nav_StartBy(float deltaYawDeg, float speedMMps)
 {
     if (!isfinite(deltaYawDeg))
     {
@@ -258,20 +223,7 @@ Nav_Result_t Nav_StartPivotBy(float deltaYawDeg, float speedMMps)
     {
         return NAV_RESULT_SENSOR_NOT_READY;
     }
-    return Nav_StartPivotTo(Heading_GetYaw() + deltaYawDeg, speedMMps);
-}
-
-Nav_Result_t Nav_StartSpinBy(float deltaYawDeg, float speedMMps)
-{
-    if (!isfinite(deltaYawDeg))
-    {
-        return NAV_RESULT_INVALID_ARGUMENT;
-    }
-    if (Heading_IsReady() == 0U)
-    {
-        return NAV_RESULT_SENSOR_NOT_READY;
-    }
-    return Nav_StartSpinTo(Heading_GetYaw() + deltaYawDeg, speedMMps);
+    return Nav_StartTo(Heading_GetYaw() + deltaYawDeg, speedMMps);
 }
 
 void Nav_Update(float dt)
@@ -298,13 +250,13 @@ void Nav_Update(float dt)
     targetTurnSpeedMMps = Nav_CalculateTargetTurnSpeed();
     Nav_UpdateSpeedProfile(targetTurnSpeedMMps, dt);
 
-    if (fabsf(s_context.angleErrorDeg) <= s_config.angleToleranceDeg)
+    if (fabsf(s_context.angleErrorDeg) <= NAV_ANGLE_TOLERANCE_DEG)
     {
         if (fabsf(s_context.profileTurnSpeedMMps) <= 0.001f)
         {
             MotionWheel_Stop();
             s_context.settleCount++;
-            if (s_context.settleCount >= s_config.settleTicks)
+            if (s_context.settleCount >= NAV_SETTLE_TICKS)
             {
                 s_context.state = NAV_STATE_COMPLETED;
             }
@@ -353,11 +305,6 @@ Nav_State_t Nav_GetState(void)
 Nav_Error_t Nav_GetError(void)
 {
     return s_context.error;
-}
-
-Nav_Mode_t Nav_GetMode(void)
-{
-    return s_context.mode;
 }
 
 float Nav_GetTargetYawDeg(void)

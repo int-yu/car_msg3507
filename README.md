@@ -11,8 +11,8 @@
 | 时钟/外设资源 | 当前配置 | 占用模块 | 用途 |
 |---|---:|---|---|
 | CPUCLK / SYSCLK | 32 MHz | 全工程 | SysConfig 默认时钟源；延时、总线外设和 SysTick 的基准时钟 |
-| SysTick | 32 MHz / 320000 = 100 Hz | `System/Tick`、`main.c`、`MotionStraight`、`MotionWheel`；`MotionLine`、`Nav` 预留 | 10 ms 系统节拍；当前只调用 `MotionStraight_Update()`，巡线和转向库尚未接入主流程 |
-| TIMG8 | 32 MHz，周期 1600 = 20 kHz | `Hardware/Motor/PWM`、`MotionWheel` | 公共轮速层输出电机 PWM；供 MotionStraight、MotionLine、Nav 互斥使用；CCP0/PB15 右轮，CCP1/PB16 左轮 |
+| SysTick | 32 MHz / 320000 = 100 Hz | `System/Tick`、`main.c`、`Nav`、`MotionWheel`；`MotionStraight`、`MotionLine` 预留 | 10 ms 系统节拍；当前调用 `Nav_Update()` 测试目标角转向 |
+| TIMG8 | 32 MHz，周期 1600 = 20 kHz | `Hardware/Motor/PWM`、`MotionWheel`、`Nav` | 当前由 Nav 通过公共轮速层输出双轮等速反向 PWM；CCP0/PB15 右轮，CCP1/PB16 左轮 |
 | TIMA0 | BUSCLK / 32 = 1 MHz，周期 20000 = 50 Hz | `Application/Servo` | 双路舵机 PWM；1 个计数等于 1 us |
 | I2C0 | BUSCLK 32 MHz，SCL 400 kHz | `Hardware/Display/OLED` | OLED 控制器通信 |
 | UART1 | BUSCLK 32 MHz，9600 baud，8N1，RX 中断 | `Hardware/Comms/Serial`、`Application/Comms/BluetoothDebug` | 蓝牙调试命令和应答 |
@@ -26,8 +26,8 @@
 |---|---|---|---|
 | PA10 | 开漏式 GPIO | MPU6050 SCL | 软件 I2C 时钟；`MotionStraight` 航向保持和 `Nav` 目标角闭环来源 |
 | PA11 | 开漏式 GPIO | MPU6050 SDA | 软件 I2C 数据；`MotionStraight` 航向保持和 `Nav` 目标角闭环来源 |
-| PA12 | GPIO 输出 | 右电机 AIN2 | TB6612 A 通道方向；Nav 单轮支点/双轮反向转向的右轮方向输出 |
-| PA13 | GPIO 输出 | 右电机 AIN1 | TB6612 A 通道方向；Nav 单轮支点/双轮反向转向的右轮方向输出 |
+| PA12 | GPIO 输出 | 右电机 AIN2 | TB6612 A 通道方向；Nav 双轮反向转向的右轮方向输出 |
+| PA13 | GPIO 输出 | 右电机 AIN1 | TB6612 A 通道方向；Nav 双轮反向转向的右轮方向输出 |
 | PA14 | GPIO 输入、上拉 | 灰度 CH3 | `Graydetect` 位图 bit3；`MotionLine` 预留输入，当前主流程只显示 |
 | PA15 | GPIO 输入、上拉、双边沿中断 | 右编码器 A | GPIOA GROUP1 IRQ；`MotionWheel` 右轮反馈 |
 | PA16 | GPIO 输入、上拉、双边沿中断 | 右编码器 B | GPIOA GROUP1 IRQ；`MotionWheel` 右轮反馈 |
@@ -38,19 +38,19 @@
 | PA22 | UART2 RX | K230 预留 | 当前主程序不接收 K230 数据 |
 | PA24 | GPIO 输入、上拉、双边沿中断 | 左编码器 B | GPIOA GROUP1 IRQ；`MotionWheel` 左轮反馈 |
 | PA28 | I2C0 SDA | OLED | 400 kHz |
-| PA30 | GPIO 输入、上拉 | KEY1 | 低电平按下，按键位图 bit0；使用 `main.c` 顶部的距离、巡航速度和终点速度启动直线测试 |
+| PA30 | GPIO 输入、上拉 | KEY1 | 低电平按下，按键位图 bit0；`Nav_StartTo()` 绝对角双轮转向测试 |
 | PA31 | I2C0 SCL | OLED | 400 kHz |
-| PB0 | GPIO 输出 | 左电机 BIN1 | TB6612 B 通道方向；Nav 单轮支点/双轮反向转向的左轮方向输出 |
-| PB1 | GPIO 输出 | 左电机 BIN2 | TB6612 B 通道方向；Nav 单轮支点/双轮反向转向的左轮方向输出 |
+| PB0 | GPIO 输出 | 左电机 BIN1 | TB6612 B 通道方向；Nav 双轮反向转向的左轮方向输出 |
+| PB1 | GPIO 输出 | 左电机 BIN2 | TB6612 B 通道方向；Nav 双轮反向转向的左轮方向输出 |
 | PB6 | UART1 TX | 蓝牙 | MCU 发送到蓝牙 RX |
 | PB7 | UART1 RX、上拉 | 蓝牙 | 蓝牙 TX 发送到 MCU，RX 中断接收 |
 | PB8 | TIMA0 CCP0 | 横向舵机 | `D` 命令，`Servo_SetHorizontalAngle()` |
 | PB9 | TIMA0 CCP1 | 纵向舵机 | `O` 命令，`Servo_SetVerticalAngle()` |
-| PB10 | GPIO 输入、上拉 | KEY4 | 低电平按下，按键位图 bit3 |
-| PB11 | GPIO 输入、上拉 | KEY2 | 低电平按下，按键位图 bit1；立即停止直线测试 |
-| PB14 | GPIO 输入、上拉 | KEY3 | 低电平按下，按键位图 bit2 |
-| PB15 | TIMG8 CCP0 | 右电机 PWM | TB6612 A 通道，20 kHz；供直线、巡线和 Nav 右轮闭环输出互斥使用 |
-| PB16 | TIMG8 CCP1 | 左电机 PWM | TB6612 B 通道，20 kHz；供直线、巡线和 Nav 左轮闭环输出互斥使用 |
+| PB10 | GPIO 输入、上拉 | KEY4 | 低电平按下，按键位图 bit3；立即调用 `Nav_Stop()` |
+| PB11 | GPIO 输入、上拉 | KEY2 | 低电平按下，按键位图 bit1；`Nav_StartBy()` 按设定相对角双轮转向 |
+| PB14 | GPIO 输入、上拉 | KEY3 | 低电平按下，按键位图 bit2；`Nav_StartBy()` 向 KEY2 相反方向转相同角度 |
+| PB15 | TIMG8 CCP0 | 右电机 PWM | TB6612 A 通道，20 kHz；Nav 与左轮等速反向输出 |
+| PB16 | TIMG8 CCP1 | 左电机 PWM | TB6612 B 通道，20 kHz；Nav 与右轮等速反向输出 |
 | PB17 | GPIO 输出 | 蜂鸣器 | 低电平有效 |
 | PB18 | GPIO 输入、上拉 | 灰度 CH4 | `Graydetect` 位图 bit4；`MotionLine` 预留输入，当前主流程只显示 |
 | PB20 | GPIO 输入、上拉 | 灰度 CH2 | `Graydetect` 位图 bit2；`MotionLine` 预留输入，当前主流程只显示 |
@@ -71,21 +71,21 @@
 4. 初始化 MPU6050；OLED 显示 `ZERO CALIBRATING...`，要求小车保持静止。
 5. `Heading_Calibrate()` 采集 400 次 Z 轴陀螺仪零偏，采样间隔 2 ms；若 MPU6050 不在线，OLED 显示 `OFFLINE`。
 6. 清除零漂阶段累计的 Tick 和编码器计数，初始化蓝牙命令解析器。
-7. 调用 `MotionStraight_InitDefault()`；它先用 `g_motionWheelConfig` 初始化公共双轮速度 PI，再用 `g_motionStraightConfig` 初始化直线控制；参数非法时长鸣一次。
+7. 调用 `Nav_Init()`；它使用 `MotionWheel.h` 和 `Nav.h` 顶部参数初始化公共双轮速度 PI 与目标角转向；参数非法时长鸣一次。
 
 ### 3.2 100 Hz 主循环
 
 `Tick_PollCount()` 每次取出累计节拍，随后依次调用：
 
 ```text
-Heading_Update -> Odometry_Update -> 按键边沿检测 -> MotionStraight_Update
+Heading_Update -> Odometry_Update -> 按键边沿检测 -> Nav_Update
                -> BluetoothDebug_Update -> 状态蜂鸣提示
                -> Beep_Tick -> DebugDisplay_Update
 ```
 
-当前直线测试参数集中在 `main.c` 顶部：距离 `1200U mm`、巡航速度 `300.0f mm/s`、终点速度 `0.0f mm/s`。按下 KEY1 后发起直线行驶，按下 KEY2 立即停止。当前软件速度上限为 `600.0f mm/s`，实际输出仍受 `MotionWheel` 的 `maximumCommandPWM=1000.0f`、电机和负载限制。
+当前 Nav 测试参数集中在 `main.c` 顶部：绝对目标角 `-90.0°`、相对转角 `-90.0°`、基础测试速度 `80.0 mm/s`。KEY1 转到绝对角，KEY2 从当前角度转 `-90.0°`，KEY3 从当前角度转 `+90.0°`，KEY4 立即停止。Nav 只保留双轮等速反向转向。
 
-当前 `main.c` 不包含、不初始化、也不调用 `MotionLine` 或 `Nav`。因此本轮烧录固件只测试直线行驶，巡线和目标角转向库不会接管电机。
+当前 `main.c` 只初始化和更新 `Nav`，不初始化、不更新 `MotionStraight` 或 `MotionLine`，因此三种上层模式不会争用电机。
 
 OLED 每 10 个系统节拍刷新一次，即 10 Hz。页面内容为：
 
@@ -104,7 +104,7 @@ OLED 每 10 个系统节拍刷新一次，即 10 Hz。页面内容为：
 
 命令不区分大小写。推荐以 `\r` 或 `\n` 结束；也支持空格、逗号、分号作为分隔符。没有结束符时，接收空闲 3 个系统节拍（30 ms）后执行。每条命令都会返回 `OK ...` 或 `ERR ...`。
 
-直线行驶上机测试期间关闭蓝牙模块电源，避免 `L/R/U` 与 `MotionStraight` 同时改写电机 PWM。当前 Pin 口表中没有蓝牙电源控制引脚，因此固件不能控制模块断电，需要使用外部电源开关或断开模块供电。需要蓝牙手动调试时再给模块上电，并且不要同时按 KEY1 启动直线测试。
+Nav 上机测试期间关闭蓝牙模块电源，避免 `L/R/U` 与 `Nav` 同时改写电机 PWM。当前 Pin 口表中没有蓝牙电源控制引脚，因此固件不能控制模块断电，需要使用外部电源开关或断开模块供电。需要蓝牙手动调试时再给模块上电，并且不要同时按 KEY1~KEY3 启动 Nav 测试。
 
 | 命令 | 作用 | 输入范围与限位 | 示例 |
 |---|---|---|---|
@@ -120,7 +120,7 @@ OLED 每 10 个系统节拍刷新一次，即 10 Hz。页面内容为：
 
 ### 3.4 `MotionStraight` 直线行驶控制库
 
-`Application/Control/MotionStraight` 已接入 `main.c`，以 100 Hz 非阻塞运行。上机测试时由 KEY1 启动、KEY2 停止；蓝牙模块按 3.3 节要求断电。
+`Application/Control/MotionStraight` 已完成本轮实车调试，但当前 Nav 测试版 `main.c` 不初始化、也不调用它。以后切回直线任务时仍按 100 Hz 非阻塞调用。
 
 控制结构分为三层：
 
@@ -132,7 +132,7 @@ OLED 每 10 个系统节拍刷新一次，即 10 Hz。页面内容为：
 
 ```text
 上电且 MPU 零漂完成
-    -> MotionStraight_InitDefault()
+    -> MotionStraight_Init()
     -> 按 KEY1
     -> MotionStraight_StartForward(距离, 巡航速度, 终点速度)
 
@@ -140,13 +140,13 @@ OLED 每 10 个系统节拍刷新一次，即 10 Hz。页面内容为：
 Heading_Update(dt) -> Odometry_Update(ticks) -> MotionStraight_Update(dt)
 ```
 
-直线运动规划和航向参数位于 `MotionStraightConfig.c`；双轮速度 PI、前馈和最终 PWM 限幅已移动到 `MotionWheelConfig.c`。普通流程使用便利接口，`main.c` 中的实际调用关系为：
+直线运动规划和航向参数位于 `MotionStraight.h` 顶部；双轮速度 PI、前馈和最终 PWM 限幅位于 `MotionWheel.h` 顶部。切回直线主流程时使用以下调用关系：
 
 ```c
 #include "Application/Control/MotionStraight.h"
 
 /* 初始化阶段：必须在电机、里程计和 MPU6050 零漂标定完成后调用。 */
-if (MotionStraight_InitDefault() != MOTION_STRAIGHT_RESULT_OK)
+if (MotionStraight_Init() != MOTION_STRAIGHT_RESULT_OK)
 {
     /* 默认参数范围非法。 */
 }
@@ -168,11 +168,11 @@ MotionStraight_Update(elapsedSeconds);
 ```
 
 - `distanceMM > 0` 表示前进，`distanceMM < 0` 表示后退。
-- `speedMMps` 必须为正数；超过 `maximumSpeedMMps` 时自动限幅。
+- `speedMMps` 必须为正数；超过 `MOTION_STRAIGHT_MAX_SPEED_MMPS` 时自动限幅。
 - `endSpeedMMps` 是非负速度大小且不能高于 `speedMMps`。设为 `0` 时平滑降速后释放电机；设为正数时到达目标后继续按该速度闭环前进，直到调用 `MotionStraight_Stop()`。
 - 常用流程使用 `MotionStraight_StartForward()` 或 `MotionStraight_StartBackward()`；距离参数填写正整数，巡航速度和终点速度直接填写 mm/s 浮点值，不使用枚举。
 - `MotionStraight_Start()` 保留带符号距离的底层调用方式，终点速度方向自动跟随距离方向。
-- 默认优先在全程 `5/6` 处开始减速；若 `decelerationMMps2` 不足以在最后 `1/6` 内达到终点速度，程序会按运动学制动距离自动提前减速，避免终点速度突变。
+- 默认优先在全程 `5/6` 处开始减速；若 `MOTION_STRAIGHT_DECELERATION_MMPS2` 不足以在最后 `1/6` 内达到终点速度，程序会按运动学制动距离自动提前减速，避免终点速度突变。
 - 进入 `distanceToleranceMM` 后只继续完成速度斜坡；终点速度为零时调用 `Motor_StopAll()` 清零 PWM 和方向脚，不再调用 `Motor_Brake()`。
 - MPU6050 掉线、里程换算无效或更新周期非法时立即停止并进入错误状态。
 - `MotionStraight` 直接使用 `Odometry` 已更新的左右路程和速度，不能再次读取 `Encoder_Get()`，否则会提前清空编码器增量。
@@ -180,7 +180,7 @@ MotionStraight_Update(elapsedSeconds);
 
 实车调参顺序：
 
-1. 单独进行蓝牙开环测试时，使用 `U100/U200/...` 记录 OLED 稳态速度，在 `MotionWheelConfig.c` 中拟合 `feedforwardPWMPerMMps`，并确定静摩擦 PWM 与最大可靠输出；完成后关闭蓝牙模块再测 `MotionStraight`。
+1. 单独进行蓝牙开环测试时，使用 `U100/U200/...` 记录 OLED 稳态速度，在 `MotionWheel.h` 顶部调整速度前馈、静摩擦 PWM 与最大可靠输出；完成后关闭蓝牙模块再测 `MotionStraight`。
 2. 先令 `ki=0`，逐步增加速度 `kp` 到响应足够快且不持续振荡，再少量加入 `ki` 消除稳态误差。
 3. 低速测试航向 `kp`；若偏差被放大，将 `correctionSign` 从 `1` 改为 `-1` 或反向。随后少量增加 `kd` 抑制摆动。
 4. 最后调整加速度、最大减速度、减速起点比例、每次任务的终点速度和距离允许误差。
@@ -193,10 +193,10 @@ MotionStraight_Update(elapsedSeconds);
 |---|---|---|
 | 上层运动模式 | `MotionStraight_*` | 编码器距离规划和 MPU6050 航向保持 |
 | 上层运动模式 | `MotionLine_*` | 五路灰度巡线和丢线处理 |
-| 上层运动模式 | `Nav_*` | MPU6050 目标角闭环与 Pivot/Spin 两种转向 |
+| 上层运动模式 | `Nav_*` | MPU6050 目标角闭环与双轮反向转向 |
 | 下层公共执行 | `MotionWheel_*` | 双轮速度 PI、前馈、差速合成和电机 PWM 输出 |
 
-`MotionWheel` 是 `MotionStraight`、`MotionLine` 和 `Nav` 共用的唯一双轮速度闭环与电机输出层。三个上层控制器不能同时更新，否则会争用电机。当前主程序只选择 `MotionStraight`；以后必须由任务状态机先停止当前模式，再启动另一个模式。
+`MotionWheel` 是 `MotionStraight`、`MotionLine` 和 `Nav` 共用的唯一双轮速度闭环与电机输出层。三个上层控制器不能同时更新，否则会争用电机。当前主程序只选择 `Nav`；以后必须由任务状态机先停止当前模式，再启动另一个模式。
 
 巡线库当前调用流程如下，**本代码段尚未加入 `main.c`**：
 
@@ -207,7 +207,7 @@ MotionStraight_Update(elapsedSeconds);
 #define MOTION_LINE_TEST_SPEED_MMPS  60.0f
 
 /* 初始化阶段：Graydetect、Motor 和 Odometry 已初始化后调用。 */
-if (MotionLine_InitDefault() != MOTION_LINE_RESULT_OK)
+if (MotionLine_Init() != MOTION_LINE_RESULT_OK)
 {
     /* 默认参数非法。 */
 }
@@ -227,41 +227,38 @@ MotionLine_Stop();
 
 ```text
 MotionStraight_Stop()
-    -> MotionLine_InitDefault()
+    -> MotionLine_Init()
     -> MotionLine_Start(MOTION_LINE_TEST_SPEED_MMPS)
     -> 每周期 Odometry_Update() -> MotionLine_Update()
     -> MotionLine_Stop()
-    -> 需要直线时重新 MotionStraight_InitDefault() -> MotionStraight_StartForward(...)
+    -> 需要直线时重新 MotionStraight_Init() -> MotionStraight_StartForward(...)
 ```
 
 - 正常巡线使用 `Graydetect_GetError(GRAY_SIDE_ALL)` 的 `-2~+2` 加权误差，PD 输出作为左右轮附加差速 PWM。
 - 五路全白 `0x00` 时立即停止并进入 `MOTION_LINE_ERROR_LINE_LOST`，避免把无传感器信号误判为居中。
 - 五路全黑 `0x1F` 当前按误差 0 继续直行；十字、停止线和任务标志必须在后续任务状态机中根据连续采样单独判断。
-- `MotionLineConfig.c` 中的参数只是未上车的低速初始值，巡线接入主流程前必须实车标定。
+- `MotionLine.h` 顶部参数只是未上车的低速初始值，巡线接入主流程前必须实车标定。
 
 ### 3.6 `Nav` 目标角转向库
 
-`Nav` 当前尚未接入 `main.c`，必须先完成 MPU6050 开机零漂，再以 100 Hz 调用。角度直接使用 `Heading_GetYaw()` 的连续累计值，不做 ±180° 归一化。
+`Nav` 当前已接入 `main.c` 进行按键测试。必须先完成 MPU6050 开机零漂，再以 100 Hz 调用。角度直接使用 `Heading_GetYaw()` 的连续累计值，不做 ±180° 归一化。
 
-| 方式 | 接口 | 车轮动作 |
-|---|---|---|
-| 单轮支点转向 | `Nav_StartPivotTo/By()` | 一侧目标轮速为 0，另一侧向前转动；车体会产生位置偏移 |
-| 双轮原地转向 | `Nav_StartSpinTo/By()` | 左右轮等速反向；车体中心位置变化较小 |
+Nav 只有一种车轮动作：左右轮等速反向，车体围绕两轮中点附近转动。
 
 ```c
 #include "Application/Control/Nav.h"
 
 /* 初始化：必须在 Heading 零漂和 MotionWheel 所需硬件完成后调用。 */
-if (Nav_InitDefault() != NAV_RESULT_OK)
+if (Nav_Init() != NAV_RESULT_OK)
 {
     /* 默认参数非法或公共轮速层初始化失败。 */
 }
 
-/* 绝对角：指向连续航向角 90°，单轮支点转向。 */
-(void)Nav_StartPivotTo(90.0f, 80.0f);
+/* 绝对角：指向连续航向角 90°。 */
+(void)Nav_StartTo(90.0f, 80.0f);
 
-/* 相对角：从当前方向再转 +90°，双轮反向原地转向。 */
-(void)Nav_StartSpinBy(90.0f, 80.0f);
+/* 相对角：从当前方向再转 +90°。 */
+(void)Nav_StartBy(90.0f, 80.0f);
 
 /* 每个 100 Hz 周期必须先更新航向，再更新 Nav。 */
 Heading_Update(elapsedSeconds);
@@ -273,15 +270,24 @@ Nav_Stop();
 ```
 
 - `To` 接口输入连续累计绝对角；例如当前为 370°，输入 90° 会按直接误差回到 90°，不会自动选择 ±180° 最短路径。
-- `By` 接口输入相对转角；正负方向由 `rotationCommandSign` 与实车安装共同决定，可输入大于 360° 的多圈角度。
-- 首次测试使用 60~80 mm/s。若启动后角度误差持续增大，只翻转 `rotationCommandSign`。
-- Nav 到角后先把轮速斜坡降到零，再要求连续 `settleTicks` 个周期处于允许误差内，避免单次采样抖动误判完成。
+- `By` 接口输入相对转角；正负方向由 `NAV_ROTATION_COMMAND_SIGN` 与实车安装共同决定，可输入大于 360° 的多圈角度。
+- 首次测试使用 60~80 mm/s。若启动后角度误差持续增大，只翻转 `NAV_ROTATION_COMMAND_SIGN`。
+- Nav 到角后先把轮速斜坡降到零，再要求连续 `NAV_SETTLE_TICKS` 个周期处于允许误差内，避免单次采样抖动误判完成。
+
+当前 KEY1~KEY4 测试映射：
+
+| 按键 | 调用 |
+|---|---|
+| KEY1 | `Nav_StartTo(NAV_TEST_ABSOLUTE_YAW_DEG, NAV_TEST_BASE_SPEED_MMPS)` |
+| KEY2 | `Nav_StartBy(NAV_TEST_RELATIVE_YAW_DEG, NAV_TEST_BASE_SPEED_MMPS)` |
+| KEY3 | `Nav_StartBy(-NAV_TEST_RELATIVE_YAW_DEG, NAV_TEST_BASE_SPEED_MMPS)` |
+| KEY4 | `Nav_Stop()` |
 
 ## 4. 工程文件类型与职责
 
 | 文件或目录 | 类型 | 职责 |
 |---|---|---|
-| `main.c` | C 源文件 | 系统初始化、启动零漂、KEY1/KEY2 直线测试入口和 100 Hz 主循环调度 |
+| `main.c` | C 源文件 | 系统初始化、MPU6050 零漂、KEY1~KEY4 Nav 测试入口和 100 Hz 主循环调度 |
 | `main.syscfg` | TI SysConfig | 时钟树、GPIO、UART、I2C、PWM、SysTick 和 PinMux 的唯一配置源 |
 | `.project`、`.cproject`、`.settings/` | CCS 工程元数据 | 工程名、TI Arm Clang 选项、SDK/SysConfig 依赖和 IDE 设置 |
 | `targetConfigs/*.ccxml` | CCS 目标配置 | MSPM0G3507 调试连接配置 |
@@ -306,14 +312,10 @@ Nav_Stop();
 |---|---|
 | `Application/Comms/BluetoothDebug.c/.h` | 解析 `L/R/U/O/D` 命令，完成空闲帧判定、参数限幅、执行和串口应答 |
 | `Application/Control/PID.c/.h` | 通用 PID 初始化、调参、复位和单步计算 |
-| `Application/Control/MotionStraight.c/.h` | 直线距离规划、5/6 末段减速、可选终点速度、MPU6050 航向 PD 和软停车状态机 |
-| `Application/Control/MotionStraightConfig.c/.h` | 保存直线距离规划和航向控制的 `g_motionStraightConfig` |
-| `Application/Control/MotionWheel.c/.h` | MotionStraight、MotionLine 与 Nav 共用的双轮速度 PI、前馈、差速修正合成和 PWM 限幅 |
-| `Application/Control/MotionWheelConfig.c/.h` | 保存公共双轮速度参数 `g_motionWheelConfig` |
-| `Application/Control/MotionLine.c/.h` | 持续五路灰度误差 PD 巡线、丢线停车和状态管理；当前未接入主流程 |
-| `Application/Control/MotionLineConfig.c/.h` | 保存带中文调参说明的巡线初始参数 `g_motionLineConfig` |
-| `Application/Control/Nav.c/.h` | 连续航向目标、单轮支点转向、双轮反向原地转向和到角稳定判定 |
-| `Application/Control/NavConfig.c/.h` | 保存尚未实车标定的 Nav 转向参数 `g_navConfig` |
+| `Application/Control/MotionStraight.c/.h` | 头文件顶部保存直线参数；源文件实现距离规划、5/6 末段减速、可选终点速度、MPU6050 航向 PD 和软停车状态机 |
+| `Application/Control/MotionWheel.c/.h` | 头文件顶部保存公共轮速参数；源文件实现 MotionStraight、MotionLine 与 Nav 共用的双轮速度 PI、前馈、差速修正合成和 PWM 限幅 |
+| `Application/Control/MotionLine.c/.h` | 头文件顶部保存巡线参数；源文件实现五路灰度误差 PD 巡线、丢线停车和状态管理；当前未接入主流程 |
+| `Application/Control/Nav.c/.h` | 头文件顶部保存转向参数；源文件实现连续航向目标、双轮等速反向转向和到角稳定判定 |
 | `Application/Debug/DebugDisplay.c/.h` | 组织启动零漂提示和 OLED 八行调试数据 |
 | `Application/Servo/Servo.c/.h` | 将舵机角度换算为 TIMA0 比较值，并执行纵向/横向限位 |
 | `Application/State/Heading.c/.h` | MPU6050 Z 轴零漂标定、角速度积分和尺度标定 |
@@ -367,8 +369,7 @@ float PID_Update(PID_t *pid, float setpoint, float measure, float dt);
 ### 5.3 `Application/Control/MotionStraight.h`
 
 ```c
-MotionStraight_Result_t MotionStraight_Init(const MotionStraight_Config_t *config);
-MotionStraight_Result_t MotionStraight_InitDefault(void);
+MotionStraight_Result_t MotionStraight_Init(void);
 MotionStraight_Result_t MotionStraight_Start(
     float distanceMM, float speedMMps, float endSpeedMMps);
 MotionStraight_Result_t MotionStraight_StartForward(
@@ -390,8 +391,7 @@ float MotionStraight_GetRemainingDistanceMM(void);
 ### 5.4 `Application/Control/MotionWheel.h`
 
 ```c
-MotionWheel_Result_t MotionWheel_Init(const MotionWheel_Config_t *config);
-MotionWheel_Result_t MotionWheel_InitDefault(void);
+MotionWheel_Result_t MotionWheel_Init(void);
 MotionWheel_Result_t MotionWheel_Update(
     const MotionWheel_Command_t *command, float dt);
 void MotionWheel_Reset(void);
@@ -407,8 +407,7 @@ float MotionWheel_GetRightCommandPWM(void);
 ### 5.5 `Application/Control/MotionLine.h`
 
 ```c
-MotionLine_Result_t MotionLine_Init(const MotionLine_Config_t *config);
-MotionLine_Result_t MotionLine_InitDefault(void);
+MotionLine_Result_t MotionLine_Init(void);
 MotionLine_Result_t MotionLine_Start(float speedMMps);
 void MotionLine_Update(float dt);
 void MotionLine_Stop(void);
@@ -422,12 +421,9 @@ float MotionLine_GetLineError(void);
 ### 5.6 `Application/Control/Nav.h`
 
 ```c
-Nav_Result_t Nav_Init(const Nav_Config_t *config);
-Nav_Result_t Nav_InitDefault(void);
-Nav_Result_t Nav_StartPivotTo(float targetYawDeg, float speedMMps);
-Nav_Result_t Nav_StartSpinTo(float targetYawDeg, float speedMMps);
-Nav_Result_t Nav_StartPivotBy(float deltaYawDeg, float speedMMps);
-Nav_Result_t Nav_StartSpinBy(float deltaYawDeg, float speedMMps);
+Nav_Result_t Nav_Init(void);
+Nav_Result_t Nav_StartTo(float targetYawDeg, float speedMMps);
+Nav_Result_t Nav_StartBy(float deltaYawDeg, float speedMMps);
 void Nav_Update(float dt);
 void Nav_Stop(void);
 uint8_t Nav_IsConfigured(void);
@@ -435,12 +431,11 @@ uint8_t Nav_IsBusy(void);
 uint8_t Nav_IsFinished(void);
 Nav_State_t Nav_GetState(void);
 Nav_Error_t Nav_GetError(void);
-Nav_Mode_t Nav_GetMode(void);
 float Nav_GetTargetYawDeg(void);
 float Nav_GetAngleErrorDeg(void);
 ```
 
-`Nav_Mode_t` 的 `NAV_MODE_PIVOT` 表示单轮支点转向，`NAV_MODE_SPIN` 表示双轮等速反向原地转向。四个启动接口均使用 mm/s 轮速参数；`To` 接口接受连续绝对航向角，`By` 接口接受相对转角。
+`Nav_StartTo()` 接受连续绝对航向角，`Nav_StartBy()` 接受相对转角，速度参数单位为 mm/s；两者都固定使用双轮等速反向转向。
 
 ### 5.7 `Application/Debug/DebugDisplay.h`
 
@@ -651,14 +646,10 @@ uint8_t Tick_PollCount(void);
 |---|---|---:|---|
 | `BluetoothDebug.h` | `BLUETOOTH_COMMAND_IDLE_TICKS` | `3U` | 无结束符命令的 30 ms 空闲判定 |
 | `DebugDisplay.h` | `DEBUG_DISPLAY_REFRESH_TICKS` | `10U` | OLED 10 Hz 刷新间隔 |
-| `MotionStraight.h` | `MotionStraight_Config_t` | 实车标定结构体 | 航向 PD、直线速度规划、减速起点比例和距离允许误差 |
-| `MotionStraightConfig.h` | `g_motionStraightConfig` | `const MotionStraight_Config_t` | 当前直线运动规划和航向参数 |
-| `MotionWheel.h` | `MotionWheel_Config_t` | 公共轮速配置结构体 | 双轮速度 PI、前馈、静摩擦和最终 PWM 限幅 |
-| `MotionWheelConfig.h` | `g_motionWheelConfig` | `const MotionWheel_Config_t` | MotionStraight、MotionLine 与 Nav 共用的双轮速度参数 |
-| `MotionLine.h` | `MotionLine_Config_t` | 巡线配置结构体 | 灰度位置 PD、修正方向和巡线速度上限 |
-| `MotionLineConfig.h` | `g_motionLineConfig` | `const MotionLine_Config_t` | 未接入主流程的巡线初始参数 |
-| `Nav.h` | `Nav_Config_t` / `Nav_Mode_t` | 转向配置结构体 / 模式枚举 | 到角减速、稳定判定以及 Pivot/Spin 模式 |
-| `NavConfig.h` | `g_navConfig` | `const Nav_Config_t` | 尚未实车标定的 Nav 转向初始参数 |
+| `MotionStraight.h` | `MOTION_STRAIGHT_*` | 见 6.2 | 航向 PD、直线速度规划、减速起点比例和距离允许误差 |
+| `MotionWheel.h` | `MOTION_WHEEL_*` | 见 6.1 | MotionStraight、MotionLine 与 Nav 共用的速度 PI、前馈和 PWM 限幅 |
+| `MotionLine.h` | `MOTION_LINE_*` | 见 6.3 | 灰度位置 PD、修正方向和巡线速度上限 |
+| `Nav.h` | `NAV_*` | 见 6.4 | 双轮转向的加减速、低速区、到角误差和稳定判定 |
 | `Servo.h` | `SERVO_PHYSICAL_RANGE_DEG` | `270U` | 脉宽换算对应的舵机物理量程 |
 | `Servo.h` | `SERVO_MIN_PULSE_US` / `SERVO_MAX_PULSE_US` | `500U` / `2500U` | 舵机最小/最大高电平脉宽 |
 | `Servo.h` | `SERVO_FRAME_US` | `20000U` | 50 Hz 舵机帧周期 |
@@ -677,78 +668,78 @@ uint8_t Tick_PollCount(void);
 | `OLED_Data.h` | `ChineseCell_t` / `OLED_CHARSET_UTF8` | 字模结构 / 字符集宏 | 中文字模索引与 16×16 数据格式 |
 | `Tick.h` | `TICK_HZ` / `TICK_DT` | `100U` / `0.01f` | 系统节拍频率与秒单位周期 |
 
-### 6.1 `MotionWheel_Config_t` 参数
+### 6.1 `MotionWheel.h` 参数
 
-以下字段位于 `Application/Control/MotionWheelConfig.c` 的 `g_motionWheelConfig` 中，由直线和巡线共用：
+以下宏位于 `Application/Control/MotionWheel.h` 开头，由直线、巡线和 Nav 共用：
 
-| 字段 | 单位 | 作用 |
+| 宏 | 单位 | 作用 |
 |---|---:|---|
-| `kp` | PWM/(mm/s) | 左右轮各自的速度比例增益 |
-| `ki` | PWM/mm | 左右轮各自的速度积分增益 |
-| `integralLimit` | mm | 速度积分绝对值限幅；`ki>0` 时必须大于 0 |
-| `feedforwardPWMPerMMps` | PWM/(mm/s) | 目标速度到 PWM 的线性前馈斜率 |
-| `staticFrictionPWM` | PWM | 克服静摩擦所需的符号前馈 |
-| `maximumCommandPWM` | PWM | 每个车轮最终 PWM 绝对值上限，不得超过 `PWM_MAX_DUTY` |
+| `MOTION_WHEEL_KP` | PWM/(mm/s) | 左右轮各自的速度比例增益 |
+| `MOTION_WHEEL_KI` | PWM/mm | 左右轮各自的速度积分增益 |
+| `MOTION_WHEEL_INTEGRAL_LIMIT` | mm | 速度积分绝对值限幅；`KI>0` 时必须大于 0 |
+| `MOTION_WHEEL_FEEDFORWARD_PWM_PER_MMPS` | PWM/(mm/s) | 目标速度到 PWM 的线性前馈斜率 |
+| `MOTION_WHEEL_STATIC_FRICTION_PWM` | PWM | 克服静摩擦所需的符号前馈 |
+| `MOTION_WHEEL_MAX_COMMAND_PWM` | PWM | 每个车轮最终 PWM 绝对值上限，不得超过 `PWM_MAX_DUTY` |
 
 当前值：
 
-| 字段 | 当前值 |
+| 宏 | 当前值 |
 |---|---:|
-| `kp` / `ki` / `integralLimit` | `1.0f` / `0.0f` / `0.0f` |
-| `feedforwardPWMPerMMps` / `staticFrictionPWM` | `2.0f` / `80.0f` |
-| `maximumCommandPWM` | `1000.0f` |
+| `MOTION_WHEEL_KP` / `MOTION_WHEEL_KI` / `MOTION_WHEEL_INTEGRAL_LIMIT` | `1.0f` / `0.0f` / `0.0f` |
+| `MOTION_WHEEL_FEEDFORWARD_PWM_PER_MMPS` / `MOTION_WHEEL_STATIC_FRICTION_PWM` | `2.0f` / `0.0f` |
+| `MOTION_WHEEL_MAX_COMMAND_PWM` | `1000.0f` |
 
-### 6.2 `MotionStraight_Config_t` 参数
+### 6.2 `MotionStraight.h` 参数
 
-以下字段位于 `Application/Control/MotionStraightConfig.c` 的 `g_motionStraightConfig` 中：
+以下宏位于 `Application/Control/MotionStraight.h` 开头：
 
-| 字段 | 单位 | 作用 |
+| 宏 | 单位 | 作用 |
 |---|---:|---|
-| `heading.kp` | PWM/° | 航向误差比例增益 |
-| `heading.kd` | PWM/(°/s) | 航向误差微分增益 |
-| `heading.correctionLimitPWM` | PWM | 航向差速修正绝对值上限，必须大于 0 |
-| `heading.correctionSign` | `1` 或 `-1` | 航向差速方向；偏差被放大时翻转符号 |
-| `maximumSpeedMMps` | mm/s | 允许请求的最大直线速度，超出时自动限幅 |
-| `accelerationMMps2` | mm/s² | 目标速度上升斜率 |
-| `decelerationMMps2` | mm/s² | 允许使用的最大减速度；不足以满足末段目标时会提前开始减速 |
-| `decelerationStartRatio` | 0~1 比例 | 首选减速起点占全程的比例；当前 `5/6` 表示最后 `1/6` 为减速段 |
-| `distanceToleranceMM` | mm | 判定到达目标距离的允许误差；到点后继续完成速度斜坡 |
+| `MOTION_STRAIGHT_HEADING_KP` | PWM/° | 航向误差比例增益 |
+| `MOTION_STRAIGHT_HEADING_KD` | PWM/(°/s) | 航向误差微分增益 |
+| `MOTION_STRAIGHT_HEADING_LIMIT_PWM` | PWM | 航向差速修正绝对值上限，必须大于 0 |
+| `MOTION_STRAIGHT_CORRECTION_SIGN` | `1` 或 `-1` | 航向差速方向；偏差被放大时翻转符号 |
+| `MOTION_STRAIGHT_MAX_SPEED_MMPS` | mm/s | 允许请求的最大直线速度，超出时自动限幅 |
+| `MOTION_STRAIGHT_ACCELERATION_MMPS2` | mm/s² | 目标速度上升斜率 |
+| `MOTION_STRAIGHT_DECELERATION_MMPS2` | mm/s² | 允许使用的最大减速度；不足以满足末段目标时会提前开始减速 |
+| `MOTION_STRAIGHT_DECELERATION_START_RATIO` | 0~1 比例 | 首选减速起点占全程的比例；当前 `5/6` 表示最后 `1/6` 为减速段 |
+| `MOTION_STRAIGHT_DISTANCE_TOLERANCE_MM` | mm | 判定到达目标距离的允许误差；到点后继续完成速度斜坡 |
 
 当前实车测试值：
 
-| 字段 | 当前值 |
+| 宏 | 当前值 |
 |---|---:|
-| `heading.kp` / `heading.kd` | `6.0f` / `0.4f` |
-| `heading.correctionLimitPWM` / `heading.correctionSign` | `300.0f` / `-1` |
-| `maximumSpeedMMps` | `600.0f` |
-| `accelerationMMps2` / `decelerationMMps2` | `200.0f` / `250.0f` |
-| `decelerationStartRatio` / `distanceToleranceMM` | `5.0f / 6.0f` / `5.0f` |
+| `MOTION_STRAIGHT_HEADING_KP` / `MOTION_STRAIGHT_HEADING_KD` | `6.0f` / `0.4f` |
+| `MOTION_STRAIGHT_HEADING_LIMIT_PWM` / `MOTION_STRAIGHT_CORRECTION_SIGN` | `300.0f` / `-1` |
+| `MOTION_STRAIGHT_MAX_SPEED_MMPS` | `600.0f` |
+| `MOTION_STRAIGHT_ACCELERATION_MMPS2` / `MOTION_STRAIGHT_DECELERATION_MMPS2` | `200.0f` / `250.0f` |
+| `MOTION_STRAIGHT_DECELERATION_START_RATIO` / `MOTION_STRAIGHT_DISTANCE_TOLERANCE_MM` | `5.0f / 6.0f` / `5.0f` |
 
-### 6.3 `MotionLine_Config_t` 参数
+### 6.3 `MotionLine.h` 参数
 
-以下字段位于 `Application/Control/MotionLineConfig.c` 的 `g_motionLineConfig` 中，当前尚未接入主流程、也未经过实车巡线验证：
+以下宏位于 `Application/Control/MotionLine.h` 开头，当前尚未接入主流程、也未经过实车巡线验证：
 
-| 字段 | 单位 | 当前值 | 作用 |
+| 宏 | 单位 | 当前值 | 作用 |
 |---|---:|---:|---|
-| `kp` | PWM/灰度误差 | `6.0f` | 回线比例力度；偏离后回正太慢则增大，持续左右摆动则减小 |
-| `kd` | PWM/(误差/s) | `0.0f` | 抑制快速摆动；首轮关闭，确认 kp 后再从小量增加 |
-| `correctionLimitPWM` | PWM | `300.0f` | 巡线左右轮附加差速限幅；弯道修正不够可增大 |
-| `correctionSign` | `1` 或 `-1` | `-1` | 当前修正方向；若误差越修越大，只翻转此符号 |
-| `maximumSpeedMMps` | mm/s | `600.0f` | 巡线请求软件上限；首次实验应从 60~100 mm/s 开始 |
+| `MOTION_LINE_KP` | PWM/灰度误差 | `6.0f` | 回线比例力度；偏离后回正太慢则增大，持续左右摆动则减小 |
+| `MOTION_LINE_KD` | PWM/(误差/s) | `0.0f` | 抑制快速摆动；首轮关闭，确认 kp 后再从小量增加 |
+| `MOTION_LINE_CORRECTION_LIMIT_PWM` | PWM | `300.0f` | 巡线左右轮附加差速限幅；弯道修正不够可增大 |
+| `MOTION_LINE_CORRECTION_SIGN` | `1` 或 `-1` | `-1` | 当前修正方向；若误差越修越大，只翻转此符号 |
+| `MOTION_LINE_MAX_SPEED_MMPS` | mm/s | `600.0f` | 巡线请求软件上限；首次实验应从 60~100 mm/s 开始 |
 
-### 6.4 `Nav_Config_t` 参数
+### 6.4 `Nav.h` 参数
 
-以下字段位于 `Application/Control/NavConfig.c` 的 `g_navConfig` 中，全部是未实车标定的低速初值：
+以下宏位于 `Application/Control/Nav.h` 开头，当前仍是低速测试值：
 
-| 字段 | 单位 | 当前值 | 作用 |
+| 宏 | 单位 | 当前值 | 作用 |
 |---|---:|---:|---|
-| `maximumTurnSpeedMMps` | mm/s | `200.0f` | Nav 接口允许请求的最大轮速；首次测试不要直接使用上限 |
-| `minimumTurnSpeedMMps` | mm/s | `40.0f` | 接近目标角时的最低轮速；转不动则增大，冲角明显则减小 |
-| `slowdownAngleDeg` | ° | `30.0f` | 剩余角进入低速区的阈值；冲角时增大该值 |
-| `accelerationMMps2` | mm/s² | `300.0f` | 转向轮速上升斜率；越小起转越柔和 |
-| `decelerationMMps2` | mm/s² | `300.0f` | 转向轮速下降斜率；冲角时可增大，停车突兀时减小 |
-| `angleToleranceDeg` | ° | `2.0f` | 到角允许误差；太小可能在目标附近反复修正 |
-| `settleTicks` | 100 Hz 周期 | `5U` | 连续稳定 50 ms 后判定完成 |
-| `rotationCommandSign` | `1` 或 `-1` | `1` | 角度与车轮转向映射；误差持续增大时翻转 |
+| `NAV_MAX_TURN_SPEED_MMPS` | mm/s | `200.0f` | Nav 接口允许请求的每侧轮最大速度；首次测试不要直接使用上限 |
+| `NAV_MIN_TURN_SPEED_MMPS` | mm/s | `40.0f` | 接近目标角时的每侧轮最低速度；转不动则增大，冲角明显则减小 |
+| `NAV_SLOWDOWN_ANGLE_DEG` | ° | `45.0f` | 剩余角进入低速区的阈值；冲角时增大该值 |
+| `NAV_ACCELERATION_MMPS2` | mm/s² | `150.0f` | 转向轮速上升斜率；越小起转越柔和 |
+| `NAV_DECELERATION_MMPS2` | mm/s² | `600.0f` | 转向轮速下降斜率；冲角时可增大，停车突兀时减小 |
+| `NAV_ANGLE_TOLERANCE_DEG` | ° | `2.0f` | 到角允许误差；太小可能在目标附近反复修正 |
+| `NAV_SETTLE_TICKS` | 100 Hz 周期 | `3U` | 连续稳定 30 ms 后判定完成 |
+| `NAV_ROTATION_COMMAND_SIGN` | `1` 或 `-1` | `1` | 角度与双轮指令方向映射；误差持续增大时翻转 |
 
 `PID_t` 的 `Kp/Ki/Kd`、`integral`、`prevError`、`outMax` 和 `integralMax` 为 PID 实例的公共状态与参数。除上述公开声明外，其余 `static` 数据和源文件内宏均为模块内部实现。
