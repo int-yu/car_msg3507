@@ -1,19 +1,29 @@
 #include "Application/Control/MotionLine.h"
 #include "Application/Control/MotionLineConfig.h"
-#include "Application/Control/PID.h"
 #include "Application/Control/MotionWheel.h"
+#include "Application/Control/PID.h"
 #include "Hardware/Sensors/Graydetect.h"
 #include <math.h>
 #include <stddef.h>
 
+/* 巡线模块运行状态集中保存，避免状态变量散落在文件各处。 */
+typedef struct
+{
+    MotionLine_State_t state;
+    MotionLine_Error_t error;
+    float cruiseSpeedMMps;
+    float lineError;
+    uint8_t configured;
+} MotionLine_Context_t;
+
 static MotionLine_Config_t s_config;
 static PID_t s_linePID;
-static MotionLine_State_t s_state = MOTION_LINE_STATE_IDLE;
-static MotionLine_Error_t s_error = MOTION_LINE_ERROR_NONE;
-static float s_cruiseSpeedMMps;
-static float s_lineError;
-static uint8_t s_configured;
+static MotionLine_Context_t s_context = {
+    .state = MOTION_LINE_STATE_IDLE,
+    .error = MOTION_LINE_ERROR_NONE,
+};
 
+/* 检查所有公共调参，防止非法参数直接传入电机控制层。 */
 static uint8_t MotionLine_ConfigIsValid(const MotionLine_Config_t *config)
 {
     if (config == NULL)
@@ -40,22 +50,56 @@ static uint8_t MotionLine_ConfigIsValid(const MotionLine_Config_t *config)
     return 1U;
 }
 
+static void MotionLine_ResetControl(void)
+{
+    PID_Reset(&s_linePID);
+    s_context.cruiseSpeedMMps = 0.0f;
+    s_context.lineError = 0.0f;
+}
+
 static void MotionLine_SetError(MotionLine_Error_t error)
 {
     MotionWheel_Stop();
-    s_error = error;
-    s_state = MOTION_LINE_STATE_ERROR;
+    MotionLine_ResetControl();
+    s_context.error = error;
+    s_context.state = MOTION_LINE_STATE_ERROR;
+}
+
+/* 读取五路灰度并计算巡线差速修正；返回 0 表示已经丢线。 */
+static uint8_t MotionLine_CalculateCorrection(float dt, float *correctionPWM)
+{
+    if (Graydetect_GetState() == 0U)
+    {
+        return 0U;
+    }
+
+    s_context.lineError = Graydetect_GetError(GRAY_SIDE_ALL);
+    *correctionPWM = PID_Update(&s_linePID, 0.0f,
+                                s_context.lineError, dt);
+    *correctionPWM *= (float)s_config.correctionSign;
+    return 1U;
+}
+
+static MotionWheel_Result_t MotionLine_ApplyWheelCommand(
+    float correctionPWM, float dt)
+{
+    MotionWheel_Command_t command;
+
+    command.targetSpeedLMMps = s_context.cruiseSpeedMMps;
+    command.targetSpeedRMMps = s_context.cruiseSpeedMMps;
+    command.trimLPWM = -correctionPWM;
+    command.trimRPWM = correctionPWM;
+    return MotionWheel_Update(&command, dt);
 }
 
 MotionLine_Result_t MotionLine_Init(const MotionLine_Config_t *config)
 {
     MotionWheel_Result_t wheelResult;
 
-    s_configured = 0U;
-    s_state = MOTION_LINE_STATE_IDLE;
-    s_error = MOTION_LINE_ERROR_NONE;
-    s_cruiseSpeedMMps = 0.0f;
-    s_lineError = 0.0f;
+    s_context.configured = 0U;
+    s_context.state = MOTION_LINE_STATE_IDLE;
+    s_context.error = MOTION_LINE_ERROR_NONE;
+    MotionLine_ResetControl();
 
     wheelResult = MotionWheel_InitDefault();
     if ((wheelResult != MOTION_WHEEL_RESULT_OK) ||
@@ -67,7 +111,8 @@ MotionLine_Result_t MotionLine_Init(const MotionLine_Config_t *config)
     s_config = *config;
     PID_Init(&s_linePID, s_config.kp, 0.0f, s_config.kd,
              s_config.correctionLimitPWM, 0.0f);
-    s_configured = 1U;
+    MotionLine_ResetControl();
+    s_context.configured = 1U;
     return MOTION_LINE_RESULT_OK;
 }
 
@@ -78,7 +123,7 @@ MotionLine_Result_t MotionLine_InitDefault(void)
 
 MotionLine_Result_t MotionLine_Start(float speedMMps)
 {
-    if (s_configured == 0U)
+    if (s_context.configured == 0U)
     {
         return MOTION_LINE_RESULT_NOT_CONFIGURED;
     }
@@ -91,24 +136,21 @@ MotionLine_Result_t MotionLine_Start(float speedMMps)
         return MOTION_LINE_RESULT_INVALID_ARGUMENT;
     }
 
-    s_cruiseSpeedMMps = (speedMMps > s_config.maximumSpeedMMps) ?
-                            s_config.maximumSpeedMMps : speedMMps;
-    s_lineError = 0.0f;
-    s_error = MOTION_LINE_ERROR_NONE;
-    PID_Reset(&s_linePID);
     MotionWheel_Stop();
-    s_state = MOTION_LINE_STATE_RUNNING;
+    MotionLine_ResetControl();
+    s_context.cruiseSpeedMMps =
+        (speedMMps > s_config.maximumSpeedMMps) ?
+            s_config.maximumSpeedMMps : speedMMps;
+    s_context.error = MOTION_LINE_ERROR_NONE;
+    s_context.state = MOTION_LINE_STATE_RUNNING;
     return MOTION_LINE_RESULT_OK;
 }
 
 void MotionLine_Update(float dt)
 {
-    MotionWheel_Command_t wheelCommand;
-    MotionWheel_Result_t wheelResult;
     float correctionPWM;
-    uint8_t sensorState;
 
-    if (s_state != MOTION_LINE_STATE_RUNNING)
+    if (s_context.state != MOTION_LINE_STATE_RUNNING)
     {
         return;
     }
@@ -117,24 +159,13 @@ void MotionLine_Update(float dt)
         MotionLine_SetError(MOTION_LINE_ERROR_UPDATE_PERIOD_INVALID);
         return;
     }
-
-    sensorState = Graydetect_GetState();
-    if (sensorState == 0U)
+    if (MotionLine_CalculateCorrection(dt, &correctionPWM) == 0U)
     {
         MotionLine_SetError(MOTION_LINE_ERROR_LINE_LOST);
         return;
     }
-
-    s_lineError = Graydetect_GetError(GRAY_SIDE_ALL);
-    correctionPWM = PID_Update(&s_linePID, 0.0f, s_lineError, dt);
-    correctionPWM *= (float)s_config.correctionSign;
-
-    wheelCommand.targetSpeedLMMps = s_cruiseSpeedMMps;
-    wheelCommand.targetSpeedRMMps = s_cruiseSpeedMMps;
-    wheelCommand.trimLPWM = -correctionPWM;
-    wheelCommand.trimRPWM = correctionPWM;
-    wheelResult = MotionWheel_Update(&wheelCommand, dt);
-    if (wheelResult != MOTION_WHEEL_RESULT_OK)
+    if (MotionLine_ApplyWheelCommand(correctionPWM, dt) !=
+        MOTION_WHEEL_RESULT_OK)
     {
         MotionLine_SetError(MOTION_LINE_ERROR_WHEEL);
     }
@@ -143,34 +174,32 @@ void MotionLine_Update(float dt)
 void MotionLine_Stop(void)
 {
     MotionWheel_Stop();
-    PID_Reset(&s_linePID);
-    s_cruiseSpeedMMps = 0.0f;
-    s_lineError = 0.0f;
-    s_error = MOTION_LINE_ERROR_NONE;
-    s_state = MOTION_LINE_STATE_IDLE;
+    MotionLine_ResetControl();
+    s_context.error = MOTION_LINE_ERROR_NONE;
+    s_context.state = MOTION_LINE_STATE_IDLE;
 }
 
 uint8_t MotionLine_IsConfigured(void)
 {
-    return s_configured;
+    return s_context.configured;
 }
 
 uint8_t MotionLine_IsBusy(void)
 {
-    return (s_state == MOTION_LINE_STATE_RUNNING) ? 1U : 0U;
+    return (s_context.state == MOTION_LINE_STATE_RUNNING) ? 1U : 0U;
 }
 
 MotionLine_State_t MotionLine_GetState(void)
 {
-    return s_state;
+    return s_context.state;
 }
 
 MotionLine_Error_t MotionLine_GetError(void)
 {
-    return s_error;
+    return s_context.error;
 }
 
 float MotionLine_GetLineError(void)
 {
-    return s_lineError;
+    return s_context.lineError;
 }
