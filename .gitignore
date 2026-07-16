@@ -1,0 +1,21 @@
+/Debug/
+/Release/
+*.out
+*.hex
+*.map
+*.o
+*.d
+*.d_raw
+
+# 本机编辑器、Codex 配置和自动生成的代码索引。
+/.clangd
+/.codex/
+/.vscode/
+
+# 本地环境变量、SSH 文件和密钥材料不得提交。
+.env
+.env.*
+/.ssh/
+/.ssh_known_hosts
+*.key
+*.pem

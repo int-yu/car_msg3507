@@ -1,0 +1,5 @@
+# 统一行尾为 LF,避免每次编辑触发整文件 EOL diff,保证每步提交干净可回退
+* text=auto eol=lf
+*.png binary
+*.out binary
+*.hex binary
