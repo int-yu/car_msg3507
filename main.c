@@ -1,7 +1,7 @@
 #include "ti_msp_dl_config.h"
 
 #include "Application/Comms/BluetoothDebug.h"
-#include "Application/Control/Drive.h"
+#include "Application/Control/MotionStraight.h"
 #include "Application/Debug/DebugDisplay.h"
 #include "Application/Servo/Servo.h"
 #include "Application/State/Heading.h"
@@ -14,58 +14,65 @@
 #include "Hardware/Sensors/Graydetect.h"
 #include "System/Tick.h"
 
-#define DRIVE_TEST_START_KEY    0x01U
-#define DRIVE_TEST_STOP_KEY     0x02U
+/* 用户上机测试参数：请求速度超过 MotionStraight 上限时会自动限幅。 */
+#define MOTION_STRAIGHT_TEST_DISTANCE_MM   1200U
+#define MOTION_STRAIGHT_TEST_SPEED_MMPS    300.0f
+#define MOTION_STRAIGHT_TEST_END_SPEED_MMPS 0.0f
+#define MOTION_STRAIGHT_TEST_START_KEY     0x01U
+#define MOTION_STRAIGHT_TEST_STOP_KEY      0x02U
 
 static uint8_t s_previousKeyMask;
-static Drive_State_t s_previousDriveState;
+static MotionStraight_State_t s_previousStraightState;
 
-static void App_HandleDriveKeys(uint8_t pressedEdges)
+static void App_HandleStraightKeys(uint8_t pressedEdges)
 {
-    Drive_Result_t result;
+    MotionStraight_Result_t result;
 
-    if ((pressedEdges & DRIVE_TEST_STOP_KEY) != 0U)
+    if ((pressedEdges & MOTION_STRAIGHT_TEST_STOP_KEY) != 0U)
     {
-        Drive_Stop();
+        MotionStraight_Stop();
         return;
     }
 
-    if ((pressedEdges & DRIVE_TEST_START_KEY) == 0U)
+    if ((pressedEdges & MOTION_STRAIGHT_TEST_START_KEY) == 0U)
     {
         return;
     }
 
-    result = Drive_StartForward(1200U, DRIVE_SPEED_NORMAL);
-    if (result != DRIVE_RESULT_OK)
+    result = MotionStraight_StartForward(
+        MOTION_STRAIGHT_TEST_DISTANCE_MM,
+        MOTION_STRAIGHT_TEST_SPEED_MMPS,
+        MOTION_STRAIGHT_TEST_END_SPEED_MMPS);
+    if (result != MOTION_STRAIGHT_RESULT_OK)
     {
         Beep_Long();
     }
 }
 
-static void App_ReportDriveState(void)
+static void App_ReportStraightState(void)
 {
-    Drive_State_t state = Drive_GetState();
+    MotionStraight_State_t state = MotionStraight_GetState();
 
-    if (state == s_previousDriveState)
+    if (state == s_previousStraightState)
     {
         return;
     }
 
-    if (state == DRIVE_STATE_COMPLETED)
+    if (state == MOTION_STRAIGHT_STATE_COMPLETED)
     {
         Beep_Notify(2U);
     }
-    else if (state == DRIVE_STATE_ERROR)
+    else if (state == MOTION_STRAIGHT_STATE_ERROR)
     {
         Beep_Long();
     }
 
-    s_previousDriveState = state;
+    s_previousStraightState = state;
 }
 
 static void App_Init(void)
 {
-    Drive_Result_t driveResult;
+    MotionStraight_Result_t straightResult;
 
     SYSCFG_DL_init();
     Tick_Init();
@@ -91,13 +98,13 @@ static void App_Init(void)
     Odometry_Reset();
 
     BluetoothDebug_Init();
-    driveResult = Drive_InitDefault();
-    if (driveResult != DRIVE_RESULT_OK)
+    straightResult = MotionStraight_InitDefault();
+    if (straightResult != MOTION_STRAIGHT_RESULT_OK)
     {
         Beep_Long();
     }
     s_previousKeyMask = Key_GetPressedMask();
-    s_previousDriveState = Drive_GetState();
+    s_previousStraightState = MotionStraight_GetState();
     DebugDisplay_Update(DEBUG_DISPLAY_REFRESH_TICKS);
 }
 
@@ -114,11 +121,12 @@ static void App_RunTick(uint8_t elapsedTicks)
     keyMask = Key_GetPressedMask();
     pressedEdges = (uint8_t)(keyMask & (uint8_t)~s_previousKeyMask);
     s_previousKeyMask = keyMask;
-    App_HandleDriveKeys(pressedEdges);
+    App_HandleStraightKeys(pressedEdges);
 
-    Drive_Update(elapsedSeconds);
+    /* 当前只运行直线模式；MotionLine 尚未接入主流程。 */
+    MotionStraight_Update(elapsedSeconds);
     BluetoothDebug_Update(elapsedTicks);
-    App_ReportDriveState();
+    App_ReportStraightState();
 
     for (index = 0U; index < elapsedTicks; index++)
     {
