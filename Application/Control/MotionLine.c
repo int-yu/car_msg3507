@@ -1,58 +1,53 @@
 #include "Application/Control/MotionLine.h"
 #include "Application/Control/MotionWheel.h"
-#include "Application/Control/PID.h"
 #include "Hardware/Sensors/Graydetect.h"
 #include <math.h>
 
-/* 巡线模块运行状态集中保存，避免状态变量散落在文件各处。 */
 typedef struct
 {
     MotionLine_State_t state;
     MotionLine_Error_t error;
     float cruiseSpeedMMps;
     float lineError;
-    float lastCorrectionPWM;
+    float lastLeftSpeedMMps;
+    float lastRightSpeedMMps;
     uint16_t lostTicks;
     uint8_t configured;
 } MotionLine_Context_t;
 
-static PID_t s_linePID;
 static MotionLine_Context_t s_context = {
     .state = MOTION_LINE_STATE_IDLE,
     .error = MOTION_LINE_ERROR_NONE,
 };
 
-/* 检查所有公共调参，防止非法参数直接传入电机控制层。 */
 static uint8_t MotionLine_ParametersAreValid(void)
 {
-    if ((!isfinite(MOTION_LINE_KP)) ||
-        (!isfinite(MOTION_LINE_KD)) ||
-        (!isfinite(MOTION_LINE_CORRECTION_LIMIT_PWM)) ||
-        (!isfinite(MOTION_LINE_MAX_SPEED_MMPS)))
+    if ((!isfinite(MOTION_LINE_MAX_SPEED_MMPS)) ||
+        (!isfinite(MOTION_LINE_MAX_ADJUST_RATIO)))
     {
         return 0U;
     }
-    if ((MOTION_LINE_KP < 0.0f) || (MOTION_LINE_KD < 0.0f) ||
-        ((MOTION_LINE_KP == 0.0f) && (MOTION_LINE_KD == 0.0f)) ||
-        (MOTION_LINE_CORRECTION_LIMIT_PWM <= 0.0f) ||
-        (MOTION_LINE_CORRECTION_LIMIT_PWM >
-         MotionWheel_GetMaximumCommandPWM()) ||
-        (MOTION_LINE_MAX_SPEED_MMPS <= 0.0f) ||
-        (MOTION_LINE_LOST_CONFIRM_TICKS == 0U) ||
-        ((MOTION_LINE_CORRECTION_SIGN != 1) &&
-         (MOTION_LINE_CORRECTION_SIGN != -1)))
+
+    if ((MOTION_LINE_MAX_SPEED_MMPS <= 0.0f) ||
+        (MOTION_LINE_MAX_ADJUST_RATIO <= 0.0f) ||
+        (MOTION_LINE_MAX_ADJUST_RATIO > 1.0f) ||
+        (MOTION_LINE_OUTER_WEIGHT <= 0) ||
+        (MOTION_LINE_INNER_WEIGHT <= 0) ||
+        (MOTION_LINE_INNER_WEIGHT >= MOTION_LINE_OUTER_WEIGHT) ||
+        (MOTION_LINE_LOST_CONFIRM_TICKS == 0U))
     {
         return 0U;
     }
+
     return 1U;
 }
 
 static void MotionLine_ResetControl(void)
 {
-    PID_Reset(&s_linePID);
     s_context.cruiseSpeedMMps = 0.0f;
     s_context.lineError = 0.0f;
-    s_context.lastCorrectionPWM = 0.0f;
+    s_context.lastLeftSpeedMMps = 0.0f;
+    s_context.lastRightSpeedMMps = 0.0f;
     s_context.lostTicks = 0U;
 }
 
@@ -65,12 +60,51 @@ static void MotionLine_SetError(MotionLine_Error_t error)
 }
 
 /*
- * 灰度位为 1 表示检测到黑线。连续全白达到确认节拍前，沿用最后一次
- * 有效差速修正；任一路重新检测到黑线后立即清零丢线计数。
+ * 位图从左到右为 bit0~bit4，灰度返回 1 表示检测到黑线。
+ * 最外侧权重为正负 3，内侧权重为正负 1，中心权重为 0。
  */
-static uint8_t MotionLine_CalculateCorrection(float dt, float *correctionPWM)
+static int8_t MotionLine_GetWeight(uint8_t grayState)
 {
-    if (Graydetect_GetState() == 0U)
+    int16_t weight = 0;
+
+    if ((grayState & 0x01U) != 0U)
+    {
+        weight -= MOTION_LINE_OUTER_WEIGHT;
+    }
+    if ((grayState & 0x02U) != 0U)
+    {
+        weight -= MOTION_LINE_INNER_WEIGHT;
+    }
+    if ((grayState & 0x08U) != 0U)
+    {
+        weight += MOTION_LINE_INNER_WEIGHT;
+    }
+    if ((grayState & 0x10U) != 0U)
+    {
+        weight += MOTION_LINE_OUTER_WEIGHT;
+    }
+
+    /* 多个同侧探头同时压线时，不允许超过最外侧的修正力度。 */
+    if (weight > MOTION_LINE_OUTER_WEIGHT)
+    {
+        weight = MOTION_LINE_OUTER_WEIGHT;
+    }
+    else if (weight < -MOTION_LINE_OUTER_WEIGHT)
+    {
+        weight = -MOTION_LINE_OUTER_WEIGHT;
+    }
+
+    return (int8_t)weight;
+}
+
+static uint8_t MotionLine_CalculateTargetSpeeds(
+    float *leftSpeedMMps, float *rightSpeedMMps)
+{
+    uint8_t grayState = Graydetect_GetState();
+    int8_t weight;
+    float speedAdjustMMps;
+
+    if (grayState == 0U)
     {
         if (s_context.lostTicks < MOTION_LINE_LOST_CONFIRM_TICKS)
         {
@@ -81,28 +115,38 @@ static uint8_t MotionLine_CalculateCorrection(float dt, float *correctionPWM)
             return 0U;
         }
 
-        *correctionPWM = s_context.lastCorrectionPWM;
+        /* 短暂丢线时保持上一拍的左右轮目标速度。 */
+        *leftSpeedMMps = s_context.lastLeftSpeedMMps;
+        *rightSpeedMMps = s_context.lastRightSpeedMMps;
         return 1U;
     }
 
     s_context.lostTicks = 0U;
-    s_context.lineError = Graydetect_GetError(GRAY_SIDE_ALL);
-    *correctionPWM = PID_Update(&s_linePID, 0.0f,
-                                s_context.lineError, dt);
-    *correctionPWM *= (float)MOTION_LINE_CORRECTION_SIGN;
-    s_context.lastCorrectionPWM = *correctionPWM;
+    weight = MotionLine_GetWeight(grayState);
+    s_context.lineError = (float)weight;
+
+    /* 权重达到正负 3 时，速度增减量正好等于巡线速度的一半。 */
+    speedAdjustMMps = s_context.cruiseSpeedMMps *
+                      MOTION_LINE_MAX_ADJUST_RATIO *
+                      ((float)weight / (float)MOTION_LINE_OUTER_WEIGHT);
+
+    /* 左侧压线：左轮减速、右轮加速；右侧压线时相反。 */
+    *leftSpeedMMps = s_context.cruiseSpeedMMps + speedAdjustMMps;
+    *rightSpeedMMps = s_context.cruiseSpeedMMps - speedAdjustMMps;
+    s_context.lastLeftSpeedMMps = *leftSpeedMMps;
+    s_context.lastRightSpeedMMps = *rightSpeedMMps;
     return 1U;
 }
 
 static MotionWheel_Result_t MotionLine_ApplyWheelCommand(
-    float correctionPWM, float dt)
+    float leftSpeedMMps, float rightSpeedMMps, float dt)
 {
     MotionWheel_Command_t command;
 
-    command.targetSpeedLMMps = s_context.cruiseSpeedMMps;
-    command.targetSpeedRMMps = s_context.cruiseSpeedMMps;
-    command.trimLPWM = -correctionPWM;
-    command.trimRPWM = correctionPWM;
+    command.targetSpeedLMMps = leftSpeedMMps;
+    command.targetSpeedRMMps = rightSpeedMMps;
+    command.trimLPWM = 0.0f;
+    command.trimRPWM = 0.0f;
     return MotionWheel_Update(&command, dt);
 }
 
@@ -122,9 +166,6 @@ MotionLine_Result_t MotionLine_Init(void)
         return MOTION_LINE_RESULT_INVALID_ARGUMENT;
     }
 
-    PID_Init(&s_linePID, MOTION_LINE_KP, 0.0f, MOTION_LINE_KD,
-             MOTION_LINE_CORRECTION_LIMIT_PWM, 0.0f);
-    MotionLine_ResetControl();
     s_context.configured = 1U;
     return MOTION_LINE_RESULT_OK;
 }
@@ -156,7 +197,8 @@ MotionLine_Result_t MotionLine_Start(float speedMMps)
 
 void MotionLine_Update(float dt)
 {
-    float correctionPWM;
+    float leftSpeedMMps;
+    float rightSpeedMMps;
 
     if (s_context.state != MOTION_LINE_STATE_RUNNING)
     {
@@ -167,13 +209,14 @@ void MotionLine_Update(float dt)
         MotionLine_SetError(MOTION_LINE_ERROR_UPDATE_PERIOD_INVALID);
         return;
     }
-    if (MotionLine_CalculateCorrection(dt, &correctionPWM) == 0U)
+    if (MotionLine_CalculateTargetSpeeds(
+            &leftSpeedMMps, &rightSpeedMMps) == 0U)
     {
         MotionLine_SetError(MOTION_LINE_ERROR_LINE_LOST);
         return;
     }
-    if (MotionLine_ApplyWheelCommand(correctionPWM, dt) !=
-        MOTION_WHEEL_RESULT_OK)
+    if (MotionLine_ApplyWheelCommand(
+            leftSpeedMMps, rightSpeedMMps, dt) != MOTION_WHEEL_RESULT_OK)
     {
         MotionLine_SetError(MOTION_LINE_ERROR_WHEEL);
     }

@@ -3,13 +3,12 @@
 
 #include <stdint.h>
 
-/* 五路灰度巡线参数：首次实车测试从低速开始，每次只调整一项。 */
-#define MOTION_LINE_KP                   30.0f   /* 偏线后的回线力度。 */
-#define MOTION_LINE_KD                   0.0f   /* 抑制快速摆动；当前关闭。 */
-#define MOTION_LINE_CORRECTION_LIMIT_PWM 300.0f /* 左右轮附加差速上限。 */
-#define MOTION_LINE_CORRECTION_SIGN      (-1)   /* 越修越偏时翻转符号。 */
-#define MOTION_LINE_MAX_SPEED_MMPS       1000.0f /* 巡线请求速度上限。 */
-#define MOTION_LINE_LOST_CONFIRM_TICKS   10U     /* 连续全白 10 个控制节拍后确认丢线。 */
+/* 五路灰度巡线参数：灰度返回 1 表示检测到黑线。 */
+#define MOTION_LINE_OUTER_WEIGHT        3       /* 左右最外侧灰度权重的绝对值。 */
+#define MOTION_LINE_INNER_WEIGHT        1       /* 左右内侧灰度权重的绝对值。 */
+#define MOTION_LINE_MAX_ADJUST_RATIO    0.5f    /* 最外侧压线时，每侧增减当前速度的比例。 */
+#define MOTION_LINE_MAX_SPEED_MMPS      1000.0f /* MotionLine_Start() 允许的巡线速度上限。 */
+#define MOTION_LINE_LOST_CONFIRM_TICKS  10U     /* 连续全白 10 个控制节拍后确认丢线。 */
 
 typedef enum
 {
@@ -35,7 +34,7 @@ typedef enum
 } MotionLine_Result_t;
 
 MotionLine_Result_t MotionLine_Init(void);
-/* 持续巡线，直到调用 MotionLine_Stop() 或检测到丢线。 */
+/* 持续巡线，直到调用 MotionLine_Stop() 或确认丢线。 */
 MotionLine_Result_t MotionLine_Start(float speedMMps);
 void MotionLine_Update(float dt);
 void MotionLine_Stop(void);

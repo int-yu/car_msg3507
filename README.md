@@ -12,7 +12,7 @@
 |---|---:|---|---|
 | CPUCLK / SYSCLK | 32 MHz | 全工程 | SysConfig 默认时钟源；延时、总线外设和 SysTick 的基准时钟 |
 | SysTick | 32 MHz / 320000 = 100 Hz | `System/Tick`、`main.c`、`MotionLine`、`MotionWheel`；`K230Link`、`MotionStraight`、`Nav` 预留 | 10 ms 系统节拍；当前直接驱动按键检测和灰度巡线更新，不等待 K230 |
-| TIMG8 | 32 MHz，周期 1600 = 20 kHz | `Hardware/Motor/PWM`、`MotionWheel`、`MotionLine` | 当前由 MotionLine 通过公共轮速层输出巡线双轮 PWM；CCP0/PB15 右轮，CCP1/PB16 左轮 |
+| TIMG8 | 32 MHz，周期 1600 = 20 kHz | `Hardware/Motor/PWM`、`MotionWheel`、`MotionLine` | MotionLine 按灰度权重给出左右轮目标速度，再由公共轮速层输出 PWM；CCP0/PB15 右轮，CCP1/PB16 左轮 |
 | TIMA0 | BUSCLK / 32 = 1 MHz，周期 20000 = 50 Hz | `Application/Servo` | 双路舵机 PWM；1 个计数等于 1 us |
 | I2C0 | BUSCLK 32 MHz，SCL 400 kHz | `Hardware/Display/OLED` | OLED 控制器通信 |
 | UART1 | BUSCLK 32 MHz，9600 baud，8N1，RX 中断 | `Hardware/Comms/Serial`、`Application/Comms/BluetoothDebug` | 蓝牙调试命令和应答 |
@@ -28,7 +28,7 @@
 | PA11 | 开漏式 GPIO | MPU6050 SDA | 软件 I2C 数据；当前用于连续航向显示，MotionStraight/Nav 预留使用 |
 | PA12 | GPIO 输出 | 右电机 AIN2 | TB6612 A 通道方向；MotionLine 右轮方向输出 |
 | PA13 | GPIO 输出 | 右电机 AIN1 | TB6612 A 通道方向；MotionLine 右轮方向输出 |
-| PA14 | GPIO 输入、上拉 | 灰度 CH3 | `Graydetect` 位图 bit3；MotionLine 当前巡线输入 |
+| PA14 | GPIO 输入、上拉 | 灰度 CH3 | `Graydetect` 位图 bit3，右内侧，检测黑线为 1，巡线权重 `+1` |
 | PA15 | GPIO 输入、上拉、双边沿中断 | 右编码器 A | GPIOA GROUP1 IRQ；`MotionWheel` 右轮反馈 |
 | PA16 | GPIO 输入、上拉、双边沿中断 | 右编码器 B | GPIOA GROUP1 IRQ；`MotionWheel` 右轮反馈 |
 | PA17 | GPIO 输入、上拉、双边沿中断 | 左编码器 A | GPIOA GROUP1 IRQ；`MotionWheel` 左轮反馈 |
@@ -52,11 +52,11 @@
 | PB15 | TIMG8 CCP0 | 右电机 PWM | TB6612 A 通道，20 kHz；MotionLine 右轮速度闭环和差速修正输出 |
 | PB16 | TIMG8 CCP1 | 左电机 PWM | TB6612 B 通道，20 kHz；MotionLine 左轮速度闭环和差速修正输出 |
 | PB17 | GPIO 输出 | 蜂鸣器 | 低电平有效 |
-| PB18 | GPIO 输入、上拉 | 灰度 CH4 | `Graydetect` 位图 bit4；MotionLine 当前巡线输入 |
-| PB20 | GPIO 输入、上拉 | 灰度 CH2 | `Graydetect` 位图 bit2；MotionLine 当前巡线输入 |
+| PB18 | GPIO 输入、上拉 | 灰度 CH4 | `Graydetect` 位图 bit4，右最外侧，检测黑线为 1，巡线权重 `+3` |
+| PB20 | GPIO 输入、上拉 | 灰度 CH2 | `Graydetect` 位图 bit2，中间，检测黑线为 1，巡线权重 `0` |
 | PB23 | GPIO 输出 | LED1 | 高电平点亮 |
-| PB24 | GPIO 输入、上拉 | 灰度 CH1 | `Graydetect` 位图 bit1；MotionLine 当前巡线输入 |
-| PB25 | GPIO 输入、上拉 | 灰度 CH0 | `Graydetect` 位图 bit0；MotionLine 当前巡线输入 |
+| PB24 | GPIO 输入、上拉 | 灰度 CH1 | `Graydetect` 位图 bit1，左内侧，检测黑线为 1，巡线权重 `-1` |
+| PB25 | GPIO 输入、上拉 | 灰度 CH0 | `Graydetect` 位图 bit0，左最外侧，检测黑线为 1，巡线权重 `-3` |
 | PB27 | GPIO 输出 | LED2 | 高电平点亮；蜂鸣提示同步使用 |
 
 ## 3. 当前程序调用关系
@@ -71,7 +71,7 @@
 4. 初始化 MPU6050；OLED 显示 `ZERO CALIBRATING...`，要求小车保持静止。
 5. `Heading_Calibrate()` 采集 400 次 Z 轴陀螺仪零偏，采样间隔 2 ms；若 MPU6050 不在线，OLED 显示 `OFFLINE`。
 6. 清除零漂阶段累计的 Tick 和编码器计数，初始化蓝牙命令解析器。
-7. 调用 `MotionLine_Init()`；它使用 `MotionWheel.h` 和 `MotionLine.h` 顶部参数初始化公共双轮速度 PI 与灰度巡线 PD；参数非法时长鸣一次。
+7. 调用 `MotionLine_Init()`；它使用 `MotionWheel.h` 和 `MotionLine.h` 顶部参数初始化公共双轮速度层与灰度离散权重巡线；参数非法时长鸣一次。
 
 ### 3.2 100 Hz 主循环
 
@@ -249,8 +249,9 @@ MotionStraight_Stop()
     -> 需要直线时重新 MotionStraight_Init() -> MotionStraight_StartForward(...)
 ```
 
-- 正常巡线使用 `Graydetect_GetError(GRAY_SIDE_ALL)` 的 `-2~+2` 加权误差，PD 输出作为左右轮附加差速 PWM。
-- 灰度位为 `1` 表示检测到黑线，五路全白为 `0x00`。连续全白达到 `MOTION_LINE_LOST_CONFIRM_TICKS` 才进入 `MOTION_LINE_ERROR_LINE_LOST`；确认前沿用最后一次有效差速修正，任一路恢复为 1 时立即清零丢线计数。
+- MotionLine 不使用 PID。五路从左到右的权重为 `-3、-1、0、+1、+3`，检测到黑线时把对应权重相加，并把最终结果限制在 `-3~+3`。
+- 权重为 `-3` 时，左轮目标速度为巡线速度的 `0.5` 倍，右轮为 `1.5` 倍；权重为 `+3` 时左右相反。权重为正负 `1` 时，每侧只增减巡线速度的 `1/6`。
+- 灰度位为 `1` 表示检测到黑线，五路全白为 `0x00`。连续全白达到 `MOTION_LINE_LOST_CONFIRM_TICKS` 才进入 `MOTION_LINE_ERROR_LINE_LOST`；确认前保持上一拍的左右轮目标速度，任一路恢复为 1 时立即清零丢线计数。
 - 五路全黑 `0x1F` 当前按误差 0 继续直行；十字、停止线和任务标志必须在后续任务状态机中根据连续采样单独判断。
 - `MotionLine.h` 顶部参数是当前首轮低速测试值，仍需根据实车循迹效果标定。
 
@@ -330,7 +331,7 @@ Nav_Stop();
 | `Application/Control/PID.c/.h` | 通用 PID 初始化、调参、复位和单步计算 |
 | `Application/Control/MotionStraight.c/.h` | 头文件顶部保存直线参数；源文件实现距离规划、5/6 末段减速、可选终点速度、MPU6050 航向 PD 和软停车状态机 |
 | `Application/Control/MotionWheel.c/.h` | 头文件顶部保存公共轮速参数；源文件实现 MotionStraight、MotionLine 与 Nav 共用的双轮速度 PI、前馈、差速修正合成和 PWM 限幅 |
-| `Application/Control/MotionLine.c/.h` | 头文件顶部保存巡线参数；源文件实现五路灰度误差 PD、连续丢线确认、丢线停车和状态管理 |
+| `Application/Control/MotionLine.c/.h` | 头文件顶部保存巡线参数；源文件实现五路灰度离散权重差速、连续丢线确认、丢线停车和状态管理；巡线层不使用 PID |
 | `Application/Control/Nav.c/.h` | 头文件顶部保存转向参数；源文件实现连续航向目标、双轮等速反向转向和到角稳定判定 |
 | `Application/Debug/DebugDisplay.c/.h` | 组织启动零漂提示、基础状态和 MotionLine 运行状态的 OLED 八行调试数据 |
 | `Application/Servo/Servo.c/.h` | 将舵机角度换算为 TIMA0 比较值，并执行纵向/横向限位 |
@@ -450,6 +451,8 @@ MotionLine_State_t MotionLine_GetState(void);
 MotionLine_Error_t MotionLine_GetError(void);
 float MotionLine_GetLineError(void);
 ```
+
+`MotionLine_GetLineError()` 当前返回最近一次有效灰度位图得到的离散权重，范围为 `-3~+3`，它不再是 PID 输入误差。
 
 ### 5.6 `Application/Control/Nav.h`
 
@@ -691,7 +694,7 @@ uint8_t Tick_PollCount(void);
 | `DebugDisplay.h` | `DEBUG_DISPLAY_REFRESH_TICKS` | `10U` | OLED 10 Hz 刷新间隔 |
 | `MotionStraight.h` | `MOTION_STRAIGHT_*` | 见 6.2 | 航向 PD、直线速度规划、减速起点比例和距离允许误差 |
 | `MotionWheel.h` | `MOTION_WHEEL_*` | 见 6.1 | MotionStraight、MotionLine 与 Nav 共用的速度 PI、前馈和 PWM 限幅 |
-| `MotionLine.h` | `MOTION_LINE_*` | 见 6.3 | 灰度位置 PD、修正方向和巡线速度上限 |
+| `MotionLine.h` | `MOTION_LINE_*` | 见 6.3 | 灰度权重、最大速度调整比例、巡线速度上限和丢线确认节拍 |
 | `Nav.h` | `NAV_*` | 见 6.4 | 双轮转向的加减速、低速区、到角误差和稳定判定 |
 | `Servo.h` | `SERVO_PHYSICAL_RANGE_DEG` | `270U` | 脉宽换算对应的舵机物理量程 |
 | `Servo.h` | `SERVO_MIN_PULSE_US` / `SERVO_MAX_PULSE_US` | `500U` / `2500U` | 舵机最小/最大高电平脉宽 |
@@ -765,10 +768,9 @@ uint8_t Tick_PollCount(void);
 
 | 宏 | 单位 | 当前值 | 作用 |
 |---|---:|---:|---|
-| `MOTION_LINE_KP` | PWM/灰度误差 | `30.0f` | 回线比例力度；偏离后回正太慢则增大，持续左右摆动则减小 |
-| `MOTION_LINE_KD` | PWM/(误差/s) | `0.0f` | 抑制快速摆动；首轮关闭，确认 kp 后再从小量增加 |
-| `MOTION_LINE_CORRECTION_LIMIT_PWM` | PWM | `300.0f` | 巡线左右轮附加差速限幅；弯道修正不够可增大 |
-| `MOTION_LINE_CORRECTION_SIGN` | `1` 或 `-1` | `-1` | 当前修正方向；若误差越修越大，只翻转此符号 |
+| `MOTION_LINE_OUTER_WEIGHT` | 无 | `3` | 左右最外侧灰度权重的绝对值，对应最大修正力度 |
+| `MOTION_LINE_INNER_WEIGHT` | 无 | `1` | 左右内侧灰度权重的绝对值，对应最大修正力度的三分之一 |
+| `MOTION_LINE_MAX_ADJUST_RATIO` | 比例 | `0.5f` | 权重达到正负 3 时，一侧减去、另一侧增加的巡线速度比例 |
 | `MOTION_LINE_MAX_SPEED_MMPS` | mm/s | `1000.0f` | 巡线请求软件上限；应结合公共轮速前馈和最终 PWM 上限设置 |
 | `MOTION_LINE_LOST_CONFIRM_TICKS` | 100 Hz 节拍 | `10U` | 连续五路全白达到 10 次后确认丢线，当前约为 100 ms |
 
