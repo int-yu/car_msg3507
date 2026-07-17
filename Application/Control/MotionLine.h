@@ -4,11 +4,12 @@
 #include <stdint.h>
 
 /* 五路灰度巡线参数：首次实车测试从低速开始，每次只调整一项。 */
-#define MOTION_LINE_KP                   6.0f   /* 偏线后的回线力度。 */
+#define MOTION_LINE_KP                   30.0f   /* 偏线后的回线力度。 */
 #define MOTION_LINE_KD                   0.0f   /* 抑制快速摆动；当前关闭。 */
 #define MOTION_LINE_CORRECTION_LIMIT_PWM 300.0f /* 左右轮附加差速上限。 */
 #define MOTION_LINE_CORRECTION_SIGN      (-1)   /* 越修越偏时翻转符号。 */
-#define MOTION_LINE_MAX_SPEED_MMPS       600.0f /* 巡线请求速度上限。 */
+#define MOTION_LINE_MAX_SPEED_MMPS       1000.0f /* 巡线请求速度上限。 */
+#define MOTION_LINE_LOST_CONFIRM_TICKS   10U     /* 连续全白 10 个控制节拍后确认丢线。 */
 
 typedef enum
 {

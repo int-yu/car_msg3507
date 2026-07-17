@@ -1,5 +1,5 @@
 #include "Application/Debug/DebugDisplay.h"
-#include "Application/Comms/K230Link.h"
+#include "Application/Control/MotionLine.h"
 #include "Application/State/Heading.h"
 #include "Application/State/Odometry.h"
 #include "Hardware/Board/Key.h"
@@ -44,27 +44,22 @@ static void DebugDisplay_ShowMotionValue(int16_t y,
     OLED_ShowString(72, y, unit, OLED_6X8);
 }
 
-static void DebugDisplay_ShowK230Target(void)
+static void DebugDisplay_ShowMotionLineState(void)
 {
-    K230Link_Target_t target;
+    MotionLine_State_t state = MotionLine_GetState();
 
-    if (K230Link_IsReady() == 0U)
+    if (state == MOTION_LINE_STATE_RUNNING)
     {
-        OLED_ShowString(0, 56, "K230:WAIT", OLED_6X8);
-        return;
+        OLED_ShowString(0, 56, "LINE:RUN", OLED_6X8);
     }
-    if (K230Link_GetTarget(&target) == 0U)
+    else if (state == MOTION_LINE_STATE_ERROR)
     {
-        OLED_ShowString(0, 56, "K230:READY", OLED_6X8);
-        return;
+        OLED_ShowString(0, 56, "LINE:ERROR", OLED_6X8);
     }
-
-    OLED_ShowString(0, 56, "K:", OLED_6X8);
-    OLED_ShowNum(12, 56, target.valid, 1U, OLED_6X8);
-    OLED_ShowString(18, 56, " X:", OLED_6X8);
-    OLED_ShowSignedNum(36, 56, target.offsetX, 4U, OLED_6X8);
-    OLED_ShowString(66, 56, " Y:", OLED_6X8);
-    OLED_ShowSignedNum(84, 56, target.offsetY, 4U, OLED_6X8);
+    else
+    {
+        OLED_ShowString(0, 56, "LINE:IDLE", OLED_6X8);
+    }
 }
 
 void DebugDisplay_Init(void)
@@ -127,6 +122,6 @@ void DebugDisplay_Update(uint8_t elapsedTicks)
     DebugDisplay_ShowMotionValue(40, "RD:", Odometry_GetDistanceRMM(), "mm");
     DebugDisplay_ShowMotionValue(48, "RV:", Odometry_GetSpeedR(), "mm/s");
 
-    DebugDisplay_ShowK230Target();
+    DebugDisplay_ShowMotionLineState();
     OLED_Update();
 }

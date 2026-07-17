@@ -1,8 +1,7 @@
 #include "ti_msp_dl_config.h"
 
 #include "Application/Comms/BluetoothDebug.h"
-#include "Application/Comms/K230Link.h"
-#include "Application/Control/Nav.h"
+#include "Application/Control/MotionLine.h"
 #include "Application/Debug/DebugDisplay.h"
 #include "Application/Servo/Servo.h"
 #include "Application/State/Heading.h"
@@ -15,82 +14,57 @@
 #include "Hardware/Sensors/Graydetect.h"
 #include "System/Tick.h"
 
-/* 用户上机测试参数：角度和轮速均可在此处直接修改。 */
-#define NAV_TEST_ABSOLUTE_YAW_DEG  -90.0f
-#define NAV_TEST_RELATIVE_YAW_DEG  -90.0f
-#define NAV_TEST_BASE_SPEED_MMPS   80.0f
+/* 用户上机测试参数：首次巡线从低速开始，在这里直接修改速度。 */
+#define MOTION_LINE_TEST_SPEED_MMPS  100.0f
 
-#define NAV_TEST_TO_KEY          0x01U /* KEY1：转到绝对角。 */
-#define NAV_TEST_BY_KEY          0x02U /* KEY2：按设定相对角转向。 */
-#define NAV_TEST_BY_REVERSE_KEY  0x04U /* KEY3：向相反方向转相同角度。 */
-#define NAV_TEST_STOP_KEY        0x08U /* KEY4：立即停止当前转向。 */
+#define MOTION_LINE_TEST_START_KEY  0x01U /* KEY1：开始持续巡线。 */
+#define MOTION_LINE_TEST_STOP_KEY   0x02U /* KEY2：立即停止巡线。 */
 
 static uint8_t s_previousKeyMask;
-static Nav_State_t s_previousNavState;
+static MotionLine_State_t s_previousMotionLineState;
 
-static void App_HandleNavKeys(uint8_t pressedEdges)
+static void App_HandleMotionLineKeys(uint8_t pressedEdges)
 {
-    Nav_Result_t result;
+    MotionLine_Result_t result;
 
-    if ((pressedEdges & NAV_TEST_STOP_KEY) != 0U)
+    if ((pressedEdges & MOTION_LINE_TEST_STOP_KEY) != 0U)
     {
-        Nav_Stop();
+        MotionLine_Stop();
         return;
     }
 
-    if ((pressedEdges & NAV_TEST_TO_KEY) != 0U)
-    {
-        result = Nav_StartTo(
-            NAV_TEST_ABSOLUTE_YAW_DEG,
-            NAV_TEST_BASE_SPEED_MMPS);
-    }
-    else if ((pressedEdges & NAV_TEST_BY_KEY) != 0U)
-    {
-        result = Nav_StartBy(
-            NAV_TEST_RELATIVE_YAW_DEG,
-            NAV_TEST_BASE_SPEED_MMPS);
-    }
-    else if ((pressedEdges & NAV_TEST_BY_REVERSE_KEY) != 0U)
-    {
-        result = Nav_StartBy(
-            -NAV_TEST_RELATIVE_YAW_DEG,
-            NAV_TEST_BASE_SPEED_MMPS);
-    }
-    else
+    if ((pressedEdges & MOTION_LINE_TEST_START_KEY) == 0U)
     {
         return;
     }
 
-    if (result != NAV_RESULT_OK)
+    result = MotionLine_Start(MOTION_LINE_TEST_SPEED_MMPS);
+    if (result != MOTION_LINE_RESULT_OK)
     {
         Beep_Long();
     }
 }
 
-static void App_ReportNavState(void)
+static void App_ReportMotionLineState(void)
 {
-    Nav_State_t state = Nav_GetState();
+    MotionLine_State_t state = MotionLine_GetState();
 
-    if (state == s_previousNavState)
+    if (state == s_previousMotionLineState)
     {
         return;
     }
 
-    if (state == NAV_STATE_COMPLETED)
-    {
-        Beep_Notify(2U);
-    }
-    else if (state == NAV_STATE_ERROR)
+    if (state == MOTION_LINE_STATE_ERROR)
     {
         Beep_Long();
     }
 
-    s_previousNavState = state;
+    s_previousMotionLineState = state;
 }
 
 static void App_Init(void)
 {
-    Nav_Result_t navResult;
+    MotionLine_Result_t motionLineResult;
 
     SYSCFG_DL_init();
     Tick_Init();
@@ -102,7 +76,6 @@ static void App_Init(void)
     Motor_Init();
     Servo_Init();
     Serial1_Init();
-    K230Link_Init();
     Odometry_Init();
 
     __enable_irq();
@@ -117,14 +90,14 @@ static void App_Init(void)
     Odometry_Reset();
 
     BluetoothDebug_Init();
-    navResult = Nav_Init();
-    if (navResult != NAV_RESULT_OK)
+    motionLineResult = MotionLine_Init();
+    if (motionLineResult != MOTION_LINE_RESULT_OK)
     {
         Beep_Long();
     }
 
     s_previousKeyMask = Key_GetPressedMask();
-    s_previousNavState = Nav_GetState();
+    s_previousMotionLineState = MotionLine_GetState();
     DebugDisplay_Update(DEBUG_DISPLAY_REFRESH_TICKS);
 }
 
@@ -137,20 +110,17 @@ static void App_RunTick(uint8_t elapsedTicks)
 
     Heading_Update(elapsedSeconds);
     Odometry_Update(elapsedTicks);
-    K230Link_Update(elapsedTicks);
 
     keyMask = Key_GetPressedMask();
     pressedEdges = (uint8_t)(keyMask & (uint8_t)~s_previousKeyMask);
     s_previousKeyMask = keyMask;
 
-    /* 握手完成前只更新基础状态，不允许运动控制进入正式流程。 */
-    if (K230Link_IsReady() != 0U)
-    {
-        App_HandleNavKeys(pressedEdges);
-        Nav_Update(elapsedSeconds);
-        BluetoothDebug_Update(elapsedTicks);
-    }
-    App_ReportNavState();
+    /* 当前为独立巡线测试，不等待 K230 握手。 */
+    App_HandleMotionLineKeys(pressedEdges);
+    MotionLine_Update(elapsedSeconds);
+    BluetoothDebug_Update(elapsedTicks);
+
+    App_ReportMotionLineState();
 
     for (index = 0U; index < elapsedTicks; index++)
     {

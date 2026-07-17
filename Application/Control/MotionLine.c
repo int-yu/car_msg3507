@@ -11,6 +11,8 @@ typedef struct
     MotionLine_Error_t error;
     float cruiseSpeedMMps;
     float lineError;
+    float lastCorrectionPWM;
+    uint16_t lostTicks;
     uint8_t configured;
 } MotionLine_Context_t;
 
@@ -36,6 +38,7 @@ static uint8_t MotionLine_ParametersAreValid(void)
         (MOTION_LINE_CORRECTION_LIMIT_PWM >
          MotionWheel_GetMaximumCommandPWM()) ||
         (MOTION_LINE_MAX_SPEED_MMPS <= 0.0f) ||
+        (MOTION_LINE_LOST_CONFIRM_TICKS == 0U) ||
         ((MOTION_LINE_CORRECTION_SIGN != 1) &&
          (MOTION_LINE_CORRECTION_SIGN != -1)))
     {
@@ -49,6 +52,8 @@ static void MotionLine_ResetControl(void)
     PID_Reset(&s_linePID);
     s_context.cruiseSpeedMMps = 0.0f;
     s_context.lineError = 0.0f;
+    s_context.lastCorrectionPWM = 0.0f;
+    s_context.lostTicks = 0U;
 }
 
 static void MotionLine_SetError(MotionLine_Error_t error)
@@ -59,18 +64,33 @@ static void MotionLine_SetError(MotionLine_Error_t error)
     s_context.state = MOTION_LINE_STATE_ERROR;
 }
 
-/* 读取五路灰度并计算巡线差速修正；返回 0 表示已经丢线。 */
+/*
+ * 灰度位为 1 表示检测到黑线。连续全白达到确认节拍前，沿用最后一次
+ * 有效差速修正；任一路重新检测到黑线后立即清零丢线计数。
+ */
 static uint8_t MotionLine_CalculateCorrection(float dt, float *correctionPWM)
 {
     if (Graydetect_GetState() == 0U)
     {
-        return 0U;
+        if (s_context.lostTicks < MOTION_LINE_LOST_CONFIRM_TICKS)
+        {
+            s_context.lostTicks++;
+        }
+        if (s_context.lostTicks >= MOTION_LINE_LOST_CONFIRM_TICKS)
+        {
+            return 0U;
+        }
+
+        *correctionPWM = s_context.lastCorrectionPWM;
+        return 1U;
     }
 
+    s_context.lostTicks = 0U;
     s_context.lineError = Graydetect_GetError(GRAY_SIDE_ALL);
     *correctionPWM = PID_Update(&s_linePID, 0.0f,
                                 s_context.lineError, dt);
     *correctionPWM *= (float)MOTION_LINE_CORRECTION_SIGN;
+    s_context.lastCorrectionPWM = *correctionPWM;
     return 1U;
 }
 
