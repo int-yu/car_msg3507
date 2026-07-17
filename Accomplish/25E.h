@@ -31,8 +31,8 @@
 #define ACCOMPLISH_25E_LINE_DETECT_CONFIRM_TICKS   3U
 
 /*
- * 绝对转向目标相对于 KEY1 启动航向的偏移量。
- * 当前目标为“启动航向 + 180°”；实车方向相反时只修改正负号。
+ * 每次转向时在上一绝对目标上增加的角度。
+ * 以 KEY1 启动航向为基准，目标依次增加 180°、360°……
  */
 #define ACCOMPLISH_25E_TURN_TARGET_OFFSET_DEG      180.0f
 

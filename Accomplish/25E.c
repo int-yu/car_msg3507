@@ -100,8 +100,8 @@ static Mission_CallbackResult_t Accomplish25E_LineEnter(void)
 }
 
 /*
- * 巡线完成后进入本状态，转向 KEY1 启动航向加 180° 的绝对目标。
- * 使用 TurnTo 保证目标不随进入 TURN 时的当前角度变化，也不会每轮累加 180°。
+ * 巡线完成后进入本状态，在上一绝对目标上增加 180°。
+ * 使用 TurnTo 依次指向启动航向 +180°、+360°、+540°……
  */
 static Mission_CallbackResult_t Accomplish25E_TurnEnter(void)
 {
@@ -237,9 +237,9 @@ static const Mission_Transition_t s_lineTransitions[] = {
     },
 };
 
-/* Nav 到达绝对目标并稳定后返回 FINISHED，无条件开始下一轮直线。 */
+/* Nav 到达本轮绝对目标并稳定后返回 FINISHED，无条件开始下一轮直线。 */
 static const Mission_Transition_t s_turnTransitions[] = {
-    /* 到达目标后重新直行；下一轮 TURN 仍使用同一个绝对目标。 */
+    /* 到达目标后重新直行；下一轮 TURN 会再增加 180°。 */
     {
         NULL,
         ACCOMPLISH_25E_STATE_STRAIGHT,
