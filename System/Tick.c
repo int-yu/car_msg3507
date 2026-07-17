@@ -8,6 +8,8 @@ void Tick_Init(void)
     uint32_t primask = __get_PRIMASK();
     __disable_irq();
     s_tickCount = 0U;
+    SysTick->VAL = 0U;
+    SCB->ICSR = SCB_ICSR_PENDSTCLR_Msk;
     __set_PRIMASK(primask);
 }
 

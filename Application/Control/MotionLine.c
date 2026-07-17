@@ -61,7 +61,7 @@ static void MotionLine_SetError(MotionLine_Error_t error)
 
 /*
  * 位图从左到右为 bit0~bit4，灰度返回 1 表示检测到黑线。
- * 最外侧权重为正负 3，内侧权重为正负 1，中心权重为 0。
+ * 最外侧权重为正负 6，内侧权重为正负 3，中心权重为 0。
  */
 static int8_t MotionLine_GetWeight(uint8_t grayState)
 {
@@ -125,7 +125,7 @@ static uint8_t MotionLine_CalculateTargetSpeeds(
     weight = MotionLine_GetWeight(grayState);
     s_context.lineError = (float)weight;
 
-    /* 权重达到正负 3 时，速度增减量正好等于巡线速度的一半。 */
+    /* 权重达到正负 6 时，速度增减比例等于头文件中的最大调整比例。 */
     speedAdjustMMps = s_context.cruiseSpeedMMps *
                       MOTION_LINE_MAX_ADJUST_RATIO *
                       ((float)weight / (float)MOTION_LINE_OUTER_WEIGHT);
@@ -212,7 +212,10 @@ void MotionLine_Update(float dt)
     if (MotionLine_CalculateTargetSpeeds(
             &leftSpeedMMps, &rightSpeedMMps) == 0U)
     {
-        MotionLine_SetError(MOTION_LINE_ERROR_LINE_LOST);
+        /* 25E 等流程把确认丢线作为巡线任务的正常结束条件。 */
+        MotionWheel_Stop();
+        s_context.error = MOTION_LINE_ERROR_NONE;
+        s_context.state = MOTION_LINE_STATE_FINISHED;
         return;
     }
     if (MotionLine_ApplyWheelCommand(
@@ -238,6 +241,11 @@ uint8_t MotionLine_IsConfigured(void)
 uint8_t MotionLine_IsBusy(void)
 {
     return (s_context.state == MOTION_LINE_STATE_RUNNING) ? 1U : 0U;
+}
+
+uint8_t MotionLine_IsFinished(void)
+{
+    return (s_context.state == MOTION_LINE_STATE_FINISHED) ? 1U : 0U;
 }
 
 MotionLine_State_t MotionLine_GetState(void)

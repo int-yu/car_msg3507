@@ -11,84 +11,93 @@
 | 时钟/外设资源 | 当前配置 | 占用模块 | 用途 |
 |---|---:|---|---|
 | CPUCLK / SYSCLK | 32 MHz | 全工程 | SysConfig 默认时钟源；延时、总线外设和 SysTick 的基准时钟 |
-| SysTick | 32 MHz / 320000 = 100 Hz | `System/Tick`、`main.c`、`MotionLine`、`MotionWheel`；`K230Link`、`MotionStraight`、`Nav` 预留 | 10 ms 系统节拍；当前直接驱动按键检测和灰度巡线更新，不等待 K230 |
-| TIMG8 | 32 MHz，周期 1600 = 20 kHz | `Hardware/Motor/PWM`、`MotionWheel`、`MotionLine` | MotionLine 按灰度权重给出左右轮目标速度，再由公共轮速层输出 PWM；CCP0/PB15 右轮，CCP1/PB16 左轮 |
+| SysTick | 32 MHz / 320000 = 100 Hz | `System/Tick`、`Application/Core/App`、`MotionManager`、`Mission`、`Accomplish/25E` | 10 ms 系统节拍；`App_Update()` 传递实际累计 Tick 和 dt；当前巡线连续全白 50 拍（约 500 ms）后确认丢线 |
+| TIMG8 | 32 MHz，周期 1600 = 20 kHz | `Hardware/Motor/PWM`、`MotionWheel`、`MotionManager`、`Accomplish/25E` | 25E 通过 MotionManager 选择直线、巡线或转向，再由 MotionWheel 输出双轮 PWM |
 | TIMA0 | BUSCLK / 32 = 1 MHz，周期 20000 = 50 Hz | `Application/Servo` | 双路舵机 PWM；1 个计数等于 1 us |
 | I2C0 | BUSCLK 32 MHz，SCL 400 kHz | `Hardware/Display/OLED` | OLED 控制器通信 |
-| UART1 | BUSCLK 32 MHz，9600 baud，8N1，RX 中断 | `Hardware/Comms/Serial`、`Application/Comms/BluetoothDebug` | 蓝牙调试命令和应答 |
-| UART2 | BUSCLK 32 MHz，115200 baud，8N1，当前不启用 RX NVIC | `main.syscfg` 预留 | K230 硬件配置保留；当前巡线主程序不调用 `K230Link_Init/Update()`，不发送握手帧 |
-| GPIO 软件 I2C | CPU 延时产生时序 | `Hardware/Sensors/MPU6050`、`Application/State/Heading` | 当前用于 OLED 连续多圈航向显示；MotionStraight 和 Nav 预留使用该角度闭环；不占用 I2C 外设实例 |
+| UART1 | BUSCLK 32 MHz，9600 baud，8N1，RX 中断 | `Hardware/Comms/Serial`、`Application/Comms/BluetoothDebug`、`App`、`Mission` | `C0` 全局停车；保留其他任务事件和手动调试命令，当前 25E 不使用 `C1` 启动 |
+| UART2 | BUSCLK 32 MHz，115200 baud，8N1，当前不启用 RX NVIC | `main.syscfg` 预留 | K230 硬件配置保留；当前 App 不调用 `K230Link_Init/Update()`，不发送握手帧 |
+| GPIO 软件 I2C | CPU 延时产生时序 | `Hardware/Sensors/MPU6050`、`Application/State/Heading`、`Accomplish/25E` | 提供连续多圈航向；25E 在 KEY1 启动时保存基准，并以“启动航向 + 180°”作为 Nav 绝对目标；不占用 I2C 外设实例 |
 | GPIOA GROUP1 IRQ | A/B 相双边沿 | `Hardware/Motor/Encoder`、`MotionWheel` | 左右编码器软件正交解码，为公共双轮速度 PI 提供速度反馈 |
 
 ## 2. Pin 口占用
 
 | Pin | 方向/复用 | 占用对象 | 程序映射与说明 |
 |---|---|---|---|
-| PA10 | 开漏式 GPIO | MPU6050 SCL | 软件 I2C 时钟；当前用于连续航向显示，MotionStraight/Nav 预留使用 |
-| PA11 | 开漏式 GPIO | MPU6050 SDA | 软件 I2C 数据；当前用于连续航向显示，MotionStraight/Nav 预留使用 |
-| PA12 | GPIO 输出 | 右电机 AIN2 | TB6612 A 通道方向；MotionLine 右轮方向输出 |
-| PA13 | GPIO 输出 | 右电机 AIN1 | TB6612 A 通道方向；MotionLine 右轮方向输出 |
-| PA14 | GPIO 输入、上拉 | 灰度 CH3 | `Graydetect` 位图 bit3，右内侧，检测黑线为 1，巡线权重 `+1` |
+| PA10 | 开漏式 GPIO | MPU6050 SCL | 软件 I2C 时钟；用于连续航向显示和运动闭环；25E 记录 KEY1 启动航向并计算绝对转向目标 |
+| PA11 | 开漏式 GPIO | MPU6050 SDA | 软件 I2C 数据；用于连续航向显示和运动闭环；25E 绝对转向目标为启动航向加 180° |
+| PA12 | GPIO 输出 | 右电机 AIN2 | TB6612 A 通道方向；由 MotionManager 当前模式经 MotionWheel 输出 |
+| PA13 | GPIO 输出 | 右电机 AIN1 | TB6612 A 通道方向；由 MotionManager 当前模式经 MotionWheel 输出 |
+| PA14 | GPIO 输入、上拉 | 灰度 CH3 | `Graydetect` 位图 bit3，右内侧，检测黑线为 1；25E 入线判断和巡线权重 `+3` |
 | PA15 | GPIO 输入、上拉、双边沿中断 | 右编码器 A | GPIOA GROUP1 IRQ；`MotionWheel` 右轮反馈 |
 | PA16 | GPIO 输入、上拉、双边沿中断 | 右编码器 B | GPIOA GROUP1 IRQ；`MotionWheel` 右轮反馈 |
 | PA17 | GPIO 输入、上拉、双边沿中断 | 左编码器 A | GPIOA GROUP1 IRQ；`MotionWheel` 左轮反馈 |
 | PA19 | SWDIO | 下载调试 | 不作为普通 GPIO 使用 |
 | PA20 | SWCLK | 下载调试 | 不作为普通 GPIO 使用 |
-| PA21 | UART2 TX | K230 RX 预留 | 当前巡线主程序不发送数据；恢复 K230Link 时连接 K230 GPIO4（RX） |
-| PA22 | UART2 RX | K230 TX 预留 | 当前巡线主程序不启用接收中断；恢复 K230Link 时连接 K230 GPIO3（TX） |
+| PA21 | UART2 TX | K230 RX 预留 | 当前 App 不发送数据；恢复 K230Link 时连接 K230 GPIO4（RX） |
+| PA22 | UART2 RX | K230 TX 预留 | 当前 App 不启用接收中断；恢复 K230Link 时连接 K230 GPIO3（TX） |
 | PA24 | GPIO 输入、上拉、双边沿中断 | 左编码器 B | GPIOA GROUP1 IRQ；`MotionWheel` 左轮反馈 |
 | PA28 | I2C0 SDA | OLED | 400 kHz |
-| PA30 | GPIO 输入、上拉 | KEY1 | 低电平按下，按键位图 bit0；调用 `MotionLine_Start()` 开始巡线 |
+| PA30 | GPIO 输入、上拉 | KEY1 | 低电平按下，按键位图 bit0；App 生成按下沿事件，当前用于启动 25E |
 | PA31 | I2C0 SCL | OLED | 400 kHz |
-| PB0 | GPIO 输出 | 左电机 BIN1 | TB6612 B 通道方向；MotionLine 左轮方向输出 |
-| PB1 | GPIO 输出 | 左电机 BIN2 | TB6612 B 通道方向；MotionLine 左轮方向输出 |
+| PB0 | GPIO 输出 | 左电机 BIN1 | TB6612 B 通道方向；由 MotionManager 当前模式经 MotionWheel 输出 |
+| PB1 | GPIO 输出 | 左电机 BIN2 | TB6612 B 通道方向；由 MotionManager 当前模式经 MotionWheel 输出 |
 | PB6 | UART1 TX | 蓝牙 | MCU 发送到蓝牙 RX |
-| PB7 | UART1 RX、上拉 | 蓝牙 | 蓝牙 TX 发送到 MCU，RX 中断接收 |
+| PB7 | UART1 RX、上拉 | 蓝牙 | 蓝牙 TX 发送到 MCU，RX 中断接收；`C0` 全局停车，`C1` 当前未绑定 25E |
 | PB8 | TIMA0 CCP0 | 横向舵机 | `D` 命令，`Servo_SetHorizontalAngle()` |
 | PB9 | TIMA0 CCP1 | 纵向舵机 | `O` 命令，`Servo_SetVerticalAngle()` |
-| PB10 | GPIO 输入、上拉 | KEY4 | 低电平按下，按键位图 bit3；当前巡线测试不分配运动命令，仅在 OLED 显示 |
-| PB11 | GPIO 输入、上拉 | KEY2 | 低电平按下，按键位图 bit1；立即调用 `MotionLine_Stop()` |
-| PB14 | GPIO 输入、上拉 | KEY3 | 低电平按下，按键位图 bit2；当前巡线测试不分配运动命令，仅在 OLED 显示 |
-| PB15 | TIMG8 CCP0 | 右电机 PWM | TB6612 A 通道，20 kHz；MotionLine 右轮速度闭环和差速修正输出 |
-| PB16 | TIMG8 CCP1 | 左电机 PWM | TB6612 B 通道，20 kHz；MotionLine 左轮速度闭环和差速修正输出 |
+| PB10 | GPIO 输入、上拉 | KEY4 | 低电平按下，按键位图 bit3；App 生成按下沿事件，具体含义由 Mission 决定 |
+| PB11 | GPIO 输入、上拉 | KEY2 | 低电平按下，按键位图 bit1；App 生成按下沿事件，具体含义由 Mission 决定 |
+| PB14 | GPIO 输入、上拉 | KEY3 | 低电平按下，按键位图 bit2；App 生成按下沿事件，具体含义由 Mission 决定 |
+| PB15 | TIMG8 CCP0 | 右电机 PWM | TB6612 A 通道，20 kHz；由 MotionManager 当前模式经 MotionWheel 输出 |
+| PB16 | TIMG8 CCP1 | 左电机 PWM | TB6612 B 通道，20 kHz；由 MotionManager 当前模式经 MotionWheel 输出 |
 | PB17 | GPIO 输出 | 蜂鸣器 | 低电平有效 |
-| PB18 | GPIO 输入、上拉 | 灰度 CH4 | `Graydetect` 位图 bit4，右最外侧，检测黑线为 1，巡线权重 `+3` |
-| PB20 | GPIO 输入、上拉 | 灰度 CH2 | `Graydetect` 位图 bit2，中间，检测黑线为 1，巡线权重 `0` |
+| PB18 | GPIO 输入、上拉 | 灰度 CH4 | `Graydetect` 位图 bit4，右最外侧，检测黑线为 1；25E 入线判断和巡线权重 `+6` |
+| PB20 | GPIO 输入、上拉 | 灰度 CH2 | `Graydetect` 位图 bit2，中间，检测黑线为 1；25E 入线判断和巡线权重 `0` |
 | PB23 | GPIO 输出 | LED1 | 高电平点亮 |
-| PB24 | GPIO 输入、上拉 | 灰度 CH1 | `Graydetect` 位图 bit1，左内侧，检测黑线为 1，巡线权重 `-1` |
-| PB25 | GPIO 输入、上拉 | 灰度 CH0 | `Graydetect` 位图 bit0，左最外侧，检测黑线为 1，巡线权重 `-3` |
+| PB24 | GPIO 输入、上拉 | 灰度 CH1 | `Graydetect` 位图 bit1，左内侧，检测黑线为 1；25E 入线判断和巡线权重 `-3` |
+| PB25 | GPIO 输入、上拉 | 灰度 CH0 | `Graydetect` 位图 bit0，左最外侧，检测黑线为 1；25E 入线判断和巡线权重 `-6` |
 | PB27 | GPIO 输出 | LED2 | 高电平点亮；蜂鸣提示同步使用 |
 
 ## 3. 当前程序调用关系
 
 ### 3.1 启动阶段
 
-`main.c::App_Init()` 按以下顺序运行：
-
-1. `SYSCFG_DL_init()` 应用 `main.syscfg` 生成的时钟、PinMux 和外设配置。
-2. 初始化 Tick、LED、蜂鸣器、按键、灰度、电机、舵机、蓝牙 UART1 和编码器里程计；当前不初始化 K230 UART2 帧链路。
-3. 开启全局中断并初始化 OLED。
-4. 初始化 MPU6050；OLED 显示 `ZERO CALIBRATING...`，要求小车保持静止。
-5. `Heading_Calibrate()` 采集 400 次 Z 轴陀螺仪零偏，采样间隔 2 ms；若 MPU6050 不在线，OLED 显示 `OFFLINE`。
-6. 清除零漂阶段累计的 Tick 和编码器计数，初始化蓝牙命令解析器。
-7. 调用 `MotionLine_Init()`；它使用 `MotionWheel.h` 和 `MotionLine.h` 顶部参数初始化公共双轮速度层与灰度离散权重巡线；参数非法时长鸣一次。
-
-### 3.2 100 Hz 主循环
-
-`Tick_PollCount()` 每次取出累计节拍，随后依次调用：
-
-```text
-Heading_Update -> Odometry_Update
-               -> 按键边沿检测与 MotionLine_Update
-               -> BluetoothDebug_Update -> 状态蜂鸣提示
-               -> Beep_Tick -> DebugDisplay_Update
+```c
+App_Init();
+Mission_Init(Accomplish25E_GetMissionGraph());
+Interrupt_Enable();
 ```
 
-当前巡线测试速度集中在 `main.c` 顶部，`MOTION_LINE_TEST_SPEED_MMPS` 当前值为 `100.0 mm/s`。KEY1 调用 `MotionLine_Start()` 开始持续巡线，KEY2 调用 `MotionLine_Stop()` 立即停止；KEY3、KEY4 当前不执行运动命令。
+1. `App_Init()` 先关闭全局中断，应用 SysConfig，然后初始化 Tick、板级器件、灰度、电机、舵机、UART1、里程和 OLED。
+2. 初始化 MPU6050 并阻塞执行 400 次 Z 轴零漂采样；标定期间小车必须静止。
+3. 标定后清除 SysTick 待处理状态和编码器累计值，初始化蓝牙解析器和 MotionManager。
+4. `MotionManager_Init()` 统一初始化 MotionStraight、MotionLine 和 Nav；三个模块仍共用唯一 MotionWheel。
+5. `Accomplish25E_GetMissionGraph()` 返回 25E 的静态状态图；`Mission_Init()` 校验节点数、起始/错误状态和所有转换目标后进入等待状态。
+6. `Interrupt_Enable()` 最后开启全局硬件中断。UART、编码器和 SysTick ISR 只采集数据，不执行 Mission 或运动切换。
 
-当前 `main.c` 只初始化和更新 `MotionLine`，不初始化、不更新 `MotionStraight` 或 `Nav`，因此三种上层模式不会争用电机。五路连续全白达到 `MOTION_LINE_LOST_CONFIRM_TICKS`、更新周期非法或公共轮速层报错时，MotionLine 停止并进入错误状态，主程序长鸣一次。
+K230 握手继续关闭：App 不调用 `K230Link_Init/Update()`。K230Link 源码和 UART2 SysConfig 配置保留。
 
-当前巡线测试关闭 K230 握手：`main.c` 不调用 `K230Link_Init()`、`K230Link_Update()` 或 `K230Link_IsReady()`，KEY1 不再受 K230 状态限制。K230Link 源码和 UART2 SysConfig 配置保留，后续正式联调时可以重新接入。
+### 3.2 100 Hz 主循环与 Mission
+
+```c
+if (App_Update(&updateContext) != 0U)
+{
+    Mission_Update(&updateContext);
+}
+```
+
+`App_Update()` 无 Tick 时执行 `__WFI()`；有 Tick 时按真实累计值生成 `elapsedTicks` 和 `dt`，随后执行：
+
+```text
+Heading -> Odometry -> 按键边沿 -> BluetoothDebug
+        -> C0 全局停车 -> MotionManager -> Beep -> OLED
+        -> Mission_Update
+```
+
+Mission 使用静态状态图，不使用 `malloc`。每个状态含 `onEnter/onUpdate/onExit`、有序转换表和 `interruptible`。动作运行时只检查打断转换；动作完成后只检查正常转换；每拍最多转换一次。被打断状态调用退出回调并停车，不保存或恢复原进度。
+
+当前加载 `Accomplish/25E.c` 的静态状态图。KEY1 按下沿从等待状态启动，并在首次直行前保存 MPU6050 连续航向作为启动基准：最多直行 2000 mm；直行中连续 3 拍检测到任一路黑线时打断直线，以 200 mm/s 进入巡线；巡线连续全白 50 拍后正常完成，并绝对转向到“启动航向 + 180°”；转向完成后重新直行。走满 2000 mm 仍未检测到线时停车并回到等待状态。长按 KEY1 不会重复触发；`C0` 在任何节点都能停车、返回等待状态并清除旧航向基准。
 
 OLED 每 10 个系统节拍刷新一次，即 10 Hz。页面内容为：
 
@@ -101,9 +110,9 @@ OLED 每 10 个系统节拍刷新一次，即 10 Hz。页面内容为：
 | 4 | 左轮编码器实测速度 `LV`，单位 mm/s |
 | 5 | 右轮累计路程 `RD`，单位 mm |
 | 6 | 右轮编码器实测速度 `RV`，单位 mm/s |
-| 7 | 当前巡线状态：`LINE:IDLE`、`LINE:RUN` 或 `LINE:ERROR` |
+| 7 | 统一运动状态：`M:IDLE`、`M:LINE`、`M:STRAIGHT`、`M:TURN` 或 `M:ERROR` |
 
-K230Link 库保留的统一帧格式如下，当前巡线主程序不调用：
+K230Link 库保留的统一帧格式如下，当前 App 不调用：
 
 ```text
 AA 55 | VER | TYPE | SEQ | LEN | PAYLOAD | CRC8
@@ -115,27 +124,28 @@ AA 55 | VER | TYPE | SEQ | LEN | PAYLOAD | CRC8
 - TARGET 的 PAYLOAD 固定为 `valid:u8 + offsetX:int16_LE + offsetY:int16_LE`，共 5 字节。
 - 恢复 K230 联调后，K230 `uart_io.py` 测试入口可在握手后持续发送 `valid=1、offsetX=123、offsetY=-45`。
 
-### 3.3 蓝牙调试协议
+### 3.3 蓝牙任务与调试协议
 
 命令不区分大小写。推荐以 `\r` 或 `\n` 结束；也支持空格、逗号、分号作为分隔符。没有结束符时，接收空闲 3 个系统节拍（30 ms）后执行。每条命令都会返回 `OK ...` 或 `ERR ...`。
 
-MotionLine 上机测试期间关闭蓝牙模块电源，避免 `L/R/U` 与 MotionLine 同时改写电机 PWM。当前 Pin 口表中没有蓝牙电源控制引脚，因此固件不能控制模块断电，需要使用外部电源开关或断开模块供电。需要蓝牙手动调试时再给模块上电，并且不要同时按 KEY1 启动巡线。
+`C` 命令进入单槽任务事件邮箱；App 每个有效节拍最多向 Mission 传递一个任务信号。普通信号不排队，同一拍只保留最后收到的一条；`C0` 具有最高优先级，待处理时不会被普通信号覆盖，并立即停车。
 
 | 命令 | 作用 | 输入范围与限位 | 示例 |
 |---|---|---|---|
+| `C<number>` | 发送 Mission 单次任务信号；`C0` 固定全局停车，`C1~C255` 当前未绑定 25E | `0~255`，超限返回 `ERR RANGE` | `C1` |
 | `L<number>` | 只更新左轮 PWM，右轮保持上次指令 | `-1000~1000`，超限自动夹紧 | `L10` |
 | `R<number>` | 只更新右轮 PWM，左轮保持上次指令 | `-1000~1000`，超限自动夹紧 | `R10` |
 | `U<number>` | 左右轮使用相同 PWM | `-1000~1000`；正数前进，负数后退 | `U100` |
 | `O<number>` | 纵向舵机移动到指定角度 | 当前限位 `0°~270°` | `O10` |
 | `D<number>` | 横向舵机移动到指定角度 | 当前限位 `0°~270°` | `D10` |
 
-`L/R/U` 的数字是开环 PWM 指令，不是 mm/s 物理速度。OLED 上的 `LV/RV` 才是由编码器和 `Odometry_CountsPerMM` 换算的实测速度。
+`L/R/U` 只在 MotionManager 空闲时执行，自动运动期间返回 `ERR BUSY`。数字仍是开环 PWM，不是 mm/s；OLED 上的 `LV/RV` 是编码器实测速度。
 
 当前舵机限位仅对应源码中 270° 舵机的电气量程。实车连杆若存在更小的机械行程，通电调试前必须先收紧 `SERVO_VERTICAL_*_ANGLE` 和 `SERVO_HORIZONTAL_*_ANGLE`，并同步修改本文的 Pin 口表、协议表和公共参数表。
 
 ### 3.4 `MotionStraight` 直线行驶控制库
 
-`Application/Control/MotionStraight` 已完成本轮实车调试，但当前 MotionLine 测试版 `main.c` 不初始化、也不调用它。以后切回直线任务时仍按 100 Hz 非阻塞调用。
+`MotionStraight` 已完成本轮实车调试，当前由 MotionManager 统一初始化和按模式更新。Mission 状态回调通过 `MotionManager_StartForward/StartBackward()` 使用它，不再直接修改主循环。
 
 控制结构分为三层：
 
@@ -147,44 +157,25 @@ MotionLine 上机测试期间关闭蓝牙模块电源，避免 `L/R/U` 与 Motio
 
 ```text
 上电且 MPU 零漂完成
-    -> MotionStraight_Init()
-    -> 按 KEY1
-    -> MotionStraight_StartForward(距离, 巡航速度, 终点速度)
-
-每个 100 Hz 节拍：
-Heading_Update(dt) -> Odometry_Update(ticks) -> MotionStraight_Update(dt)
+    -> App_Init() 内部完成 MotionManager_Init()
+    -> Mission 状态 onEnter
+    -> MotionManager_StartForward(距离, 巡航速度, 终点速度)
+    -> App_Update() 每拍更新 MotionManager
 ```
 
-直线运动规划和航向参数位于 `MotionStraight.h` 顶部；双轮速度 PI、前馈和最终 PWM 限幅位于 `MotionWheel.h` 顶部。切回直线主流程时使用以下调用关系：
+直线运动规划和航向参数位于 `MotionStraight.h` 顶部；双轮速度 PI、前馈和最终 PWM 限幅位于 `MotionWheel.h` 顶部。Mission 进入回调使用以下形式：
 
 ```c
-#include "Application/Control/MotionStraight.h"
+#include "Application/Control/MotionManager.h"
 
-/* 初始化阶段：必须在电机、里程计和 MPU6050 零漂标定完成后调用。 */
-if (MotionStraight_Init() != MOTION_STRAIGHT_RESULT_OK)
-{
-    /* 默认参数范围非法。 */
-}
-
-/* main.c 顶部由用户填写。 */
-#define MOTION_STRAIGHT_TEST_DISTANCE_MM   1200U
-#define MOTION_STRAIGHT_TEST_SPEED_MMPS    300.0f
-#define MOTION_STRAIGHT_TEST_END_SPEED_MMPS 0.0f
-
-/* KEY1 按下沿：使用顶部参数启动前进。 */
-(void)MotionStraight_StartForward(MOTION_STRAIGHT_TEST_DISTANCE_MM,
-                                  MOTION_STRAIGHT_TEST_SPEED_MMPS,
-                                  MOTION_STRAIGHT_TEST_END_SPEED_MMPS);
-
-/* 100 Hz 主循环：先更新传感器状态，再更新 MotionStraight。 */
-Heading_Update(elapsedSeconds);
-Odometry_Update(elapsedTicks);
-MotionStraight_Update(elapsedSeconds);
+return (MotionManager_StartForward(distanceMM, speedMMps, endSpeedMMps) ==
+        MOTION_MANAGER_RESULT_OK) ?
+    MISSION_CALLBACK_OK : MISSION_CALLBACK_ERROR;
 ```
 
-- `distanceMM > 0` 表示前进，`distanceMM < 0` 表示后退。
+- `MotionManager_StartForward/StartBackward()` 的 `distanceMM` 都填写正整数，方向由函数名决定。
 - `speedMMps` 必须为正数；超过 `MOTION_STRAIGHT_MAX_SPEED_MMPS` 时自动限幅。
-- `endSpeedMMps` 是非负速度大小且不能高于 `speedMMps`。设为 `0` 时平滑降速后释放电机；设为正数时到达目标后继续按该速度闭环前进，直到调用 `MotionStraight_Stop()`。
+- `endSpeedMMps` 是非负速度大小且不能高于 `speedMMps`。设为 `0` 时平滑降速后释放电机；设为正数时到达目标后继续按该速度闭环前进，直到状态转换、`C0` 或 `MotionManager_Stop()` 停止当前运动。
 - 常用流程使用 `MotionStraight_StartForward()` 或 `MotionStraight_StartBackward()`；距离参数填写正整数，巡航速度和终点速度直接填写 mm/s 浮点值，不使用枚举。
 - `MotionStraight_Start()` 保留带符号距离的底层调用方式，终点速度方向自动跟随距离方向。
 - 默认优先在全程 `5/6` 处开始减速；若 `MOTION_STRAIGHT_DECELERATION_MMPS2` 不足以在最后 `1/6` 内达到终点速度，程序会按运动学制动距离自动提前减速，避免终点速度突变。
@@ -195,94 +186,110 @@ MotionStraight_Update(elapsedSeconds);
 
 实车调参顺序：
 
-1. 单独进行蓝牙开环测试时，使用 `U100/U200/...` 记录 OLED 稳态速度，在 `MotionWheel.h` 顶部调整速度前馈、静摩擦 PWM 与最大可靠输出；完成后关闭蓝牙模块再测 `MotionStraight`。
+1. MotionManager 空闲时使用 `U100/U200/...` 记录 OLED 稳态速度，在 `MotionWheel.h` 顶部调整速度前馈、静摩擦 PWM 与最大可靠输出；自动运动开始后固件会拒绝 `L/R/U`，蓝牙仍可发送 Mission 的 `C` 信号。
 2. 先令 `ki=0`，逐步增加速度 `kp` 到响应足够快且不持续振荡，再少量加入 `ki` 消除稳态误差。
 3. 低速测试航向 `kp`；若偏差被放大，将 `correctionSign` 从 `1` 改为 `-1` 或反向。随后少量增加 `kd` 抑制摆动。
 4. 最后调整加速度、最大减速度、减速起点比例、每次任务的终点速度和距离允许误差。
 
-### 3.5 `MotionWheel` 与 `MotionLine` 当前巡线流程
+### 3.5 `MotionWheel`、`MotionManager` 与 `MotionLine`
 
 统一命名层级如下：
 
 | 层级 | 模块前缀 | 职责 |
 |---|---|---|
-| 上层运动模式 | `MotionStraight_*` | 编码器距离规划和 MPU6050 航向保持 |
-| 上层运动模式 | `MotionLine_*` | 五路灰度巡线和丢线处理 |
-| 上层运动模式 | `Nav_*` | MPU6050 目标角闭环与双轮反向转向 |
+| 任务调度 | `Mission_*` | 静态状态图、状态回调、转换条件和打断规则 |
+| 统一运动入口 | `MotionManager_*` | 自动停止旧模式并选择直线、巡线或转向 |
+| 上层运动模式 | `MotionStraight_*` / `MotionLine_*` / `Nav_*` | 具体运动算法和状态 |
 | 下层公共执行 | `MotionWheel_*` | 双轮速度 PI、前馈、差速合成和电机 PWM 输出 |
 
-`MotionWheel` 是 `MotionStraight`、`MotionLine` 和 `Nav` 共用的唯一双轮速度闭环与电机输出层。三个上层控制器不能同时更新，否则会争用电机。当前主程序只选择 `MotionLine`；以后必须由任务状态机先停止当前模式，再启动另一个模式。
+`MotionWheel` 是三个运动模块共用的唯一双轮速度闭环与电机输出层。Mission 不直接调用三个模块的 Update，而是由 MotionManager 每拍只更新当前模式；启动新模式时 MotionManager 自动停止旧模式。
 
-当前 `main.c` 使用以下巡线调用流程：
+Mission 状态的进入回调可按以下方式启动巡线：
 
 ```c
-#include "Application/Control/MotionLine.h"
+#include "Accomplish/25E.h"
+#include "Application/Control/MotionManager.h"
+#include "Application/Mission/Mission.h"
 
-/* 用户巡线速度放在 main.c 顶部，单位 mm/s。 */
-#define MOTION_LINE_TEST_SPEED_MMPS  100.0f
-
-/* 初始化阶段：Graydetect、Motor 和 Odometry 已初始化后调用。 */
-if (MotionLine_Init() != MOTION_LINE_RESULT_OK)
+static Mission_CallbackResult_t LineEnter(void)
 {
-    /* 默认参数非法。 */
+    return (MotionManager_StartLine(ACCOMPLISH_25E_LINE_SPEED_MMPS) ==
+            MOTION_MANAGER_RESULT_OK) ?
+        MISSION_CALLBACK_OK : MISSION_CALLBACK_ERROR;
 }
 
-/* KEY1 按下沿：开始持续巡线。 */
-(void)MotionLine_Start(MOTION_LINE_TEST_SPEED_MMPS);
-
-/* 每个 100 Hz 周期先更新里程，再更新巡线。 */
-Odometry_Update(elapsedTicks);
-MotionLine_Update(elapsedSeconds);
-
-/* KEY2 按下沿：停止并释放电机输出。 */
-MotionLine_Stop();
+static Mission_ActionStatus_t LineUpdate(float dt)
+{
+    (void)dt;
+    return Mission_GetMotionActionStatus();
+}
 ```
 
 模式切换顺序：
 
 ```text
-MotionStraight_Stop()
-    -> MotionLine_Init()
-    -> MotionLine_Start(MOTION_LINE_TEST_SPEED_MMPS)
-    -> 每周期 Odometry_Update() -> MotionLine_Update()
-    -> MotionLine_Stop()
-    -> 需要直线时重新 MotionStraight_Init() -> MotionStraight_StartForward(...)
+Mission onEnter
+    -> MotionManager_StartLine(...)
+    -> App_Update() 每拍调用 MotionManager_Update(dt)
+    -> 状态完成或被打断
+    -> Mission onExit -> MotionManager_Stop()
 ```
 
-- MotionLine 不使用 PID。五路从左到右的权重为 `-3、-1、0、+1、+3`，检测到黑线时把对应权重相加，并把最终结果限制在 `-3~+3`。
-- 权重为 `-3` 时，左轮目标速度为巡线速度的 `0.5` 倍，右轮为 `1.5` 倍；权重为 `+3` 时左右相反。权重为正负 `1` 时，每侧只增减巡线速度的 `1/6`。
-- 灰度位为 `1` 表示检测到黑线，五路全白为 `0x00`。连续全白达到 `MOTION_LINE_LOST_CONFIRM_TICKS` 才进入 `MOTION_LINE_ERROR_LINE_LOST`；确认前保持上一拍的左右轮目标速度，任一路恢复为 1 时立即清零丢线计数。
+- MotionLine 不使用 PID。五路从左到右的权重为 `-6、-3、0、+3、+6`，检测到黑线时把对应权重相加，并把最终结果限制在 `-6~+6`。
+- 当前调整比例为 `0.2`：权重为 `-6` 时，左轮目标速度为巡线速度的 `0.8` 倍，右轮为 `1.2` 倍；权重为 `+6` 时左右相反。权重为正负 `3` 时，每侧增减巡线速度的 `10%`。
+- 灰度位为 `1` 表示检测到黑线，五路全白为 `0x00`。连续全白达到 `MOTION_LINE_LOST_CONFIRM_TICKS` 后进入 `MOTION_LINE_STATE_FINISHED`，该事件是 25E 巡线任务的正常结束条件；确认前保持上一拍的左右轮目标速度，任一路恢复为 1 时立即清零丢线计数。更新周期或公共轮速层异常才进入 `MOTION_LINE_STATE_ERROR`。
 - 五路全黑 `0x1F` 当前按误差 0 继续直行；十字、停止线和任务标志必须在后续任务状态机中根据连续采样单独判断。
 - `MotionLine.h` 顶部参数是当前首轮低速测试值，仍需根据实车循迹效果标定。
 
-### 3.6 `Nav` 目标角转向库
+### 3.6 Mission 状态节点格式
 
-`Nav` 当前未接入 `main.c`。以后切回目标角测试时，必须先完成 MPU6050 开机零漂，再以 100 Hz 调用。角度直接使用 `Heading_GetYaw()` 的连续累计值，不做 ±180° 归一化。
+`Mission.c` 是通用状态图执行器，不保存具体题目流程。当前 25E 的状态编号、回调、转换表和状态表全部位于 `Accomplish/25E.c`，并保持为 `static`。添加新题目时在根目录 `Accomplish/` 新建对应 `.c/.h`，按以下顺序书写。完整教程见根目录 `状态机.md`：
+
+```c
+static Mission_CallbackResult_t StateEnter(void);
+static Mission_ActionStatus_t StateUpdate(float dt);
+static void StateExit(Mission_ExitReason_t reason);
+static uint8_t StateCondition(
+    const Mission_Runtime_t *runtime,
+    const App_UpdateContext_t *updateContext);
+
+static const Mission_Transition_t s_transitions[] = {
+    {StateCondition, TARGET_STATE, MISSION_TRANSITION_NORMAL},
+};
+
+/* 在 s_stateDefinitions[] 对应状态编号处登记回调和转换表。 */
+
+static const Mission_GraphDefinition_t s_missionGraph = {
+    .states = s_stateDefinitions,
+    .stateCount = STATE_COUNT,
+    .startState = STATE_WAITING,
+    .errorState = STATE_ERROR,
+};
+```
+
+- 转换数组从前到后就是优先级；同一拍只执行第一条满足条件的转换。
+- 动作运行中只检查 `MISSION_TRANSITION_INTERRUPT`，并要求当前状态 `interruptible=1`；动作完成后只检查正常转换。
+- 转换依次执行当前状态 `onExit()`、`MotionManager_Stop()` 和目标状态 `onEnter()`；内部活动标记保证一次进入最多对应一次退出。
+- 空 `onEnter/onExit` 视为成功，空 `onUpdate` 视为立即完成；空条件回调表示该类型转换无条件成立。
+- 动作完成但没有正常转换满足条件时保留在当前完成节点；动作或 MotionManager 报错时停车并进入内部错误节点。
+- `C1~C255` 是单拍事件。条件未接受时立即丢弃，不在以后补触发；`C0` 始终停车并复位到起始状态。
+- 当前 25E 使用 KEY1 按下沿启动，不使用 `C1`。新题目应在自己的头文件顶部定义按键掩码或任务信号、距离、速度、角度和确认节拍，不把题目参数放回 Mission。
+- 新增运动形式时，模块使用 `MotionXxx_` 前缀并提供 `Init/Start/Update/Stop/IsBusy/IsFinished/GetState/GetError`；所有可调参数放在对应 `.h` 开头。随后在 MotionManager 增加模式、启动包装、Update 和 Stop 分支，Mission 不直接调用底层 Update。
+
+### 3.7 `Nav` 目标角转向库
+
+`Nav` 由 MotionManager 统一初始化和更新。Mission 回调使用 `MotionManager_TurnTo/TurnBy()`，角度仍直接使用 `Heading_GetYaw()` 的连续累计值，不做 ±180° 归一化。
 
 Nav 只有一种车轮动作：左右轮等速反向，车体围绕两轮中点附近转动。
 
 ```c
-#include "Application/Control/Nav.h"
-
-/* 初始化：必须在 Heading 零漂和 MotionWheel 所需硬件完成后调用。 */
-if (Nav_Init() != NAV_RESULT_OK)
-{
-    /* 默认参数非法或公共轮速层初始化失败。 */
-}
+#include "Application/Control/MotionManager.h"
 
 /* 绝对角：指向连续航向角 90°。 */
-(void)Nav_StartTo(90.0f, 80.0f);
+(void)MotionManager_TurnTo(90.0f, 80.0f);
 
 /* 相对角：从当前方向再转 +90°。 */
-(void)Nav_StartBy(90.0f, 80.0f);
-
-/* 每个 100 Hz 周期必须先更新航向，再更新 Nav。 */
-Heading_Update(elapsedSeconds);
-Odometry_Update(elapsedTicks);
-Nav_Update(elapsedSeconds);
-
-/* 中途取消或离开转向任务。 */
-Nav_Stop();
+(void)MotionManager_TurnBy(90.0f, 80.0f);
 ```
 
 - `To` 接口输入连续累计绝对角；例如当前为 370°，输入 90° 会按直接误差回到 90°，不会自动选择 ±180° 最短路径。
@@ -290,25 +297,21 @@ Nav_Stop();
 - 首次测试使用 60~80 mm/s。若启动后角度误差持续增大，只翻转 `NAV_ROTATION_COMMAND_SIGN`。
 - Nav 到角后先把轮速斜坡降到零，再要求连续 `NAV_SETTLE_TICKS` 个周期处于允许误差内，避免单次采样抖动误判完成。
 
-当前 MotionLine 测试版主程序没有 Nav 按键映射。切回 Nav 测试时可使用以下映射：
-
-| 按键 | 调用 |
-|---|---|
-| KEY1 | `Nav_StartTo(NAV_TEST_ABSOLUTE_YAW_DEG, NAV_TEST_BASE_SPEED_MMPS)` |
-| KEY2 | `Nav_StartBy(NAV_TEST_RELATIVE_YAW_DEG, NAV_TEST_BASE_SPEED_MMPS)` |
-| KEY3 | `Nav_StartBy(-NAV_TEST_RELATIVE_YAW_DEG, NAV_TEST_BASE_SPEED_MMPS)` |
-| KEY4 | `Nav_Stop()` |
+当前 25E 在 KEY1 启动时记录连续航向 `startYaw`，巡线确认丢线后调用 `MotionManager_TurnTo(startYaw + 180.0f, 80.0f)`。这是固定绝对目标：后续再次进入转向节点时仍指向同一角度，不会在当前角度上继续累加 180°。需要按键测试其他角度时，应另建测试题目状态图，在转换条件中读取 `pressedEdges`，不要把测试分支写进通用 Mission。
 
 ## 4. 工程文件类型与职责
 
 | 文件或目录 | 类型 | 职责 |
 |---|---|---|
-| `main.c` | C 源文件 | 系统初始化、MPU6050 零漂、关闭 K230 握手的 KEY1/KEY2 MotionLine 测试入口和 100 Hz 主循环调度 |
+| `main.c` | C 源文件 | 仅调用 App 初始化、Mission 初始化、硬件中断启用以及 App/Mission 主循环 |
 | `main.syscfg` | TI SysConfig | 时钟树、GPIO、UART、I2C、PWM、SysTick 和 PinMux 的唯一配置源 |
 | `.project`、`.cproject`、`.settings/` | CCS 工程元数据 | 工程名、TI Arm Clang 选项、SDK/SysConfig 依赖和 IDE 设置 |
 | `targetConfigs/*.ccxml` | CCS 目标配置 | MSPM0G3507 调试连接配置 |
 | `Application/Comms/` | 应用层 C 模块 | 蓝牙调试命令；K230 二进制帧、CRC8、握手和目标解析 |
-| `Application/Control/` | 应用层 C 模块 | 通用 PID、公共双轮速度闭环、直线行驶、灰度巡线和目标角转向控制 |
+| `Application/Core/` | 应用运行层 C 模块 | 固定硬件初始化、零漂、100 Hz 后台服务、按键和蓝牙事件采集 |
+| `Application/Mission/` | 通用任务执行层 C 模块 | 校验并执行题目层提供的静态状态图、生命周期回调、有序条件转换和打断处理 |
+| `Accomplish/` | 具体题目实现 C 模块 | 位于工程根目录；每道题独立保存用户参数、状态编号、回调、转换表和静态状态图；当前启用 `25E.c/.h` |
+| `Application/Control/` | 运动控制层 C 模块 | MotionManager、通用 PID、公共双轮速度闭环、直线、巡线和目标角转向 |
 | `Application/Debug/` | 应用层 C 模块 | OLED 调试页面编排与 10 Hz 刷新 |
 | `Application/Servo/` | 舵机硬件模块 | TIMA0 双通道 PWM、角度限位和脉宽换算 |
 | `Application/State/` | 状态层 C 模块 | Z 轴航向角解算、编码器里程与速度状态 |
@@ -317,21 +320,26 @@ Nav_Stop();
 | `Hardware/Display/` | 显示驱动与数据 | OLED I2C 驱动、帧缓冲、字模和图像数据 |
 | `Hardware/Motor/` | 电机驱动 | TIMG8 PWM、TB6612 方向控制、编码器正交解码 |
 | `Hardware/Sensors/` | 传感器驱动 | 五路灰度 GPIO、MPU6050 软件 I2C |
-| `System/` | 系统基础模块 | 阻塞延时和 100 Hz SysTick 计数 |
+| `System/` | 系统基础模块 | 阻塞延时、100 Hz SysTick 计数和全局硬件中断开关 |
 | `Debug/`、`Release/` | 生成目录 | 目标文件、依赖文件、链接文件和固件输出；不手工修改 |
 | `.gitignore` | Git 配置 | 排除构建产物 |
 | `README.md` | 工程索引 | 时钟、Pin 口、文件职责、公共接口和公共参数 |
+| `状态机.md` | Markdown 教程 | 说明如何为新题目创建 Accomplish 参数文件、状态图、主程序依赖和验证流程 |
 
 ### 4.1 源文件快速定位
 
 | 源文件 / 头文件 | 文件职责 |
 |---|---|
-| `Application/Comms/BluetoothDebug.c/.h` | 解析 `L/R/U/O/D` 命令，完成空闲帧判定、参数限幅、执行和串口应答 |
+| `Application/Comms/BluetoothDebug.c/.h` | 解析 `C/L/R/U/O/D` 命令，保存单槽任务事件，并限制自动运动期间的开环电机调试 |
+| `Application/Core/App.c/.h` | 封装系统初始化和每拍固定更新，向 Mission 提供 dt、按键边沿和蓝牙信号 |
+| `Application/Mission/Mission.c/.h` | 定义状态图公共类型，校验题目状态图并执行每拍最多一次的状态转换 |
+| `Accomplish/25E.c/.h` | 保存 25E 参数和状态图：KEY1 启动时记录航向，直线遇线转巡线，丢线后指向“启动航向 + 180°”绝对目标，再回到直线 |
 | `Application/Comms/K230Link.c/.h` | 解析 `AA 55` 二进制帧和 CRC8，执行 READY/READY_ACK 双向握手，保存最新 TARGET |
 | `Application/Control/PID.c/.h` | 通用 PID 初始化、调参、复位和单步计算 |
 | `Application/Control/MotionStraight.c/.h` | 头文件顶部保存直线参数；源文件实现距离规划、5/6 末段减速、可选终点速度、MPU6050 航向 PD 和软停车状态机 |
 | `Application/Control/MotionWheel.c/.h` | 头文件顶部保存公共轮速参数；源文件实现 MotionStraight、MotionLine 与 Nav 共用的双轮速度 PI、前馈、差速修正合成和 PWM 限幅 |
-| `Application/Control/MotionLine.c/.h` | 头文件顶部保存巡线参数；源文件实现五路灰度离散权重差速、连续丢线确认、丢线停车和状态管理；巡线层不使用 PID |
+| `Application/Control/MotionLine.c/.h` | 头文件顶部保存巡线参数；源文件实现五路灰度离散权重差速、连续丢线确认、丢线正常完成和状态管理；巡线层不使用 PID |
+| `Application/Control/MotionManager.c/.h` | 统一包装直线、巡线和转向；自动停止旧模式并只更新当前模式 |
 | `Application/Control/Nav.c/.h` | 头文件顶部保存转向参数；源文件实现连续航向目标、双轮等速反向转向和到角稳定判定 |
 | `Application/Debug/DebugDisplay.c/.h` | 组织启动零漂提示、基础状态和 MotionLine 运行状态的 OLED 八行调试数据 |
 | `Application/Servo/Servo.c/.h` | 将舵机角度换算为 TIMA0 比较值，并执行纵向/横向限位 |
@@ -350,6 +358,7 @@ Nav_Stop();
 | `Hardware/Sensors/MPU6050.c/.h` | PA10/PA11 软件 I2C、MPU6050 配置和原始数据读取 |
 | `System/Delay.c/.h` | 基于 32 MHz CPUCLK 的 us/ms/s 阻塞延时 |
 | `System/Tick.c/.h` | SysTick ISR 累计与主循环原子取出 100 Hz 节拍 |
+| `System/Interrupt.c/.h` | 在 App 和 Mission 初始化完成后统一开启或关闭全局硬件中断 |
 
 ## 5. 公共函数接口
 
@@ -359,7 +368,9 @@ Nav_Stop();
 
 ```c
 void BluetoothDebug_Init(void);
-void BluetoothDebug_Update(uint8_t elapsedTicks);
+void BluetoothDebug_Update(uint8_t elapsedTicks,
+                           uint8_t manualMotorEnabled);
+uint8_t BluetoothDebug_PopSignal(uint8_t *signal);
 int16_t BluetoothDebug_GetLeftCommand(void);
 int16_t BluetoothDebug_GetRightCommand(void);
 ```
@@ -379,6 +390,23 @@ void K230Link_Init(void);
 void K230Link_Update(uint8_t elapsedTicks);
 uint8_t K230Link_IsReady(void);
 uint8_t K230Link_GetTarget(K230Link_Target_t *target);
+```
+
+### 5.1.2 `Application/Core/App.h`
+
+```c
+typedef struct
+{
+    uint8_t elapsedTicks;
+    float dt;
+    uint8_t pressedKeys;
+    uint8_t pressedEdges;
+    uint8_t hasBluetoothSignal;
+    uint8_t bluetoothSignal;
+} App_UpdateContext_t;
+
+void App_Init(void);
+uint8_t App_Update(App_UpdateContext_t *context);
 ```
 
 ### 5.2 `Application/Control/PID.h`
@@ -447,12 +475,13 @@ void MotionLine_Update(float dt);
 void MotionLine_Stop(void);
 uint8_t MotionLine_IsConfigured(void);
 uint8_t MotionLine_IsBusy(void);
+uint8_t MotionLine_IsFinished(void);
 MotionLine_State_t MotionLine_GetState(void);
 MotionLine_Error_t MotionLine_GetError(void);
 float MotionLine_GetLineError(void);
 ```
 
-`MotionLine_GetLineError()` 当前返回最近一次有效灰度位图得到的离散权重，范围为 `-3~+3`，它不再是 PID 输入误差。
+`MotionLine_GetLineError()` 当前返回最近一次有效灰度位图得到的离散权重，范围为 `-6~+6`，它不再是 PID 输入误差。
 
 ### 5.6 `Application/Control/Nav.h`
 
@@ -472,6 +501,81 @@ float Nav_GetAngleErrorDeg(void);
 ```
 
 `Nav_StartTo()` 接受连续绝对航向角，`Nav_StartBy()` 接受相对转角，速度参数单位为 mm/s；两者都固定使用双轮等速反向转向。
+
+### 5.6.1 `Application/Control/MotionManager.h`
+
+```c
+MotionManager_Result_t MotionManager_Init(void);
+MotionManager_Result_t MotionManager_StartForward(
+    uint32_t distanceMM, float speedMMps, float endSpeedMMps);
+MotionManager_Result_t MotionManager_StartBackward(
+    uint32_t distanceMM, float speedMMps, float endSpeedMMps);
+MotionManager_Result_t MotionManager_StartLine(float speedMMps);
+MotionManager_Result_t MotionManager_TurnTo(
+    float targetYawDeg, float speedMMps);
+MotionManager_Result_t MotionManager_TurnBy(
+    float deltaYawDeg, float speedMMps);
+void MotionManager_Update(float dt);
+void MotionManager_Stop(void);
+uint8_t MotionManager_IsConfigured(void);
+uint8_t MotionManager_IsBusy(void);
+uint8_t MotionManager_IsFinished(void);
+MotionManager_Mode_t MotionManager_GetMode(void);
+MotionManager_Error_t MotionManager_GetError(void);
+```
+
+### 5.6.2 `Application/Mission/Mission.h`
+
+```c
+typedef Mission_CallbackResult_t (*Mission_EnterCallback_t)(void);
+typedef Mission_ActionStatus_t (*Mission_UpdateCallback_t)(float dt);
+typedef void (*Mission_ExitCallback_t)(Mission_ExitReason_t reason);
+typedef uint8_t (*Mission_ConditionCallback_t)(
+    const Mission_Runtime_t *runtime,
+    const App_UpdateContext_t *updateContext);
+
+typedef struct
+{
+    Mission_ConditionCallback_t condition;
+    uint16_t targetState;
+    Mission_TransitionType_t type;
+} Mission_Transition_t;
+
+typedef struct
+{
+    Mission_EnterCallback_t onEnter;
+    Mission_UpdateCallback_t onUpdate;
+    Mission_ExitCallback_t onExit;
+    const Mission_Transition_t *transitions;
+    uint8_t transitionCount;
+    uint8_t interruptible;
+} Mission_StateDefinition_t;
+
+typedef struct
+{
+    const Mission_StateDefinition_t *states;
+    uint16_t stateCount;
+    uint16_t startState;
+    uint16_t errorState;
+} Mission_GraphDefinition_t;
+
+void Mission_Init(const Mission_GraphDefinition_t *graph);
+void Mission_Update(const App_UpdateContext_t *updateContext);
+void Mission_Stop(void);
+Mission_Status_t Mission_GetStatus(void);
+const Mission_Runtime_t *Mission_GetRuntime(void);
+Mission_ActionStatus_t Mission_GetMotionActionStatus(void);
+uint8_t Mission_ContextHasBluetoothSignal(
+    const App_UpdateContext_t *updateContext, uint8_t signal);
+```
+
+### 5.6.3 `Accomplish/25E.h`
+
+```c
+const Mission_GraphDefinition_t *Accomplish25E_GetMissionGraph(void);
+```
+
+该函数只返回静态只读状态图，不进行硬件初始化。切换题目时由 `main.c` 选择对应 Accomplish 头文件和状态图函数。
 
 ### 5.7 `Application/Debug/DebugDisplay.h`
 
@@ -681,11 +785,19 @@ uint8_t Tick_Poll(void);
 uint8_t Tick_PollCount(void);
 ```
 
+### 5.22.1 `System/Interrupt.h`
+
+```c
+void Interrupt_Enable(void);
+void Interrupt_Disable(void);
+```
+
 ## 6. 公共参数和公共数据
 
 | 所在头文件 | 名称 | 当前值/类型 | 含义 |
 |---|---|---:|---|
 | `BluetoothDebug.h` | `BLUETOOTH_COMMAND_IDLE_TICKS` | `3U` | 无结束符命令的 30 ms 空闲判定 |
+| `BluetoothDebug.h` | `BLUETOOTH_TASK_SIGNAL_MAX` | `255U` | C 任务信号最大编号；普通信号不排队 |
 | `K230Link.h` | `K230_LINK_FRAME_MAGIC_0/1` | `0xAAU` / `0x55U` | K230 帧头 |
 | `K230Link.h` | `K230_LINK_FRAME_VERSION` | `0x01U` | 当前通信协议版本 |
 | `K230Link.h` | `K230_LINK_MAX_PAYLOAD_LENGTH` | `32U` | 允许接收的最大 PAYLOAD 长度 |
@@ -695,6 +807,7 @@ uint8_t Tick_PollCount(void);
 | `MotionStraight.h` | `MOTION_STRAIGHT_*` | 见 6.2 | 航向 PD、直线速度规划、减速起点比例和距离允许误差 |
 | `MotionWheel.h` | `MOTION_WHEEL_*` | 见 6.1 | MotionStraight、MotionLine 与 Nav 共用的速度 PI、前馈和 PWM 限幅 |
 | `MotionLine.h` | `MOTION_LINE_*` | 见 6.3 | 灰度权重、最大速度调整比例、巡线速度上限和丢线确认节拍 |
+| `Accomplish/25E.h` | `ACCOMPLISH_25E_*` | 见 6.5 | 25E 启动按键、直线距离与速度、入线确认、巡线速度和转向参数 |
 | `Nav.h` | `NAV_*` | 见 6.4 | 双轮转向的加减速、低速区、到角误差和稳定判定 |
 | `Servo.h` | `SERVO_PHYSICAL_RANGE_DEG` | `270U` | 脉宽换算对应的舵机物理量程 |
 | `Servo.h` | `SERVO_MIN_PULSE_US` / `SERVO_MAX_PULSE_US` | `500U` / `2500U` | 舵机最小/最大高电平脉宽 |
@@ -757,22 +870,22 @@ uint8_t Tick_PollCount(void);
 | 宏 | 当前值 |
 |---|---:|
 | `MOTION_STRAIGHT_HEADING_KP` / `MOTION_STRAIGHT_HEADING_KD` | `6.0f` / `0.4f` |
-| `MOTION_STRAIGHT_HEADING_LIMIT_PWM` / `MOTION_STRAIGHT_CORRECTION_SIGN` | `300.0f` / `-1` |
-| `MOTION_STRAIGHT_MAX_SPEED_MMPS` | `600.0f` |
-| `MOTION_STRAIGHT_ACCELERATION_MMPS2` / `MOTION_STRAIGHT_DECELERATION_MMPS2` | `200.0f` / `250.0f` |
+| `MOTION_STRAIGHT_HEADING_LIMIT_PWM` / `MOTION_STRAIGHT_CORRECTION_SIGN` | `700.0f` / `-1` |
+| `MOTION_STRAIGHT_MAX_SPEED_MMPS` | `1000.0f` |
+| `MOTION_STRAIGHT_ACCELERATION_MMPS2` / `MOTION_STRAIGHT_DECELERATION_MMPS2` | `300.0f` / `250.0f` |
 | `MOTION_STRAIGHT_DECELERATION_START_RATIO` / `MOTION_STRAIGHT_DISTANCE_TOLERANCE_MM` | `5.0f / 6.0f` / `5.0f` |
 
 ### 6.3 `MotionLine.h` 参数
 
-以下宏位于 `Application/Control/MotionLine.h` 开头，当前已接入主流程但尚未完成实车巡线标定：
+以下宏位于 `Application/Control/MotionLine.h` 开头。当前 25E 通过 MotionManager 启动巡线，连续丢线确认后把巡线标记为正常完成：
 
 | 宏 | 单位 | 当前值 | 作用 |
 |---|---:|---:|---|
-| `MOTION_LINE_OUTER_WEIGHT` | 无 | `3` | 左右最外侧灰度权重的绝对值，对应最大修正力度 |
-| `MOTION_LINE_INNER_WEIGHT` | 无 | `1` | 左右内侧灰度权重的绝对值，对应最大修正力度的三分之一 |
-| `MOTION_LINE_MAX_ADJUST_RATIO` | 比例 | `0.5f` | 权重达到正负 3 时，一侧减去、另一侧增加的巡线速度比例 |
+| `MOTION_LINE_OUTER_WEIGHT` | 无 | `6` | 左右最外侧灰度权重的绝对值，对应最大修正力度 |
+| `MOTION_LINE_INNER_WEIGHT` | 无 | `3` | 左右内侧灰度权重的绝对值，对应最大修正力度的一半 |
+| `MOTION_LINE_MAX_ADJUST_RATIO` | 比例 | `0.2f` | 权重达到正负 6 时，一侧减去、另一侧增加的巡线速度比例 |
 | `MOTION_LINE_MAX_SPEED_MMPS` | mm/s | `1000.0f` | 巡线请求软件上限；应结合公共轮速前馈和最终 PWM 上限设置 |
-| `MOTION_LINE_LOST_CONFIRM_TICKS` | 100 Hz 节拍 | `10U` | 连续五路全白达到 10 次后确认丢线，当前约为 100 ms |
+| `MOTION_LINE_LOST_CONFIRM_TICKS` | 100 Hz 节拍 | `50U` | 连续五路全白达到 50 次后确认丢线，当前约为 500 ms |
 
 ### 6.4 `Nav.h` 参数
 
@@ -788,5 +901,18 @@ uint8_t Tick_PollCount(void);
 | `NAV_ANGLE_TOLERANCE_DEG` | ° | `2.0f` | 到角允许误差；太小可能在目标附近反复修正 |
 | `NAV_SETTLE_TICKS` | 100 Hz 周期 | `3U` | 连续稳定 30 ms 后判定完成 |
 | `NAV_ROTATION_COMMAND_SIGN` | `1` 或 `-1` | `1` | 角度与双轮指令方向映射；误差持续增大时翻转 |
+
+### 6.5 `Accomplish/25E.h` 参数
+
+| 宏 | 单位 | 当前值 | 作用 |
+|---|---:|---:|---|
+| `ACCOMPLISH_25E_START_KEY_MASK` | 按键位图 | `0x01U` | KEY1 的 bit0 掩码；等待状态检测按下沿后启动 25E |
+| `ACCOMPLISH_25E_STRAIGHT_DISTANCE_MM` | mm | `2000U` | 每轮直线寻找黑线的最大距离 |
+| `ACCOMPLISH_25E_STRAIGHT_SPEED_MMPS` | mm/s | `300.0f` | 直线巡航速度 |
+| `ACCOMPLISH_25E_STRAIGHT_END_SPEED_MMPS` | mm/s | `0.0f` | 走满最大距离仍未找到线时的终点速度；当前停车 |
+| `ACCOMPLISH_25E_LINE_SPEED_MMPS` | mm/s | `200.0f` | 巡线速度 |
+| `ACCOMPLISH_25E_LINE_DETECT_CONFIRM_TICKS` | 100 Hz 节拍 | `3U` | 直线阶段连续检测黑线 30 ms 后才进入巡线 |
+| `ACCOMPLISH_25E_TURN_TARGET_OFFSET_DEG` | ° | `180.0f` | 相对 KEY1 启动航向的绝对目标偏移；目标为启动航向加该值，方向错误时改为 `-180.0f` |
+| `ACCOMPLISH_25E_TURN_SPEED_MMPS` | mm/s | `80.0f` | 180° 转向的每侧轮速度请求 |
 
 `PID_t` 的 `Kp/Ki/Kd`、`integral`、`prevError`、`outMax` 和 `integralMax` 为 PID 实例的公共状态与参数。除上述公开声明外，其余 `static` 数据和源文件内宏均为模块内部实现。

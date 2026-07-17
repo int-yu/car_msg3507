@@ -1,5 +1,6 @@
 #include "Application/Debug/DebugDisplay.h"
-#include "Application/Control/MotionLine.h"
+#include "Application/Control/MotionManager.h"
+#include "Application/Mission/Mission.h"
 #include "Application/State/Heading.h"
 #include "Application/State/Odometry.h"
 #include "Hardware/Board/Key.h"
@@ -44,21 +45,30 @@ static void DebugDisplay_ShowMotionValue(int16_t y,
     OLED_ShowString(72, y, unit, OLED_6X8);
 }
 
-static void DebugDisplay_ShowMotionLineState(void)
+static void DebugDisplay_ShowMotionState(void)
 {
-    MotionLine_State_t state = MotionLine_GetState();
+    MotionManager_Mode_t mode = MotionManager_GetMode();
 
-    if (state == MOTION_LINE_STATE_RUNNING)
+    if ((MotionManager_GetError() != MOTION_MANAGER_ERROR_NONE) ||
+        (Mission_GetStatus() == MISSION_STATUS_ERROR))
     {
-        OLED_ShowString(0, 56, "LINE:RUN", OLED_6X8);
+        OLED_ShowString(0, 56, "M:ERROR", OLED_6X8);
     }
-    else if (state == MOTION_LINE_STATE_ERROR)
+    else if (mode == MOTION_MANAGER_MODE_STRAIGHT)
     {
-        OLED_ShowString(0, 56, "LINE:ERROR", OLED_6X8);
+        OLED_ShowString(0, 56, "M:STRAIGHT", OLED_6X8);
+    }
+    else if (mode == MOTION_MANAGER_MODE_LINE)
+    {
+        OLED_ShowString(0, 56, "M:LINE", OLED_6X8);
+    }
+    else if (mode == MOTION_MANAGER_MODE_TURN)
+    {
+        OLED_ShowString(0, 56, "M:TURN", OLED_6X8);
     }
     else
     {
-        OLED_ShowString(0, 56, "LINE:IDLE", OLED_6X8);
+        OLED_ShowString(0, 56, "M:IDLE", OLED_6X8);
     }
 }
 
@@ -122,6 +132,6 @@ void DebugDisplay_Update(uint8_t elapsedTicks)
     DebugDisplay_ShowMotionValue(40, "RD:", Odometry_GetDistanceRMM(), "mm");
     DebugDisplay_ShowMotionValue(48, "RV:", Odometry_GetSpeedR(), "mm/s");
 
-    DebugDisplay_ShowMotionLineState();
+    DebugDisplay_ShowMotionState();
     OLED_Update();
 }

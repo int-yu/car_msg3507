@@ -3,6 +3,7 @@
 #include "Hardware/Comms/Serial.h"
 #include "Hardware/Motor/Motor.h"
 #include "Hardware/Motor/PWM.h"
+#include <stddef.h>
 
 #define BLUETOOTH_VALUE_ACCUMULATOR_MAX 1000000L
 
@@ -19,10 +20,14 @@ typedef struct
 static BluetoothParser_t s_parser;
 static int16_t s_leftCommand;
 static int16_t s_rightCommand;
+static uint8_t s_manualMotorEnabled;
+static uint8_t s_signalPending;
+static uint8_t s_pendingSignal;
 
 static uint8_t BluetoothDebug_IsCommand(char value)
 {
     return ((value == 'L') || (value == 'R') || (value == 'U') ||
+            (value == 'C') ||
             (value == 'O') || (value == 'D')) ? 1U : 0U;
 }
 
@@ -78,6 +83,27 @@ static void BluetoothDebug_SendMotorStatus(void)
     Serial1_Printf("OK L=%d R=%d\r\n", s_leftCommand, s_rightCommand);
 }
 
+static uint8_t BluetoothDebug_PublishSignal(uint8_t signal)
+{
+    if (signal == 0U)
+    {
+        /* C0 具有最高优先级，待 Mission 读取前不会被普通信号覆盖。 */
+        s_pendingSignal = 0U;
+        s_signalPending = 1U;
+        return 1U;
+    }
+
+    if ((s_signalPending != 0U) && (s_pendingSignal == 0U))
+    {
+        return 0U;
+    }
+
+    /* 普通信号不排队；同一系统拍内只保留最后收到的一条。 */
+    s_pendingSignal = signal;
+    s_signalPending = 1U;
+    return 1U;
+}
+
 static void BluetoothDebug_ExecuteCommand(void)
 {
     int32_t value;
@@ -94,22 +120,58 @@ static void BluetoothDebug_ExecuteCommand(void)
     switch (s_parser.command)
     {
         case 'L':
+            if (s_manualMotorEnabled == 0U)
+            {
+                Serial1_SendString("ERR BUSY\r\n");
+                break;
+            }
             s_leftCommand = BluetoothDebug_ClampMotorCommand(value);
             Motor_SetLeftPWM(s_leftCommand);
             BluetoothDebug_SendMotorStatus();
             break;
 
         case 'R':
+            if (s_manualMotorEnabled == 0U)
+            {
+                Serial1_SendString("ERR BUSY\r\n");
+                break;
+            }
             s_rightCommand = BluetoothDebug_ClampMotorCommand(value);
             Motor_SetRightPWM(s_rightCommand);
             BluetoothDebug_SendMotorStatus();
             break;
 
         case 'U':
+            if (s_manualMotorEnabled == 0U)
+            {
+                Serial1_SendString("ERR BUSY\r\n");
+                break;
+            }
             s_leftCommand = BluetoothDebug_ClampMotorCommand(value);
             s_rightCommand = s_leftCommand;
             Motor_SetPWM(s_leftCommand, s_rightCommand);
             BluetoothDebug_SendMotorStatus();
+            break;
+
+        case 'C':
+            if ((s_parser.isNegative != 0U) ||
+                (s_parser.magnitude > (int32_t)BLUETOOTH_TASK_SIGNAL_MAX))
+            {
+                Serial1_SendString("ERR RANGE\r\n");
+            }
+            else
+            {
+                if (BluetoothDebug_PublishSignal(
+                        (uint8_t)s_parser.magnitude) != 0U)
+                {
+                    Serial1_Printf("OK C=%u\r\n",
+                                   (unsigned)s_parser.magnitude);
+                }
+                else
+                {
+                    Serial1_SendString("ERR STOP PENDING\r\n");
+                }
+            }
             break;
 
         case 'O':
@@ -206,14 +268,21 @@ void BluetoothDebug_Init(void)
     BluetoothDebug_ResetParser();
     s_leftCommand = 0;
     s_rightCommand = 0;
+    s_manualMotorEnabled = 1U;
+    s_signalPending = 0U;
+    s_pendingSignal = 0U;
     Motor_StopAll();
-    Serial1_SendString("READY: L/R/U motor, O vertical, D horizontal\r\n");
+    Serial1_SendString(
+        "READY: C task, L/R/U motor, O vertical, D horizontal\r\n");
 }
 
-void BluetoothDebug_Update(uint8_t elapsedTicks)
+void BluetoothDebug_Update(uint8_t elapsedTicks,
+                           uint8_t manualMotorEnabled)
 {
     uint8_t byte;
     uint8_t receivedByte = 0U;
+
+    s_manualMotorEnabled = manualMotorEnabled;
 
     while (Serial1_ReadByte(&byte) != 0U)
     {
@@ -241,6 +310,23 @@ void BluetoothDebug_Update(uint8_t elapsedTicks)
     {
         s_parser.idleTicks = (uint8_t)(s_parser.idleTicks + elapsedTicks);
     }
+}
+
+uint8_t BluetoothDebug_PopSignal(uint8_t *signal)
+{
+    if (signal == NULL)
+    {
+        return 0U;
+    }
+
+    if (s_signalPending == 0U)
+    {
+        return 0U;
+    }
+
+    *signal = s_pendingSignal;
+    s_signalPending = 0U;
+    return 1U;
 }
 
 int16_t BluetoothDebug_GetLeftCommand(void)
