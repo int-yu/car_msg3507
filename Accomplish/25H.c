@@ -165,7 +165,7 @@ static const Mission_Transition_t s_lineTransitions[] = {
 };
 
 static const Mission_Transition_t s_forwardTransitions[] = {
-    /* 直行 150 mm 并完成减速后，进入绝对角转向。 */
+    /* 零速目标固定保持结束后，直接进入绝对角转向。 */
     {
         NULL,
         ACCOMPLISH_25H_STATE_TURN,

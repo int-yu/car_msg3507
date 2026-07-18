@@ -27,7 +27,7 @@
 /* 离开标志线时的直线速度。 */
 #define ACCOMPLISH_25H_FORWARD_SPEED_MMPS         200.0f
 
-/* 直行 150 mm 后减速至零，再开始原地转向。 */
+/* 直行 150 mm 后减速至零，并固定保持零速目标后再开始原地转向。 */
 #define ACCOMPLISH_25H_FORWARD_END_SPEED_MMPS     0.0f
 
 /* 每轮绝对目标相对上一目标减少 90°，负号对应当前工程的左转方向。 */

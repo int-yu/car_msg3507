@@ -17,6 +17,7 @@ typedef struct
     float startDistanceRMM;
     float totalDistanceMM;
     float remainingDistanceMM;
+    float profileEndDistanceMM;
 
     float cruiseSpeedMMps;
     float endSpeedMMps;
@@ -26,6 +27,7 @@ typedef struct
 
     float targetHeadingDeg;
     float direction;
+    float zeroSpeedHoldElapsedSeconds;
     uint8_t decelerationActive;
     uint8_t targetReached;
 } MotionStraight_Context_t;
@@ -70,9 +72,9 @@ static uint8_t MotionStraight_ParametersAreValid(void)
 {
     if ((!isfinite(MOTION_STRAIGHT_MAX_SPEED_MMPS)) ||
         (!isfinite(MOTION_STRAIGHT_ACCELERATION_MMPS2)) ||
-        (!isfinite(MOTION_STRAIGHT_DECELERATION_MMPS2)) ||
         (!isfinite(MOTION_STRAIGHT_DECELERATION_START_RATIO)) ||
         (!isfinite(MOTION_STRAIGHT_DISTANCE_TOLERANCE_MM)) ||
+        (!isfinite(MOTION_STRAIGHT_ZERO_SPEED_HOLD_SECONDS)) ||
         (!isfinite(MOTION_STRAIGHT_HEADING_KP)) ||
         (!isfinite(MOTION_STRAIGHT_HEADING_KD)) ||
         (!isfinite(MOTION_STRAIGHT_HEADING_LIMIT_PWM)))
@@ -81,10 +83,10 @@ static uint8_t MotionStraight_ParametersAreValid(void)
     }
     if ((MOTION_STRAIGHT_MAX_SPEED_MMPS <= 0.0f) ||
         (MOTION_STRAIGHT_ACCELERATION_MMPS2 <= 0.0f) ||
-        (MOTION_STRAIGHT_DECELERATION_MMPS2 <= 0.0f) ||
         (MOTION_STRAIGHT_DECELERATION_START_RATIO <= 0.0f) ||
         (MOTION_STRAIGHT_DECELERATION_START_RATIO >= 1.0f) ||
         (MOTION_STRAIGHT_DISTANCE_TOLERANCE_MM < 0.0f) ||
+        (MOTION_STRAIGHT_ZERO_SPEED_HOLD_SECONDS <= 0.0f) ||
         (MOTION_STRAIGHT_HEADING_KP < 0.0f) ||
         (MOTION_STRAIGHT_HEADING_KD < 0.0f) ||
         ((MOTION_STRAIGHT_HEADING_KP == 0.0f) &&
@@ -114,14 +116,10 @@ static void MotionStraight_SetError(MotionStraight_Error_t error)
     s_context.state = MOTION_STRAIGHT_STATE_ERROR;
 }
 
-/* 根据距离、巡航速度和终点速度计算本次任务的减速起点。 */
+/* 根据全程比例确定减速起点；终点速度由减速段的距离曲线保证。 */
 static void MotionStraight_PrepareProfile(
     float distanceMM, float speedMMps, float endSpeedMMps)
 {
-    float preferredDecelerationDistanceMM;
-    float requiredDecelerationDistanceMM;
-    float speedSquaredDifference;
-
     s_context.startDistanceLMM = Odometry_GetDistanceLMM();
     s_context.startDistanceRMM = Odometry_GetDistanceRMM();
     s_context.totalDistanceMM = fabsf(distanceMM);
@@ -133,28 +131,32 @@ static void MotionStraight_PrepareProfile(
     s_context.endSpeedMMps = MotionStraight_Clamp(
         endSpeedMMps, 0.0f, s_context.cruiseSpeedMMps);
 
-    preferredDecelerationDistanceMM = s_context.totalDistanceMM *
-        (1.0f - MOTION_STRAIGHT_DECELERATION_START_RATIO);
-    speedSquaredDifference =
-        s_context.cruiseSpeedMMps * s_context.cruiseSpeedMMps -
-        s_context.endSpeedMMps * s_context.endSpeedMMps;
-    requiredDecelerationDistanceMM = speedSquaredDifference /
-        (2.0f * MOTION_STRAIGHT_DECELERATION_MMPS2);
-
-    if (requiredDecelerationDistanceMM > preferredDecelerationDistanceMM)
+    /*
+     * 容差是允许的终点误差，因此速度曲线在 total - tolerance 处达到
+     * endSpeed。这样在允许误差内已经是目标速度，而不会到点后突然降速。
+     */
+    s_context.profileEndDistanceMM = s_context.totalDistanceMM -
+        MOTION_STRAIGHT_DISTANCE_TOLERANCE_MM;
+    if (s_context.profileEndDistanceMM < 0.0f)
     {
-        preferredDecelerationDistanceMM = requiredDecelerationDistanceMM;
+        s_context.profileEndDistanceMM = 0.0f;
     }
-    preferredDecelerationDistanceMM = MotionStraight_Clamp(
-        preferredDecelerationDistanceMM,
-        0.0f, s_context.totalDistanceMM);
 
     s_context.decelerationStartDistanceMM =
-        s_context.totalDistanceMM - preferredDecelerationDistanceMM;
-    s_context.effectiveDecelerationMMps2 =
-        MOTION_STRAIGHT_DECELERATION_MMPS2;
+        s_context.totalDistanceMM *
+        MOTION_STRAIGHT_DECELERATION_START_RATIO;
+    if (s_context.decelerationStartDistanceMM >
+        s_context.profileEndDistanceMM)
+    {
+        /* 极短距离没有完整的后 1/6，直接在速度规划终点前开始减速。 */
+        s_context.decelerationStartDistanceMM =
+            s_context.profileEndDistanceMM;
+    }
+
+    s_context.effectiveDecelerationMMps2 = 0.0f;
     s_context.decelerationActive = 0U;
     s_context.targetReached = 0U;
+    s_context.zeroSpeedHoldElapsedSeconds = 0.0f;
 }
 
 static float MotionStraight_GetDirectedTravelledDistance(void)
@@ -168,14 +170,12 @@ static float MotionStraight_GetDirectedTravelledDistance(void)
     return s_context.direction * averageDistanceMM;
 }
 
-/*
- * 在首选减速点启动减速。若最大减速度不足以在最后 1/6 完成降速，
- * PrepareProfile() 已经按运动学距离把减速点提前。
- */
+/* 在固定减速点记录当前速度，并计算剩余距离内所需的恒定减速度。 */
 static void MotionStraight_StartDecelerationIfNeeded(
-    float travelledDistanceMM, float remainingDistanceMM)
+    float travelledDistanceMM)
 {
     float currentSpeedMMps;
+    float profileRemainingDistanceMM;
 
     if ((s_context.decelerationActive != 0U) ||
         (travelledDistanceMM < s_context.decelerationStartDistanceMM))
@@ -185,16 +185,16 @@ static void MotionStraight_StartDecelerationIfNeeded(
 
     s_context.decelerationActive = 1U;
     currentSpeedMMps = fabsf(s_context.profileSpeedMMps);
+    profileRemainingDistanceMM = s_context.profileEndDistanceMM -
+        travelledDistanceMM;
     if ((currentSpeedMMps > s_context.endSpeedMMps) &&
-        (remainingDistanceMM > 0.001f))
+        (profileRemainingDistanceMM > 0.001f))
     {
+        /* v_end^2 = v_start^2 - 2 * a * s。a 在本次减速段内保持不变。 */
         s_context.effectiveDecelerationMMps2 =
             (currentSpeedMMps * currentSpeedMMps -
              s_context.endSpeedMMps * s_context.endSpeedMMps) /
-            (2.0f * remainingDistanceMM);
-        s_context.effectiveDecelerationMMps2 = MotionStraight_Clamp(
-            s_context.effectiveDecelerationMMps2,
-            0.001f, MOTION_STRAIGHT_DECELERATION_MMPS2);
+            (2.0f * profileRemainingDistanceMM);
     }
 }
 
@@ -203,6 +203,7 @@ static float MotionStraight_CalculateTargetSpeedMagnitude(void)
 {
     float travelledDistanceMM;
     float remainingDistanceMM;
+    float profileRemainingDistanceMM;
     float brakingSpeedMMps;
 
     if (s_context.state == MOTION_STRAIGHT_STATE_CONTINUING)
@@ -217,12 +218,13 @@ static float MotionStraight_CalculateTargetSpeedMagnitude(void)
     s_context.remainingDistanceMM =
         s_context.direction * remainingDistanceMM;
 
-    MotionStraight_StartDecelerationIfNeeded(
-        travelledDistanceMM, remainingDistanceMM);
+    MotionStraight_StartDecelerationIfNeeded(travelledDistanceMM);
 
-    if (remainingDistanceMM <= MOTION_STRAIGHT_DISTANCE_TOLERANCE_MM)
+    profileRemainingDistanceMM = s_context.profileEndDistanceMM -
+        travelledDistanceMM;
+    if (profileRemainingDistanceMM <= 0.0f)
     {
-        /* 到点后继续完成速度斜坡，但不再调用满占空比主动制动。 */
+        /* 到达距离容差范围时，速度已按规划下降至结束速度。 */
         s_context.targetReached = 1U;
         return s_context.endSpeedMMps;
     }
@@ -234,7 +236,7 @@ static float MotionStraight_CalculateTargetSpeedMagnitude(void)
     brakingSpeedMMps = sqrtf(
         s_context.endSpeedMMps * s_context.endSpeedMMps +
         2.0f * s_context.effectiveDecelerationMMps2 *
-        remainingDistanceMM);
+        profileRemainingDistanceMM);
     return MotionStraight_Clamp(
         brakingSpeedMMps,
         s_context.endSpeedMMps,
@@ -252,15 +254,16 @@ static float MotionStraight_UpdateProfileSpeed(
     }
     else
     {
-        speedStepMMps = MOTION_STRAIGHT_DECELERATION_MMPS2 * dt;
+        speedStepMMps = s_context.effectiveDecelerationMMps2 * dt;
     }
     s_context.profileSpeedMMps = MotionStraight_Approach(
         s_context.profileSpeedMMps, targetSpeedMMps, speedStepMMps);
     return s_context.profileSpeedMMps;
 }
 
-/* 返回 1 表示已经完成零速停车，本周期不再向车轮层发送指令。 */
-static uint8_t MotionStraight_FinishProfileIfReady(float targetSpeedMMps)
+/* 零速目标保持固定时长，不依赖低速下易跳变的编码器速度判断。 */
+static uint8_t MotionStraight_FinishProfileIfReady(
+    float targetSpeedMMps, float dt)
 {
     if ((s_context.state != MOTION_STRAIGHT_STATE_RUNNING) ||
         (s_context.targetReached == 0U) ||
@@ -272,7 +275,15 @@ static uint8_t MotionStraight_FinishProfileIfReady(float targetSpeedMMps)
     s_context.remainingDistanceMM = 0.0f;
     if (s_context.endSpeedMMps <= 0.001f)
     {
-        /* PWM 归零并释放方向脚，依靠滑行停车，避免最后猛刹。 */
+        /* 本周期已由 MotionWheel 下发 0 mm/s 的双轮速度目标。 */
+        s_context.zeroSpeedHoldElapsedSeconds += dt;
+        if (s_context.zeroSpeedHoldElapsedSeconds <
+            MOTION_STRAIGHT_ZERO_SPEED_HOLD_SECONDS)
+        {
+            return 0U;
+        }
+
+        /* 固定保持结束后关闭 PWM，不调用 Motor_Brake()。 */
         MotionWheel_Stop();
         s_context.state = MOTION_STRAIGHT_STATE_COMPLETED;
         return 1U;
@@ -287,12 +298,16 @@ static MotionWheel_Result_t MotionStraight_ApplyWheelCommand(float dt)
     MotionWheel_Command_t command;
     float headingCorrectionPWM;
 
-    /* 连续累计角不做 ±180° 归一化，因此可直接完成多圈航向保持。 */
-    headingCorrectionPWM = PID_Update(
-        &s_headingPID,
-        s_context.targetHeadingDeg,
-        Heading_GetYaw(), dt);
-    headingCorrectionPWM *= (float)MOTION_STRAIGHT_CORRECTION_SIGN;
+    headingCorrectionPWM = 0.0f;
+    if (fabsf(s_context.profileSpeedMMps) > 0.001f)
+    {
+        /* 连续累计角不做 ±180° 归一化，因此可直接完成多圈航向保持。 */
+        headingCorrectionPWM = PID_Update(
+            &s_headingPID,
+            s_context.targetHeadingDeg,
+            Heading_GetYaw(), dt);
+        headingCorrectionPWM *= (float)MOTION_STRAIGHT_CORRECTION_SIGN;
+    }
 
     command.targetSpeedLMMps = s_context.profileSpeedMMps;
     command.targetSpeedRMMps = s_context.profileSpeedMMps;
@@ -423,13 +438,14 @@ void MotionStraight_Update(float dt)
     targetSpeedMMps = s_context.direction * targetSpeedMagnitudeMMps;
     MotionStraight_UpdateProfileSpeed(targetSpeedMMps, dt);
 
-    if (MotionStraight_FinishProfileIfReady(targetSpeedMMps) != 0U)
-    {
-        return;
-    }
     if (MotionStraight_ApplyWheelCommand(dt) != MOTION_WHEEL_RESULT_OK)
     {
         MotionStraight_SetError(MOTION_STRAIGHT_ERROR_WHEEL);
+        return;
+    }
+    if (MotionStraight_FinishProfileIfReady(targetSpeedMMps, dt) != 0U)
+    {
+        return;
     }
 }
 
