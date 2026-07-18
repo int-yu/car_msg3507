@@ -1,5 +1,6 @@
 #include "Application/Core/App.h"
 #include "Application/Comms/BluetoothDebug.h"
+#include "Application/Comms/K230Link.h"
 #include "Application/Control/MotionManager.h"
 #include "Application/Debug/DebugDisplay.h"
 #include "Application/Servo/Servo.h"
@@ -44,6 +45,7 @@ void App_Init(void)
     Motor_Init();
     Servo_Init();
     Serial1_Init();
+    K230Link_Init();
     Odometry_Init();
 
     DebugDisplay_Init();
@@ -97,6 +99,8 @@ uint8_t App_Update(App_UpdateContext_t *context)
     context->pressedEdges =
         (uint8_t)(keyMask & (uint8_t)~s_previousKeyMask);
     s_previousKeyMask = keyMask;
+
+    K230Link_Update(elapsedTicks);
 
     BluetoothDebug_Update(
         elapsedTicks, (MotionManager_IsBusy() == 0U) ? 1U : 0U);
