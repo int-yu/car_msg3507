@@ -340,6 +340,10 @@ const PALETTE = ['#4da3ff', '#46c17a', '#e0a13c', '#e05c5c', '#a97ee0', '#3fc4c4
 
 let port = null;
 let writer = null;
+/* reader 和读循环本身都要能被 disconnect() 取到：readable 流还锁着时
+   port.close() 会被拒绝，必须先 cancel 再等读循环退出。 */
+let reader = null;
+let readTask = null;
 let readAbort = null;
 let selected = new Set();
 let needsRedraw = false;
@@ -396,7 +400,7 @@ async function connect() {
         setConnected(true);
         log('串口已连接 115200 8N1', 'ok');
         readAbort = false;
-        readLoop();
+        readTask = readLoop();
     } catch (err) {
         log('连接失败：' + err.message, 'err');
     }
@@ -404,7 +408,7 @@ async function connect() {
 
 async function readLoop() {
     const decoder = new TextDecoder();
-    const reader = port.readable.getReader();
+    reader = port.readable.getReader();
     try {
         while (!readAbort) {
             const { value, done } = await reader.read();
@@ -419,15 +423,29 @@ async function readLoop() {
             requestRedraw();
         }
     } catch (err) {
-        log('读取中断：' + err.message, 'err');
+        /* cancel() 会让挂起的 read() 以异常结束，这是正常的断开路径。 */
+        if (!readAbort) {
+            log('读取中断：' + err.message, 'err');
+        }
     } finally {
         reader.releaseLock();
+        reader = null;
     }
 }
 
 async function disconnect() {
     readAbort = true;
     try {
+        /* 必须先解除挂起的 read() 并等读循环真正退出（它在 finally 里
+           releaseLock），否则 readable 仍处于 locked，port.close() 会被拒绝，
+           port 不会置空，下次连接就会失败。 */
+        if (reader) {
+            await reader.cancel().catch(() => {});
+        }
+        if (readTask) {
+            await readTask.catch(() => {});
+            readTask = null;
+        }
         if (writer) {
             writer.releaseLock();
             writer = null;

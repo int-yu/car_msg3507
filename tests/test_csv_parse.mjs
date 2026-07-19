@@ -177,7 +177,21 @@ check('12. 曲线选择器只列数值列：排除文本列 mode 和横轴列 ms
     eq(numeric.includes('gray'), true, 'gray 应可画图');
 });
 
-check('13. 导出 CSV 仍保留 ms 与 mode（只是不画图，不是不记录）', () => {
+check('13. gray 为非法十六进制 → 整行丢弃', () => {
+    const p = new TelemetryParser();
+    p.feed(FULL_HEADER);
+    p.feed('D,12340,-91.25,GG,0,1203.4,1198.7,0.0,0.0,IDLE,1:-123:-45\r\n');
+    eq(p.samples.length, 0, 'samples 条数');
+});
+
+check('14. 还没收到任何表头就来了数据行 → 整行丢弃', () => {
+    const p = new TelemetryParser();
+    const out = p.feed('D,12340,-91.25,1F\r\n');
+    eq(p.samples.length, 0, 'samples 条数');
+    eq(out.textLines.length, 0, '数据行不该混进终端文本');
+});
+
+check('15. 导出 CSV 仍保留 ms 与 mode（只是不画图，不是不记录）', () => {
     const p = new TelemetryParser();
     p.feed(FULL_HEADER);
     p.feed(FULL_ROW);
