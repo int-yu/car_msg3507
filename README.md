@@ -610,8 +610,10 @@ void DebugDisplay_Update(uint8_t elapsedTicks);
 ### 5.7.1 `Application/Debug/Telemetry.h`
 
 ```c
-#define TELEMETRY_DEFAULT_RATE_HZ    20U
-#define TELEMETRY_MAX_RATE_HZ       100U
+#define TELEMETRY_DEFAULT_RATE_HZ        20U
+#define TELEMETRY_UART_BYTES_PER_SECOND  11520U
+#define TELEMETRY_MAX_BLOCKING_PERCENT      20U
+#define TELEMETRY_RATE_HARD_LIMIT_HZ       100U
 #define TELEMETRY_FIELD_YAW      0x01U
 #define TELEMETRY_FIELD_SENSOR   0x02U
 #define TELEMETRY_FIELD_DISTANCE 0x04U
@@ -626,7 +628,10 @@ uint8_t Telemetry_SetRateHz(uint8_t rateHz);
 uint8_t Telemetry_SetFieldMask(uint8_t mask);
 uint8_t Telemetry_GetRateHz(void);
 uint8_t Telemetry_GetFieldMask(void);
+uint8_t Telemetry_GetMaxRateHz(void);
 ```
+
+**为什么频率上限是动态的：** `Serial1_SendByte()` 使用 `DL_UART_Main_transmitDataBlocking()`，是**阻塞发送**——发送期间主循环完全停止，`Heading_Update`、`Odometry_Update`、`MotionManager_Update` 全部挂起。主循环为 100 Hz（每 tick 10 ms），115200 8N1 每字节需 86.8 µs；若允许全字段（约 98 字节）以 100 Hz 发送，每秒阻塞时间为 98 × 86.8 µs × 100 ≈ 850 ms，主循环占用率超过 85%，PID 周期将严重失准。因此上限必须根据当前掩码的**实际行长**动态计算，而非固定为 100。调试时只开 YAW 一个字段（行长 25 字节），安全上限可达 92 Hz；开全字段时安全上限降至 23 Hz。这也符合实际调试习惯：需要高频率的场景（如看 PID 响应）往往只开少数字段。
 
 ### 5.8 `Application/Servo/Servo.h`
 

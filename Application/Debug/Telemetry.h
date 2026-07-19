@@ -5,8 +5,14 @@
 
 /* CSV 遥测输出。数据全部通过各模块公共接口读取，本模块不采集也不缓存历史。 */
 
-#define TELEMETRY_DEFAULT_RATE_HZ    20U  /* 默认频率；115200 下约占 13% 带宽。 */
-#define TELEMETRY_MAX_RATE_HZ       100U  /* 上限等于主循环频率；约占 65% 带宽。 */
+#define TELEMETRY_DEFAULT_RATE_HZ        20U  /* 默认频率；115200 下约占 13% 带宽。 */
+
+/* 115200 8N1 下每秒可发送的字节数；发送是阻塞的，直接占用主循环时间。 */
+#define TELEMETRY_UART_BYTES_PER_SECOND  11520U
+/* 允许遥测阻塞占用的主循环时间上限百分比。 */
+#define TELEMETRY_MAX_BLOCKING_PERCENT      20U
+/* 频率硬上限，等于主循环频率。 */
+#define TELEMETRY_RATE_HARD_LIMIT_HZ       100U
 
 /* 字段掩码位定义。改变掩码会立即重发一行表头。 */
 #define TELEMETRY_FIELD_YAW      0x01U  /* 连续累计航向角。 */
@@ -23,5 +29,6 @@ uint8_t Telemetry_SetRateHz(uint8_t rateHz);
 uint8_t Telemetry_SetFieldMask(uint8_t mask);
 uint8_t Telemetry_GetRateHz(void);
 uint8_t Telemetry_GetFieldMask(void);
+uint8_t Telemetry_GetMaxRateHz(void);
 
 #endif

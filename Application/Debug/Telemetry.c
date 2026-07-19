@@ -15,6 +15,63 @@ static uint8_t s_tickAccumulator;
 static uint8_t s_headerPending;
 static uint32_t s_elapsedMs;
 
+/* 估算当前掩码下数据行的最坏情况字节数（含行尾 \r\n）。
+ * 各字段宽度为 115200 8N1 格式下实际可能输出的最大字符数，含前导逗号。
+ * 最大值 98 字节，不会超出 uint8_t 范围。 */
+static uint8_t Telemetry_EstimateRowBytes(void)
+{
+    uint8_t bytes = 14U;  /* 行基座：'D,' + 最长 10 位 ms + '\r\n' */
+
+    if ((s_fieldMask & TELEMETRY_FIELD_YAW) != 0U)
+    {
+        bytes = (uint8_t)(bytes + 11U);  /* ',-999999.99' */
+    }
+    if ((s_fieldMask & TELEMETRY_FIELD_SENSOR) != 0U)
+    {
+        bytes = (uint8_t)(bytes + 8U);   /* ',FF,255' */
+    }
+    if ((s_fieldMask & TELEMETRY_FIELD_DISTANCE) != 0U)
+    {
+        bytes = (uint8_t)(bytes + 20U);  /* ',-999999.9,-999999.9' */
+    }
+    if ((s_fieldMask & TELEMETRY_FIELD_SPEED) != 0U)
+    {
+        bytes = (uint8_t)(bytes + 20U);  /* ',-999999.9,-999999.9' */
+    }
+    if ((s_fieldMask & TELEMETRY_FIELD_MODE) != 0U)
+    {
+        bytes = (uint8_t)(bytes + 9U);   /* ',STRAIGHT' */
+    }
+    if ((s_fieldMask & TELEMETRY_FIELD_K230) != 0U)
+    {
+        bytes = (uint8_t)(bytes + 16U);  /* ',1:-32768:-32768' */
+    }
+    return bytes;
+}
+
+/* 根据当前字段掩码计算安全频率上限。
+ * 纯整数运算，避免在 MCU 上引入浮点。
+ * 公式：maxRate = (BYTES_PER_SEC * MAX_PERCENT) / (rowBytes * 100)
+ * 结果夹紧到 1..TELEMETRY_RATE_HARD_LIMIT_HZ。 */
+uint8_t Telemetry_GetMaxRateHz(void)
+{
+    uint32_t rowBytes = (uint32_t)Telemetry_EstimateRowBytes();
+    uint32_t maxRate;
+
+    maxRate = (TELEMETRY_UART_BYTES_PER_SECOND * TELEMETRY_MAX_BLOCKING_PERCENT)
+              / (rowBytes * 100U);
+
+    if (maxRate < 1U)
+    {
+        maxRate = 1U;
+    }
+    if (maxRate > (uint32_t)TELEMETRY_RATE_HARD_LIMIT_HZ)
+    {
+        maxRate = (uint32_t)TELEMETRY_RATE_HARD_LIMIT_HZ;
+    }
+    return (uint8_t)maxRate;
+}
+
 static const char *Telemetry_ModeText(void)
 {
     switch (MotionManager_GetMode())
@@ -128,11 +185,9 @@ void Telemetry_Update(uint8_t elapsedTicks, uint8_t pressedKeys)
         return;
     }
 
+    /* s_rateHz 由 SetRateHz 限制在 1..TELEMETRY_RATE_HARD_LIMIT_HZ（== TICK_HZ），
+     * TICK_HZ / s_rateHz 最小为 1，interval == 0 分支不可能触发，已删除。 */
     interval = (uint8_t)(TELEMETRY_TICK_HZ / s_rateHz);
-    if (interval == 0U)
-    {
-        interval = 1U;
-    }
 
     s_tickAccumulator = (uint8_t)(s_tickAccumulator + elapsedTicks);
     if (s_tickAccumulator < interval)
@@ -151,7 +206,8 @@ void Telemetry_Update(uint8_t elapsedTicks, uint8_t pressedKeys)
 
 uint8_t Telemetry_SetRateHz(uint8_t rateHz)
 {
-    if (rateHz > TELEMETRY_MAX_RATE_HZ)
+    /* 0 表示关闭遥测，合法；非零时不得超过当前掩码对应的安全上限。 */
+    if ((rateHz != 0U) && (rateHz > Telemetry_GetMaxRateHz()))
     {
         return 0U;
     }
@@ -162,12 +218,23 @@ uint8_t Telemetry_SetRateHz(uint8_t rateHz)
 
 uint8_t Telemetry_SetFieldMask(uint8_t mask)
 {
+    uint8_t maxRate;
+
     if ((mask == 0U) || (mask > TELEMETRY_FIELD_ALL))
     {
         return 0U;
     }
     s_fieldMask = mask;
     s_headerPending = 1U;  /* 掩码变化后必须重发表头。 */
+
+    /* 掩码变化后行长可能增加，安全上限随之降低。若当前频率已超过新上限，
+     * 自动降频而非报错——否则用户先设高频率再新增字段时会静默超限。
+     * 先更新 s_fieldMask 再调用 GetMaxRateHz，确保上限基于新掩码计算。 */
+    maxRate = Telemetry_GetMaxRateHz();
+    if (s_rateHz > maxRate)
+    {
+        s_rateHz = maxRate;
+    }
     return 1U;
 }
 
