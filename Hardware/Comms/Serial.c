@@ -76,13 +76,14 @@ void Serial2_Init(void)
 {
     s_serial2WriteIndex = 0U;
     s_serial2ReadIndex = 0U;
-    /* K230 未上电时保持 RX 为确定的高电平，避免悬空产生伪字节。 */
+    /* F32C 未上电时保持 RX 为确定的高电平，避免悬空产生伪字节。 */
     DL_GPIO_initPeripheralInputFunctionFeatures(
-        GPIO_K230_IOMUX_RX, GPIO_K230_IOMUX_RX_FUNC,
+        GPIO_BRUSHLESS_UART_IOMUX_RX,
+        GPIO_BRUSHLESS_UART_IOMUX_RX_FUNC,
         DL_GPIO_INVERSION_DISABLE, DL_GPIO_RESISTOR_PULL_UP,
         DL_GPIO_HYSTERESIS_DISABLE, DL_GPIO_WAKEUP_DISABLE);
-    NVIC_ClearPendingIRQ(K230_INST_INT_IRQN);
-    NVIC_EnableIRQ(K230_INST_INT_IRQN);
+    NVIC_ClearPendingIRQ(BRUSHLESS_UART_INST_INT_IRQN);
+    NVIC_EnableIRQ(BRUSHLESS_UART_INST_INT_IRQN);
 }
 
 uint32_t Serial2_Available(void)
@@ -105,7 +106,7 @@ uint8_t Serial2_ReadByte(uint8_t *byte)
 
 void Serial2_SendByte(uint8_t byte)
 {
-    DL_UART_Main_transmitDataBlocking(K230_INST, byte);
+    DL_UART_Main_transmitDataBlocking(BRUSHLESS_UART_INST, byte);
 }
 
 void Serial2_SendArray(const uint8_t *array, uint16_t length)
@@ -139,9 +140,9 @@ void UART1_IRQHandler(void)
 
 void UART2_IRQHandler(void)
 {
-    while (!DL_UART_Main_isRXFIFOEmpty(K230_INST))
+    while (!DL_UART_Main_isRXFIFOEmpty(BRUSHLESS_UART_INST))
     {
-        uint8_t data = DL_UART_Main_receiveData(K230_INST);
+        uint8_t data = DL_UART_Main_receiveData(BRUSHLESS_UART_INST);
         s_serial2RxBuffer[
             s_serial2WriteIndex % SERIAL2_RX_BUFFER_SIZE] = data;
         s_serial2WriteIndex++;

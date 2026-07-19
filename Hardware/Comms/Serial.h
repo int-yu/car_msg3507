@@ -1,7 +1,7 @@
 #ifndef SERIAL_H
 #define SERIAL_H
 
-/* UART1 连接蓝牙，UART2 连接 K230；协议解析放在 Application 层。 */
+/* UART1 连接蓝牙，UART2 连接 F32C 云台；协议解析放在专用硬件层。 */
 
 #include <stdint.h>
 

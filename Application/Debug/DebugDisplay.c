@@ -1,5 +1,6 @@
 #include "Application/Debug/DebugDisplay.h"
 #include "Application/Control/MotionManager.h"
+#include "Application/Gimbal/Gimbal.h"
 #include "Application/Mission/Mission.h"
 #include "Application/State/Heading.h"
 #include "Application/State/Odometry.h"
@@ -72,6 +73,41 @@ static void DebugDisplay_ShowMotionState(void)
     }
 }
 
+static uint8_t DebugDisplay_ShowGimbalPage(void)
+{
+    Gimbal_State_t state = Gimbal_GetState();
+
+    if ((state != GIMBAL_STATE_ENABLED) &&
+        (state != GIMBAL_STATE_ERROR))
+    {
+        return 0U;
+    }
+
+    OLED_ShowString(0, 0, "F32C GIMBAL", OLED_6X8);
+    DebugDisplay_ShowMotionValue(
+        8, "X:", Gimbal_GetCurrentAngleDeg(GIMBAL_AXIS_X), "deg");
+    DebugDisplay_ShowMotionValue(
+        16, "XT:", Gimbal_GetTargetAngleDeg(GIMBAL_AXIS_X), "deg");
+    DebugDisplay_ShowMotionValue(
+        24, "Y:", Gimbal_GetCurrentAngleDeg(GIMBAL_AXIS_Y), "deg");
+    DebugDisplay_ShowMotionValue(
+        32, "YT:", Gimbal_GetTargetAngleDeg(GIMBAL_AXIS_Y), "deg");
+
+    OLED_ShowString(0, 40, "FB:X", OLED_6X8);
+    OLED_ShowChar(24, 40,
+                  Gimbal_HasFeedback(GIMBAL_AXIS_X) != 0U ? '1' : '0',
+                  OLED_6X8);
+    OLED_ShowString(36, 40, "Y", OLED_6X8);
+    OLED_ShowChar(42, 40,
+                  Gimbal_HasFeedback(GIMBAL_AXIS_Y) != 0U ? '1' : '0',
+                  OLED_6X8);
+    DebugDisplay_ShowKeyState(Key_GetPressedMask());
+    OLED_ShowString(0, 56,
+                    state == GIMBAL_STATE_ERROR ? "G:ERROR" : "G:RUN",
+                    OLED_6X8);
+    return 1U;
+}
+
 void DebugDisplay_Init(void)
 {
     s_refreshTicks = DEBUG_DISPLAY_REFRESH_TICKS;
@@ -114,6 +150,12 @@ void DebugDisplay_Update(uint8_t elapsedTicks)
     keyMask = Key_GetPressedMask();
 
     OLED_Clear();
+    if (DebugDisplay_ShowGimbalPage() != 0U)
+    {
+        OLED_Update();
+        return;
+    }
+
     OLED_ShowString(0, 0, "Z:", OLED_6X8);
     if (Heading_IsReady() != 0U)
     {
