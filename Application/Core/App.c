@@ -3,6 +3,7 @@
 #include "Application/Comms/K230Link.h"
 #include "Application/Control/MotionManager.h"
 #include "Application/Debug/DebugDisplay.h"
+#include "Application/Debug/Telemetry.h"
 #include "Application/Servo/Servo.h"
 #include "Application/State/Heading.h"
 #include "Application/State/Odometry.h"
@@ -58,6 +59,7 @@ void App_Init(void)
     Odometry_Reset();
 
     BluetoothDebug_Init();
+    Telemetry_Init();
     if (MotionManager_Init() != MOTION_MANAGER_RESULT_OK)
     {
         Beep_Long();
@@ -117,6 +119,7 @@ uint8_t App_Update(App_UpdateContext_t *context)
 
     MotionManager_Update(context->dt);
     App_ReportMotionError();
+    Telemetry_Update(elapsedTicks, context->pressedKeys);
 
     for (index = 0U; index < elapsedTicks; index++)
     {
