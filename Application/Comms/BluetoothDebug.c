@@ -1,6 +1,8 @@
 #include "Application/Comms/BluetoothDebug.h"
+#include "Application/Control/MotionManager.h"
 #include "Application/Debug/Telemetry.h"
 #include "Application/Servo/Servo.h"
+#include "Application/State/Heading.h"
 #include "Hardware/Comms/Serial.h"
 #include "Hardware/Motor/Motor.h"
 #include "Hardware/Motor/PWM.h"
@@ -24,13 +26,16 @@ static int16_t s_rightCommand;
 static uint8_t s_manualMotorEnabled;
 static uint8_t s_signalPending;
 static uint8_t s_pendingSignal;
+static int16_t s_debugSpeedMMps;
 
 static uint8_t BluetoothDebug_IsCommand(char value)
 {
     return ((value == 'L') || (value == 'R') || (value == 'U') ||
             (value == 'C') ||
             (value == 'O') || (value == 'D') ||
-            (value == 'G') || (value == 'M')) ? 1U : 0U;
+            (value == 'G') || (value == 'M') ||
+            (value == 'V') || (value == 'F') || (value == 'B') ||
+            (value == 'T') || (value == 'A') || (value == 'Z')) ? 1U : 0U;
 }
 
 static char BluetoothDebug_ToUpper(char value)
@@ -104,6 +109,29 @@ static uint8_t BluetoothDebug_PublishSignal(uint8_t signal)
     s_pendingSignal = signal;
     s_signalPending = 1U;
     return 1U;
+}
+
+/* 网页运动命令与按键任务共用运动层；忙时一律拒绝，由按键保持优先。 */
+static uint8_t BluetoothDebug_RejectIfBusy(void)
+{
+    if (MotionManager_IsBusy() != 0U)
+    {
+        Serial1_SendString("ERR BUSY\r\n");
+        return 1U;
+    }
+    return 0U;
+}
+
+static void BluetoothDebug_ReportMotionResult(MotionManager_Result_t result)
+{
+    if (result == MOTION_MANAGER_RESULT_OK)
+    {
+        Serial1_SendString("OK\r\n");
+    }
+    else
+    {
+        Serial1_Printf("ERR MOTION %d\r\n", (int)result);
+    }
 }
 
 static void BluetoothDebug_ExecuteCommand(void)
@@ -225,6 +253,95 @@ static void BluetoothDebug_ExecuteCommand(void)
             }
             break;
 
+        case 'V':
+            if ((s_parser.isNegative != 0U) ||
+                (value < BLUETOOTH_DEBUG_MIN_SPEED_MMPS) ||
+                (value > BLUETOOTH_DEBUG_MAX_SPEED_MMPS))
+            {
+                Serial1_SendString("ERR RANGE\r\n");
+            }
+            else
+            {
+                s_debugSpeedMMps = (int16_t)value;
+                Serial1_Printf("OK V=%d\r\n", (int)s_debugSpeedMMps);
+            }
+            break;
+
+        case 'F':
+            if (BluetoothDebug_RejectIfBusy() != 0U)
+            {
+                break;
+            }
+            if ((s_parser.isNegative != 0U) || (value <= 0) ||
+                (value > BLUETOOTH_DEBUG_MAX_DISTANCE_MM))
+            {
+                Serial1_SendString("ERR RANGE\r\n");
+                break;
+            }
+            BluetoothDebug_ReportMotionResult(MotionManager_StartForward(
+                (uint32_t)value, (float)s_debugSpeedMMps, 0.0f));
+            break;
+
+        case 'B':
+            if (BluetoothDebug_RejectIfBusy() != 0U)
+            {
+                break;
+            }
+            if ((s_parser.isNegative != 0U) || (value <= 0) ||
+                (value > BLUETOOTH_DEBUG_MAX_DISTANCE_MM))
+            {
+                Serial1_SendString("ERR RANGE\r\n");
+                break;
+            }
+            BluetoothDebug_ReportMotionResult(MotionManager_StartBackward(
+                (uint32_t)value, (float)s_debugSpeedMMps, 0.0f));
+            break;
+
+        case 'T':
+            if (BluetoothDebug_RejectIfBusy() != 0U)
+            {
+                break;
+            }
+            if ((value < -BLUETOOTH_DEBUG_MAX_ANGLE_DEG) ||
+                (value > BLUETOOTH_DEBUG_MAX_ANGLE_DEG))
+            {
+                Serial1_SendString("ERR RANGE\r\n");
+                break;
+            }
+            BluetoothDebug_ReportMotionResult(MotionManager_TurnBy(
+                (float)value, (float)s_debugSpeedMMps));
+            break;
+
+        case 'A':
+            if (BluetoothDebug_RejectIfBusy() != 0U)
+            {
+                break;
+            }
+            if ((value < -BLUETOOTH_DEBUG_MAX_ANGLE_DEG) ||
+                (value > BLUETOOTH_DEBUG_MAX_ANGLE_DEG))
+            {
+                Serial1_SendString("ERR RANGE\r\n");
+                break;
+            }
+            BluetoothDebug_ReportMotionResult(MotionManager_TurnTo(
+                (float)value, (float)s_debugSpeedMMps));
+            break;
+
+        case 'Z':
+            /* 运动期间重置航向会改掉直线和转向的基准，必须拒绝。 */
+            if (BluetoothDebug_RejectIfBusy() != 0U)
+            {
+                break;
+            }
+            if (value != 1)
+            {
+                Serial1_SendString("ERR RANGE\r\n");
+                break;
+            }
+            Heading_SetYaw(0.0f);
+            Serial1_SendString("OK Z=1\r\n");
+            break;
+
         default:
             Serial1_SendString("ERR COMMAND\r\n");
             break;
@@ -308,6 +425,7 @@ void BluetoothDebug_Init(void)
     s_manualMotorEnabled = 1U;
     s_signalPending = 0U;
     s_pendingSignal = 0U;
+    s_debugSpeedMMps = BLUETOOTH_DEBUG_DEFAULT_SPEED_MMPS;
     Motor_StopAll();
     Serial1_SendString(
         "READY: C task, L/R/U motor, O vertical, D horizontal\r\n");
