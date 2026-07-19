@@ -5,9 +5,19 @@
 #include "Application/State/Odometry.h"
 #include "Hardware/Comms/Serial.h"
 #include "Hardware/Sensors/Graydetect.h"
+#include "ti_msp_dl_config.h"
 
 /* 100 Hz 主循环下，每 (100 / rateHz) 拍输出一行。 */
 #define TELEMETRY_TICK_HZ 100U
+
+/* 每秒可发送的字节数。8N1 每字节含起始位和停止位共 10 个位时，故除以 10。
+ * 直接取 SysConfig 生成的波特率，不写死数值——否则改了 UART1 波特率而漏改
+ * 这里，限流就会按错误的带宽计算：波特率调低时会严重超发，阻塞发送会把
+ * 100 Hz 主循环连同运动控制一起拖垮，且这种失配没有任何编译期提示。 */
+#define TELEMETRY_UART_BYTES_PER_SECOND  ((uint32_t)BLUETOOTH_UART_BAUD_RATE / 10U)
+
+/* 允许遥测阻塞占用的主循环时间上限百分比。 */
+#define TELEMETRY_MAX_BLOCKING_PERCENT   20U
 
 static uint8_t s_rateHz;
 static uint8_t s_fieldMask;
@@ -28,7 +38,7 @@ static uint8_t Telemetry_EstimateRowBytes(void)
     }
     if ((s_fieldMask & TELEMETRY_FIELD_SENSOR) != 0U)
     {
-        bytes = (uint8_t)(bytes + 8U);   /* ',FF,255' */
+        bytes = (uint8_t)(bytes + 8U);   /* ',FF,255' 实为 7 字节，多留 1 字节余量 */
     }
     if ((s_fieldMask & TELEMETRY_FIELD_DISTANCE) != 0U)
     {
@@ -167,8 +177,20 @@ static void Telemetry_SendRow(uint8_t pressedKeys)
 
 void Telemetry_Init(void)
 {
-    s_rateHz = TELEMETRY_DEFAULT_RATE_HZ;
+    uint8_t maxRate;
+
     s_fieldMask = TELEMETRY_FIELD_ALL;
+    s_rateHz = TELEMETRY_DEFAULT_RATE_HZ;
+
+    /* 默认频率也要服从当前掩码的安全上限。默认值现在合规（全字段 23 Hz > 20 Hz），
+     * 但默认频率、默认掩码和波特率三者中任意一个被改动都可能让它越界，而 Init
+     * 不经 SetRateHz()，越界不会有任何提示。这里显式夹一次，让上限只有一处定义。 */
+    maxRate = Telemetry_GetMaxRateHz();
+    if (s_rateHz > maxRate)
+    {
+        s_rateHz = maxRate;
+    }
+
     s_tickAccumulator = 0U;
     s_headerPending = 1U;
     s_elapsedMs = 0U;

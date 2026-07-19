@@ -666,8 +666,6 @@ void DebugDisplay_Update(uint8_t elapsedTicks);
 
 ```c
 #define TELEMETRY_DEFAULT_RATE_HZ        20U
-#define TELEMETRY_UART_BYTES_PER_SECOND  11520U
-#define TELEMETRY_MAX_BLOCKING_PERCENT      20U
 #define TELEMETRY_RATE_HARD_LIMIT_HZ       100U
 #define TELEMETRY_FIELD_YAW      0x01U
 #define TELEMETRY_FIELD_SENSOR   0x02U
@@ -687,6 +685,18 @@ uint8_t Telemetry_GetMaxRateHz(void);
 ```
 
 **为什么频率上限是动态的：** `Serial1_SendByte()` 使用 `DL_UART_Main_transmitDataBlocking()`，是**阻塞发送**——发送期间主循环完全停止，`Heading_Update`、`Odometry_Update`、`MotionManager_Update` 全部挂起。主循环为 100 Hz（每 tick 10 ms），115200 8N1 每字节需 86.8 µs；若允许全字段（约 98 字节）以 100 Hz 发送，每秒阻塞时间为 98 × 86.8 µs × 100 ≈ 850 ms，主循环占用率超过 85%，PID 周期将严重失准。因此上限必须根据当前掩码的**实际行长**动态计算，而非固定为 100。调试时只开 YAW 一个字段（行长 25 字节），安全上限可达 92 Hz；开全字段时安全上限降至 23 Hz。这也符合实际调试习惯：需要高频率的场景（如看 PID 响应）往往只开少数字段。
+
+**带宽常量跟随 SysConfig，不写死。** 计算上限用的两个常量定义在 `Telemetry.c` 内部而非头文件里，其中每秒字节数直接由波特率推导：
+
+```c
+/* 8N1 每字节含起始位和停止位共 10 个位时。 */
+#define TELEMETRY_UART_BYTES_PER_SECOND  ((uint32_t)BLUETOOTH_UART_BAUD_RATE / 10U)
+#define TELEMETRY_MAX_BLOCKING_PERCENT   20U
+```
+
+这样改 UART1 波特率时限流会自动跟上。若写死数值，一旦改了波特率却漏改这里，限流就会按错误的带宽计算，而这种失配没有任何编译期提示：波特率被调低时会严重超发，阻塞发送把主循环连同运动控制一起拖垮。反过来，若忘记在 CCS 中重新生成 SysConfig（`Debug/ti_msp_dl_config.h` 仍是旧波特率），遥测只会自动降到很低的频率，不会超发——失效方向是安全的。
+
+`Telemetry_Init()` 也会用 `Telemetry_GetMaxRateHz()` 把默认频率夹一次。当前默认值 20 Hz 在全字段 23 Hz 上限内本就合规，但默认频率、默认掩码、波特率三者任一改动都可能让它越界，而 `Init` 不经 `Telemetry_SetRateHz()` 校验，越界不会有任何提示。
 
 ### 5.8 `Application/Servo/Servo.h`
 
