@@ -1,1047 +1,639 @@
 # MSPM0G3507 天猛星小车工程索引
 
-> **强制同步规则**
->
-> 对项目进行任何修改时，只要涉及硬件连接、Pin 口、外设实例、时钟树、波特率、定时器、主循环调用关系或程序功能，就必须同时修改本文的 **Pin 口表、时钟表和对应程序说明**。禁止只修改代码而不更新本文档，否则后续检查无法判断接线、时钟和程序是否一致。
->
-> `main.syscfg` 是引脚和外设配置的唯一源文件。`Debug/`、`Release/`、`ti_msp_dl_config.*`、`device.opt` 和 `device_linker.cmd` 均为生成内容，不手工维护；更改源码目录或 `main.syscfg` 后应执行 SysConfig，并在 CCS 中 Clean/Rebuild。
+> 对项目进行任何修改时，只要涉及硬件连接、Pin 口、外设实例、时钟树、波特率、定时器、主循环调用关系或程序功能，就必须同时修改本文的 Pin 口表、时钟表和对应程序说明。禁止只修改代码而不更新本文档。
 
-## 1. 时钟与定时资源占用
+本文只记录工程文件类型、文件职责、公共函数和公共参数。函数声明以当前头文件为准；`static` 函数和变量属于文件内部实现，不作为跨模块接口记录。`main.syscfg` 是 PinMux、时钟和外设实例的唯一配置源，`Debug/`、`Release/` 和 `ti_msp_dl_config.*` 均为生成内容。
 
-| 时钟/外设资源 | 当前配置 | 占用模块 | 用途 |
+## 1. 时钟与外设占用
+
+| 资源 | 当前配置 | 占用模块 | 作用 |
 |---|---:|---|---|
-| CPUCLK / SYSCLK | 32 MHz | 全工程 | SysConfig 默认时钟源；延时、总线外设和 SysTick 的基准时钟 |
-| SysTick | 32 MHz / 320000 = 100 Hz | `System/Tick`、`Application/Core/TestApp`、`MotionManager`、`Mission`、`Application/Gimbal`、`Accomplish/Brushless_Motor_Test` | 10 ms 系统节拍；当前由 `TestApp_Update()` 传递实际累计 Tick 和 dt，轮询两个 F32C 地址并驱动测试状态图 |
-| TIMG8 | 32 MHz，周期 1600 = 20 kHz | `Hardware/Motor/PWM`、`MotionWheel`、`MotionManager` | 小车左右有刷电机 PWM；当前无刷云台测试不启动小车运动模式 |
-| TIMA0 | BUSCLK / 32 = 1 MHz，周期 20000 = 50 Hz | `Application/Servo` | 双路舵机 PWM；1 个计数等于 1 us |
-| I2C0 | BUSCLK 32 MHz，SCL 400 kHz | `Hardware/Display/OLED` | 完整 `App` 的 OLED 通信；当前 `TestApp` 不初始化或访问 I2C0，未连接 OLED 不再造成启动超时 |
-| UART1 | BUSCLK 32 MHz，9600 baud，8N1，RX 中断 | `Hardware/Comms/Serial`、`Application/Comms/BluetoothDebug`、`TestApp`、`Mission` | 蓝牙调试；`C0` 会立即停止小车运动并失能两个 F32C 电机 |
-| UART2 | BUSCLK 32 MHz，115200 baud，8N1，RX 中断 | `Hardware/Comms/Serial`、`Hardware/Motor/F32C`、`Application/Gimbal` | F32C 3.3 V TTL 总线；发送多圈位置 T 型规划命令，并按地址交替查询 X/Y 总角度反馈；未使用 DMA |
-| GPIO 软件 I2C | CPU 延时产生时序 | `Hardware/Sensors/MPU6050`、`Application/State/Heading` | 完整 `App` 的小车连续多圈航向；当前 `TestApp` 不初始化 MPU6050，也不执行零漂 |
-| GPIOA GROUP1 IRQ | A/B 相双边沿 | `Hardware/Motor/Encoder`、`MotionWheel` | 左右编码器软件正交解码，为公共双轮速度 PI 提供速度反馈 |
+| CPUCLK / SYSCLK | 32 MHz | 全工程 | CPU、总线外设和 SysTick 基准时钟 |
+| SysTick | 100 Hz，周期 320000 | `System/Tick`、`App`、`MotionManager`、`Mission` | 10 ms 系统节拍，向控制与任务层传递真实累计 `dt` |
+| TIMG8 | 20 kHz，周期 1600 | `PWM`、`Motor`、`MotionWheel` | 小车左右有刷电机 PWM；CCP0 为右轮，CCP1 为左轮 |
+| TIMA0 | 1 MHz，周期 20000 | `Servo` | 50 Hz 双路舵机 PWM；CCP0 横向，CCP1 纵向 |
+| I2C0 | 400 kHz，Controller | `OLED`、`DebugDisplay` | OLED 地址 `0x3C`，无 DMA |
+| UART1 | 9600 baud，8N1，RX 中断 | `Serial1`、`BluetoothDebug` | 蓝牙命令收发，无 DMA |
+| UART2 | 115200 baud，8N1，RX 中断 | `Serial2`、`F32C`、`Gimbal` | F32C 3.3 V TTL 通信，无 DMA |
+| GPIO 软件 I2C | CPU 延时产生时序 | `MPU6050`、`Heading` | MPU6050 地址 `0x68`，提供连续多圈 Z 轴航向 |
+| GPIOA GROUP1 IRQ | A/B 相双边沿 | `Encoder`、`Odometry` | 左右轮软件正交解码 |
 
 ## 2. Pin 口占用
 
-| Pin | 方向/复用 | 占用对象 | 程序映射与说明 |
+| Pin | 方向 / 复用 | 占用对象 | 程序说明 |
 |---|---|---|---|
-| PA10 | 开漏式 GPIO | MPU6050 SCL | 软件 I2C 时钟；当前 `TestApp` 不访问，完整 `App` 使用 |
-| PA11 | 开漏式 GPIO | MPU6050 SDA | 软件 I2C 数据；当前 `TestApp` 不访问，完整 `App` 使用 |
-| PA12 | GPIO 输出 | 右电机 AIN2 | TB6612 A 通道方向；由 MotionManager 当前模式经 MotionWheel 输出 |
-| PA13 | GPIO 输出 | 右电机 AIN1 | TB6612 A 通道方向；由 MotionManager 当前模式经 MotionWheel 输出 |
-| PA14 | GPIO 输入、上拉 | 灰度 CH3 | `Graydetect` 位图 bit3；当前 `TestApp` 不读取 |
-| PA15 | GPIO 输入、上拉、双边沿中断 | 右编码器 A | 完整 `App` 的右轮反馈；当前 `TestApp` 不采集 |
-| PA16 | GPIO 输入、上拉、双边沿中断 | 右编码器 B | 完整 `App` 的右轮反馈；当前 `TestApp` 不采集 |
-| PA17 | GPIO 输入、上拉、双边沿中断 | 左编码器 A | 完整 `App` 的左轮反馈；当前 `TestApp` 不采集 |
+| PA10 | 开漏式 GPIO | MPU6050 SCL | 软件 I2C 时钟 |
+| PA11 | 开漏式 GPIO | MPU6050 SDA | 软件 I2C 数据 |
+| PA12 | GPIO 输出 | 右电机 AIN2 | TB6612 A 通道方向 |
+| PA13 | GPIO 输出 | 右电机 AIN1 | TB6612 A 通道方向 |
+| PA14 | GPIO 输入、上拉 | 灰度 CH3 | 灰度位图 bit3；黑线为 1 |
+| PA15 | GPIO 输入、上拉、双边沿中断 | 右编码器 A | 右轮正交反馈 |
+| PA16 | GPIO 输入、上拉、双边沿中断 | 右编码器 B | 右轮正交反馈 |
+| PA17 | GPIO 输入、上拉、双边沿中断 | 左编码器 A | 左轮正交反馈 |
 | PA19 | SWDIO | 下载调试 | 不作为普通 GPIO 使用 |
 | PA20 | SWCLK | 下载调试 | 不作为普通 GPIO 使用 |
-| PA21 | UART2 TX | F32C 云台 RX | 连接厂家云台线束的 3.3 V TTL 接收端；X 地址 1、Y 地址 2 共用厂家级联总线 |
-| PA22 | UART2 RX、上拉 | F32C 云台 TX | 连接厂家云台线束的 3.3 V TTL 发送端；RX 中断接收按地址返回的 9 字节反馈帧 |
-| PA24 | GPIO 输入、上拉、双边沿中断 | 左编码器 B | 完整 `App` 的左轮反馈；当前 `TestApp` 不采集 |
-| PA28 | I2C0 SDA | OLED | 400 kHz；当前 `TestApp` 不访问 |
-| PA30 | GPIO 输入、上拉 | KEY1 | 低电平按下，按键位图 bit0；当前无刷云台测试未使用 |
-| PA31 | I2C0 SCL | OLED | 400 kHz；当前 `TestApp` 不访问 |
-| PB0 | GPIO 输出 | 左电机 BIN1 | TB6612 B 通道方向；由 MotionManager 当前模式经 MotionWheel 输出 |
-| PB1 | GPIO 输出 | 左电机 BIN2 | TB6612 B 通道方向；由 MotionManager 当前模式经 MotionWheel 输出 |
-| PB6 | UART1 TX | 蓝牙 | MCU 发送到蓝牙 RX |
-| PB7 | UART1 RX、上拉 | 蓝牙 | 蓝牙 TX 发送到 MCU，RX 中断接收；`C0` 全局停车并失能云台 |
-| PB8 | TIMA0 CCP0 | 横向舵机 | `D` 命令，`Servo_SetHorizontalAngle()` |
-| PB9 | TIMA0 CCP1 | 纵向舵机 | `O` 命令，`Servo_SetVerticalAngle()` |
-| PB10 | GPIO 输入、上拉 | KEY4 | 低电平按下，按键位图 bit3；Core 运行通道生成按下沿事件，具体含义由 Mission 决定 |
-| PB11 | GPIO 输入、上拉 | KEY2 | 低电平按下，按键位图 bit1；当前停止测试并失能两个 F32C 电机 |
-| PB14 | GPIO 输入、上拉 | KEY3 | 低电平按下，按键位图 bit2；Core 运行通道生成按下沿事件，具体含义由 Mission 决定 |
-| PB15 | TIMG8 CCP0 | 右电机 PWM | TB6612 A 通道，20 kHz；由 MotionManager 当前模式经 MotionWheel 输出 |
-| PB16 | TIMG8 CCP1 | 左电机 PWM | TB6612 B 通道，20 kHz；由 MotionManager 当前模式经 MotionWheel 输出 |
-| PB17 | GPIO 输出 | 蜂鸣器 | 低电平有效；当前 `TestApp` 不初始化 |
-| PB18 | GPIO 输入、上拉 | 灰度 CH4 | `Graydetect` 位图 bit4；当前 `TestApp` 不读取 |
-| PB20 | GPIO 输入、上拉 | 灰度 CH2 | `Graydetect` 位图 bit2；当前 `TestApp` 不读取 |
-| PB23 | GPIO 输出 | LED1 | 高电平点亮；当前 `TestApp` 不初始化 |
-| PB24 | GPIO 输入、上拉 | 灰度 CH1 | `Graydetect` 位图 bit1；当前 `TestApp` 不读取 |
-| PB25 | GPIO 输入、上拉 | 灰度 CH0 | `Graydetect` 位图 bit0；当前 `TestApp` 不读取 |
-| PB27 | GPIO 输出 | LED2 | 高电平点亮；当前 `TestApp` 不初始化 |
+| PA21 | UART2 TX | F32C RX | MCU 发送到 F32C；X 地址 1、Y 地址 2 |
+| PA22 | UART2 RX、上拉 | F32C TX | F32C 反馈到 MCU，RX 中断接收 |
+| PA24 | GPIO 输入、上拉、双边沿中断 | 左编码器 B | 左轮正交反馈 |
+| PA28 | I2C0 SDA | OLED SDA | 400 kHz 硬件 I2C |
+| PA30 | GPIO 输入、上拉 | KEY1 | 低电平按下，按键位图 bit0；当前启动 25H |
+| PA31 | I2C0 SCL | OLED SCL | 400 kHz 硬件 I2C |
+| PB0 | GPIO 输出 | 左电机 BIN1 | TB6612 B 通道方向 |
+| PB1 | GPIO 输出 | 左电机 BIN2 | TB6612 B 通道方向 |
+| PB6 | UART1 TX | 蓝牙 RX | MCU 发送到蓝牙 |
+| PB7 | UART1 RX、上拉 | 蓝牙 TX | 蓝牙发送到 MCU，RX 中断接收 |
+| PB8 | TIMA0 CCP0 | 横向舵机 | `Servo_SetHorizontalAngle()` |
+| PB9 | TIMA0 CCP1 | 纵向舵机 | `Servo_SetVerticalAngle()` |
+| PB10 | GPIO 输入、上拉 | KEY4 | 低电平按下，按键位图 bit3 |
+| PB11 | GPIO 输入、上拉 | KEY2 | 低电平按下，按键位图 bit1 |
+| PB14 | GPIO 输入、上拉 | KEY3 | 低电平按下，按键位图 bit2 |
+| PB15 | TIMG8 CCP0 | 右电机 PWM | TB6612 A 通道，20 kHz |
+| PB16 | TIMG8 CCP1 | 左电机 PWM | TB6612 B 通道，20 kHz |
+| PB17 | GPIO 输出 | 蜂鸣器 | 低电平有效 |
+| PB18 | GPIO 输入、上拉 | 灰度 CH4 | 灰度位图 bit4；黑线为 1 |
+| PB20 | GPIO 输入、上拉 | 灰度 CH2 | 灰度位图 bit2；黑线为 1 |
+| PB23 | GPIO 输出 | LED1 | 高电平点亮 |
+| PB24 | GPIO 输入、上拉 | 灰度 CH1 | 灰度位图 bit1；黑线为 1 |
+| PB25 | GPIO 输入、上拉 | 灰度 CH0 | 灰度位图 bit0；黑线为 1 |
+| PB27 | GPIO 输出 | LED2 | 高电平点亮 |
 
-## 3. 当前程序调用关系
+### 2.1 硬件连接检查
 
-### 3.1 启动阶段
+- `main.syscfg` 中没有重复分配的 Pin；UART1、UART2、I2C0、TIMG8、TIMA0、软件 I2C 和 SWD 互不冲突。
+- F32C 使用独立 8–15 V 电源和 3.3 V TTL 通信。控制器与电机电源必须共地，PA21 接电机 RX，PA22 接电机 TX；禁止反接和带电插拔。
+- 二自由度云台的 X/Y 电机使用厂家级联线束。滑环通道手册标注最大 1 A，禁止过流使用。
+- UART2 当前专用于 F32C，K230Link 保留但未运行；K230 与 F32C 不能同时占用 PA21/PA22。
 
-```c
-TestApp_Init();
-Mission_Init(BrushlessMotorTest_GetMissionGraph());
-Interrupt_Enable();
-```
+## 3. 当前程序说明
 
-1. `TestApp_Init()` 先关闭全局中断并应用 SysConfig，然后只初始化 Tick、按键、小车电机安全状态、舵机、UART1 蓝牙、MotionManager 和 F32C/UART2。
-2. 当前测试通道不初始化 OLED、MPU6050、灰度、编码器里程或蜂鸣器，因此未连接这些器件时不会等待 I2C 超时，也不会执行 400 次零漂。
-3. `MotionManager_Init()` 只为满足通用 Mission 的统一停止接口并确保小车电机输出安全；当前状态图不会启动小车运动。
-4. `BrushlessMotorTest_GetMissionGraph()` 返回无刷云台测试的静态状态图；`Mission_Init()` 校验节点数、起始/错误状态和所有转换目标后进入一次性自动启动节点。
-5. `Interrupt_Enable()` 最后开启全局硬件中断。UART 和 SysTick ISR 只采集数据，不执行 Mission 或运动切换。
-
-K230 握手继续关闭：`TestApp` 不调用 `K230Link_Init/Update()`。K230Link 源码仍保留，但 UART2 已改为 F32C 专用，不能同时连接 K230；恢复 K230 时必须为其中一方改用其他 UART，并同步修改 Pin 口表、时钟表和程序说明。
-
-### 3.2 100 Hz 主循环与 Mission
+### 3.1 主程序
 
 ```c
-if (TestApp_Update(&updateContext) != 0U)
+int main(void)
 {
-    Mission_Update(&updateContext);
+    App_UpdateContext_t updateContext;
+
+    App_Init();
+    Mission_Init(Accomplish25H_GetMissionGraph());
+    Interrupt_Enable();
+
+    for (;;)
+    {
+        if (App_Update(&updateContext) != 0U)
+        {
+            Mission_Update(&updateContext);
+        }
+    }
 }
 ```
 
-`TestApp_Update()` 无 Tick 时执行 `__WFI()`；有 Tick 时按真实累计值生成 `elapsedTicks` 和 `dt`，随后执行：
+`App_Init()` 在全局中断关闭状态下初始化整车、OLED、MPU6050、编码器、蓝牙和 F32C 通信。`Gimbal_Init()` 只把 UART2/F32C 初始化为禁用状态，不使能或驱动无刷电机。MPU6050 零漂完成后，`Interrupt_Enable()` 才开启全局中断。
+
+每个有效节拍的调用顺序：
 
 ```text
-Gimbal -> 按键边沿 -> BluetoothDebug
-       -> C0 全局停车/云台失能 -> MotionManager -> Mission_Update
+Heading -> Odometry -> Gimbal -> Key -> BluetoothDebug
+        -> C0 全局停止 -> MotionManager -> Beep -> OLED -> Mission
 ```
 
-Mission 使用静态状态图，不使用 `malloc`。每个状态含 `onEnter/onUpdate/onExit`、有序转换表和 `interruptible`。动作运行时只检查打断转换；动作完成后只检查正常转换；每拍最多转换一次。被打断状态调用退出回调并停车，不保存或恢复原进度。
-
-当前加载 `Accomplish/Brushless_Motor_Test.c` 的静态状态图。快速测试初始化完成后，状态图在第一个 10 ms 系统节拍自动使能地址 1 和地址 2，选择多圈位置 T 型规划模式，配置速度与加速度，再命令两轴转到协议绝对坐标 0°，不需要按 KEY1。两轴连续两次角度反馈进入 ±2° 容差后，X 轴目标沿“右转”符号每次累加 180°，Y 轴目标在 0° 与 180° 之间往返。KEY2、蓝牙 `C0`、反馈超时或协议错误都会失能两个电机；停止后保持停止，不会自动重启，重新上电才会再次自动运行。发送 `C0` 后清除错误并进入停止节点。
-
-测试不会发送“清除多圈角度”命令。该命令只会把当前位置改记为 0°，并不会驱动电机回到原有 0°。若实际 X 轴右转方向与当前符号相反，只修改 `BRUSHLESS_MOTOR_TEST_X_RIGHT_SIGN` 为 `-1.0f`。
-
-当前 `TestApp` 不初始化 OLED，调试数据直接通过 UART2 观察。切回完整 `App_Init/App_Update` 后，`DebugDisplay` 才会恢复小车基础页和 F32C 双轴角度页。
-
-F32C 接线必须使用 3.3 V TTL 电平并与控制器共地。PA21 接云台 RX，PA22 接云台 TX；两个电机之间只使用厂家二自由度云台原有的级联线束。电机功率输入按手册使用独立 8~15 V 电源，不能从 MSPM0 的 3.3 V/5 V 引脚取电。固件会在初始化完成后自动运动，因此首次上电前必须先卸载或确保机构不会撞限位。
-
-K230Link 库保留的统一帧格式如下，当前 `TestApp` 不调用：
+### 3.2 当前 25H 流程
 
 ```text
-AA 55 | VER | TYPE | SEQ | LEN | PAYLOAD | CRC8
+等待 KEY1
+  -> 200 mm/s 巡线
+  -> 灰度 bit0、bit1 同时检测到黑线
+  -> 向前直行 150 mm，终点速度 0 mm/s
+  -> 转到下一连续绝对角目标：启动航向 - 90°、-180°、-270°……
+  -> 重新巡线并循环
 ```
 
-- `VER=0x01`；`TYPE` 为 `READY=0x01`、`READY_ACK=0x02` 或 `TARGET=0x10`。
-- `SEQ` 为 8 位帧序号，`LEN` 最大为 32。
-- CRC 使用 CRC-8/ATM，多项式 `0x07`、初始值 0，校验范围为 `VER` 到 `PAYLOAD`。
-- TARGET 的 PAYLOAD 固定为 `valid:u8 + offsetX:int16_LE + offsetY:int16_LE`，共 5 字节。
-- 恢复 K230 联调后，K230 `uart_io.py` 测试入口可在握手后持续发送 `valid=1、offsetX=123、offsetY=-45`。
+巡线连续全白达到 `MOTION_LINE_LOST_CONFIRM_TICKS` 后返回等待状态。角度使用 MPU6050 连续累计值，不做 ±180° 归一化。
 
-### 3.3 蓝牙任务与调试协议
+### 3.3 OLED 与蓝牙
 
-命令不区分大小写。推荐以 `\r` 或 `\n` 结束；也支持空格、逗号、分号作为分隔符。没有结束符时，接收空闲 3 个系统节拍（30 ms）后执行。每条命令都会返回 `OK ...` 或 `ERR ...`。
+OLED 默认显示 Z 轴连续角度、五路灰度、四个按键、左右轮路程/速度和当前运动状态。Gimbal 显式使能后切换为 F32C 双轴角度页。
 
-`C` 命令进入单槽任务事件邮箱；当前 `TestApp` 每个有效节拍最多向 Mission 传递一个任务信号。普通信号不排队，同一拍只保留最后收到的一条；`C0` 具有最高优先级，待处理时不会被普通信号覆盖，并立即停车。
-
-| 命令 | 作用 | 输入范围与限位 | 示例 |
-|---|---|---|---|
-| `C<number>` | 发送 Mission 单次任务信号；`C0` 固定全局停车，`C1~C255` 当前云台测试未绑定 | `0~255`，超限返回 `ERR RANGE` | `C1` |
-| `L<number>` | 只更新左轮 PWM，右轮保持上次指令 | `-1000~1000`，超限自动夹紧 | `L10` |
-| `R<number>` | 只更新右轮 PWM，左轮保持上次指令 | `-1000~1000`，超限自动夹紧 | `R10` |
-| `U<number>` | 左右轮使用相同 PWM | `-1000~1000`；正数前进，负数后退 | `U100` |
-| `O<number>` | 纵向舵机移动到指定角度 | 当前限位 `0°~270°` | `O10` |
-| `D<number>` | 横向舵机移动到指定角度 | 当前限位 `0°~270°` | `D10` |
-
-当前 `TestApp` 始终拒绝 `L/R/U` 并返回 `ERR BUSY`，避免云台测试时误驱动小车；切回完整 `App` 后才按 MotionManager 空闲状态开放。数字仍是开环 PWM，不是 mm/s。当前测试通道不刷新 OLED。
-
-当前舵机限位仅对应源码中 270° 舵机的电气量程。实车连杆若存在更小的机械行程，通电调试前必须先收紧 `SERVO_VERTICAL_*_ANGLE` 和 `SERVO_HORIZONTAL_*_ANGLE`，并同步修改本文的 Pin 口表、协议表和公共参数表。
-
-### 3.4 `MotionStraight` 直线行驶控制库
-
-`MotionStraight` 已完成本轮实车调试，当前由 MotionManager 统一初始化和按模式更新。Mission 状态回调通过 `MotionManager_StartForward/StartBackward()` 使用它，不再直接修改主循环。
-
-控制结构分为三层：
-
-1. 距离层读取左右编码器相对路程的平均值，优先在全程 `5/6` 处进入末段减速，并连续过渡到本次调用指定的终点速度。
-2. 航向层锁定启动瞬间的 MPU6050 连续累计偏航角，使用 PD 生成左右轮差速 PWM 修正，不做 ±180° 归一化。
-3. 公共 `MotionWheel` 分别对左右轮编码器实测速度执行 PI，叠加速度前馈、静摩擦补偿和航向修正，再统一限幅输出。
-
-调用顺序：
-
-```text
-上电且 MPU 零漂完成
-    -> App_Init() 内部完成 MotionManager_Init()
-    -> Mission 状态 onEnter
-    -> MotionManager_StartForward(距离, 巡航速度, 终点速度)
-    -> App_Update() 每拍更新 MotionManager
-```
-
-直线运动规划和航向参数位于 `MotionStraight.h` 顶部；双轮速度 PI、前馈和最终 PWM 限幅位于 `MotionWheel.h` 顶部。Mission 进入回调使用以下形式：
-
-```c
-#include "Application/Control/MotionManager.h"
-
-return (MotionManager_StartForward(distanceMM, speedMMps, endSpeedMMps) ==
-        MOTION_MANAGER_RESULT_OK) ?
-    MISSION_CALLBACK_OK : MISSION_CALLBACK_ERROR;
-```
-
-- `MotionManager_StartForward/StartBackward()` 的 `distanceMM` 都填写正整数，方向由函数名决定。
-- `speedMMps` 必须为正数；超过 `MOTION_STRAIGHT_MAX_SPEED_MMPS` 时自动限幅。
-- `endSpeedMMps` 是非负速度大小且不能高于 `speedMMps`。设为 `0` 时平滑降速后释放电机；设为正数时到达目标后继续按该速度闭环前进，直到状态转换、`C0` 或 `MotionManager_Stop()` 停止当前运动。
-- 常用流程使用 `MotionStraight_StartForward()` 或 `MotionStraight_StartBackward()`；距离参数填写正整数，巡航速度和终点速度直接填写 mm/s 浮点值，不使用枚举。
-- `MotionStraight_Start()` 保留带符号距离的底层调用方式，终点速度方向自动跟随距离方向。
-- 默认在全程 `5/6` 处开始减速；减速开始时根据当前速度、终点速度和剩余规划距离计算本次固定减速度，使目标速度在“目标距离减距离容差”处达到。
-- 终点速度为零时，直线模块把双轮速度目标固定保持为 `0 mm/s` 达到 `MOTION_STRAIGHT_ZERO_SPEED_HOLD_SECONDS`，随后调用 `Motor_StopAll()` 释放电机；不再依据低速编码器速度确认停车。需要研究满力主动刹车时才使用 `MotionManager_StartBrake()`，不得在 Accomplish 文件中直接调用 `Motor_Brake()`。
-- MPU6050 掉线、里程换算无效或更新周期非法时立即停止并进入错误状态。
-- `MotionStraight` 直接使用 `Odometry` 已更新的左右路程和速度，不能再次读取 `Encoder_Get()`，否则会提前清空编码器增量。
-- `MotionStraight` 运行期间不要调用 `Heading_SetYaw()` 重置角度，否则会改变本次直线行驶的航向基准。
-
-实车调参顺序：
-
-1. MotionManager 空闲时使用 `U100/U200/...` 记录 OLED 稳态速度，在 `MotionWheel.h` 顶部调整速度前馈、静摩擦 PWM 与最大可靠输出；自动运动开始后固件会拒绝 `L/R/U`，蓝牙仍可发送 Mission 的 `C` 信号。
-2. 先令 `ki=0`，逐步增加速度 `kp` 到响应足够快且不持续振荡，再少量加入 `ki` 消除稳态误差。
-3. 低速测试航向 `kp`；若偏差被放大，将 `correctionSign` 从 `1` 改为 `-1` 或反向。随后少量增加 `kd` 抑制摆动。
-4. 最后调整加速度、最大减速度、减速起点比例、每次任务的终点速度和距离允许误差。
-
-### 3.5 `MotionWheel`、`MotionManager` 与 `MotionLine`
-
-统一命名层级如下：
-
-| 层级 | 模块前缀 | 职责 |
+| 蓝牙命令 | 作用 | 当前限制 |
 |---|---|---|
-| 任务调度 | `Mission_*` | 静态状态图、状态回调、转换条件和打断规则 |
-| 统一运动入口 | `MotionManager_*` | 自动停止旧模式并选择直线、巡线、转向或短暂刹车 |
-| 上层运动模式 | `MotionStraight_*` / `MotionLine_*` / `Nav_*` | 具体运动算法和状态 |
-| 下层公共执行 | `MotionWheel_*` | 双轮速度 PI、前馈、差速合成和电机 PWM 输出 |
-
-`MotionWheel` 是直线、巡线和转向共用的唯一双轮速度闭环与电机输出层。Mission 不直接调用底层模块的 Update，而是由 MotionManager 每拍只更新当前模式；启动新模式时 MotionManager 自动停止旧模式。BRAKE 是例外的短暂安全模式：它只在速度规划已降为零后执行“释放 PWM -> `Motor_Brake()` -> 释放电机”，不进入轮速闭环。
-
-Mission 状态的进入回调可按以下方式启动巡线：
-
-```c
-#include "Accomplish/25H.h"
-#include "Application/Control/MotionManager.h"
-#include "Application/Mission/Mission.h"
-
-static Mission_CallbackResult_t LineEnter(void)
-{
-    return (MotionManager_StartLine(ACCOMPLISH_25H_LINE_SPEED_MMPS) ==
-            MOTION_MANAGER_RESULT_OK) ?
-        MISSION_CALLBACK_OK : MISSION_CALLBACK_ERROR;
-}
-
-static Mission_ActionStatus_t LineUpdate(float dt)
-{
-    (void)dt;
-    return Mission_GetMotionActionStatus();
-}
-```
-
-模式切换顺序：
-
-```text
-Mission onEnter
-    -> MotionManager_StartLine(...)
-    -> App_Update() 每拍调用 MotionManager_Update(dt)
-    -> 状态完成或被打断
-    -> Mission onExit -> MotionManager_Stop()
-```
-
-- MotionLine 不使用 PID。五路从左到右的权重为 `-6、-3、0、+3、+6`，检测到黑线时把对应权重相加，并把最终结果限制在 `-6~+6`。
-- 当前调整比例为 `0.2`：权重为 `-6` 时，左轮目标速度为巡线速度的 `0.8` 倍，右轮为 `1.2` 倍；权重为 `+6` 时左右相反。权重为正负 `3` 时，每侧增减巡线速度的 `10%`。
-- 灰度位为 `1` 表示检测到黑线，五路全白为 `0x00`。连续全白达到 `MOTION_LINE_LOST_CONFIRM_TICKS` 后进入 `MOTION_LINE_STATE_FINISHED`；当前 25H 将该结果作为安全返回等待的条件。确认前保持上一拍的左右轮目标速度，任一路恢复为 1 时立即清零丢线计数。更新周期或公共轮速层异常才进入 `MOTION_LINE_STATE_ERROR`。
-- 五路全黑 `0x1F` 当前按误差 0 继续直行；十字、停止线和任务标志必须在后续任务状态机中根据连续采样单独判断。
-- `MotionLine.h` 顶部参数是当前首轮低速测试值，仍需根据实车循迹效果标定。
-
-### 3.6 Mission 状态节点格式
-
-`Mission.c` 是通用状态图执行器，不保存具体题目流程。每个题目或测试的状态编号、回调、转换表和状态表全部位于自己的 `Accomplish/*.c`，并保持为 `static`。添加新实现时在根目录 `Accomplish/` 新建对应 `.c/.h`，按以下顺序书写。完整教程见根目录 `状态机.md`：
-
-```c
-static Mission_CallbackResult_t StateEnter(void);
-static Mission_ActionStatus_t StateUpdate(float dt);
-static void StateExit(Mission_ExitReason_t reason);
-static uint8_t StateCondition(
-    const Mission_Runtime_t *runtime,
-    const App_UpdateContext_t *updateContext);
-
-static const Mission_Transition_t s_transitions[] = {
-    {StateCondition, TARGET_STATE, MISSION_TRANSITION_NORMAL},
-};
-
-/* 在 s_stateDefinitions[] 对应状态编号处登记回调和转换表。 */
-
-static const Mission_GraphDefinition_t s_missionGraph = {
-    .states = s_stateDefinitions,
-    .stateCount = STATE_COUNT,
-    .startState = STATE_WAITING,
-    .errorState = STATE_ERROR,
-};
-```
-
-- 转换数组从前到后就是优先级；同一拍只执行第一条满足条件的转换。
-- 动作运行中只检查 `MISSION_TRANSITION_INTERRUPT`，并要求当前状态 `interruptible=1`；动作完成后只检查正常转换。
-- 转换依次执行当前状态 `onExit()`、`MotionManager_Stop()` 和目标状态 `onEnter()`；内部活动标记保证一次进入最多对应一次退出。
-- 空 `onEnter/onExit` 视为成功，空 `onUpdate` 视为立即完成；空条件回调表示该类型转换无条件成立。
-- 动作完成但没有正常转换满足条件时保留在当前完成节点；动作或 MotionManager 报错时停车并进入内部错误节点。
-- `C1~C255` 是单拍事件。条件未接受时立即丢弃，不在以后补触发；`C0` 始终停车并复位到起始状态。
-- 当前无刷云台测试上电自动启动、使用 KEY2 停止，不使用 KEY1 或 `C1`。新题目应在自己的头文件顶部定义按键掩码或任务信号、距离、速度、角度和传感器掩码，不把题目参数放回 Mission。
-- 新增运动形式时，模块使用 `MotionXxx_` 前缀并提供 `Init/Start/Update/Stop/IsBusy/IsFinished/GetState/GetError`；所有可调参数放在对应 `.h` 开头。随后在 MotionManager 增加模式、启动包装、Update 和 Stop 分支，Mission 不直接调用底层 Update。
-
-### 3.7 `Nav` 目标角转向库
-
-`Nav` 由 MotionManager 统一初始化和更新。Mission 回调使用 `MotionManager_TurnTo/TurnBy()`，角度仍直接使用 `Heading_GetYaw()` 的连续累计值，不做 ±180° 归一化。
-
-Nav 只有一种车轮动作：左右轮等速反向，车体围绕两轮中点附近转动。
-
-```c
-#include "Application/Control/MotionManager.h"
-
-/* 绝对角：指向连续航向角 90°。 */
-(void)MotionManager_TurnTo(90.0f, 80.0f);
-
-/* 相对角：从当前方向再转 +90°。 */
-(void)MotionManager_TurnBy(90.0f, 80.0f);
-```
-
-- `To` 接口输入连续累计绝对角；例如当前为 370°，输入 90° 会按直接误差回到 90°，不会自动选择 ±180° 最短路径。
-- `By` 接口输入相对转角；正负方向由 `NAV_ROTATION_COMMAND_SIGN` 与实车安装共同决定，可输入大于 360° 的多圈角度。
-- 首次测试使用 60~80 mm/s。若启动后角度误差持续增大，只翻转 `NAV_ROTATION_COMMAND_SIGN`。
-- Nav 到角后先把轮速斜坡降到零，再要求连续 `NAV_SETTLE_TICKS` 个周期处于允许误差内，避免单次采样抖动误判完成。
-
-当前 25H 在 KEY1 启动巡线时记录连续航向作为 0°基准。每次左侧双灰度触发后均先完成 150 mm 直行和固定时长的零速目标保持，再把下一绝对目标减去 90°并调用 `MotionManager_TurnTo()`；因此目标序列为 `startYaw-90°`、`startYaw-180°`、`startYaw-270°`……，不是在进入 TURN 时临时调用相对角接口。
+| `C0` | 全局停车并复位 Mission | 始终有效，同时失能 Gimbal |
+| `C1~C255` | Mission 单次事件 | 当前 25H 未绑定 |
+| `L<number>` | 设置左轮开环 PWM | MotionManager 空闲时有效，范围 `-1000~1000` |
+| `R<number>` | 设置右轮开环 PWM | MotionManager 空闲时有效，范围 `-1000~1000` |
+| `U<number>` | 设置双轮相同开环 PWM | MotionManager 空闲时有效，范围 `-1000~1000` |
+| `O<number>` | 设置纵向舵机角度 | 当前限位 `0°~270°` |
+| `D<number>` | 设置横向舵机角度 | 当前限位 `0°~270°` |
 
 ## 4. 工程文件类型与职责
 
-| 文件或目录 | 类型 | 职责 |
+### 4.1 Application
+
+| 文件 / 目录 | 类型 | 职责 |
 |---|---|---|
-| `main.c` | C 源文件 | 选择 Core 运行通道，调用 Mission 初始化、硬件中断启用以及 Core/Mission 主循环；当前选择 `TestApp` |
-| `main.syscfg` | TI SysConfig | 时钟树、GPIO、UART、I2C、PWM、SysTick 和 PinMux 的唯一配置源 |
-| `.project`、`.cproject`、`.settings/` | CCS 工程元数据 | 工程名、TI Arm Clang 选项、SDK/SysConfig 依赖和 IDE 设置 |
-| `targetConfigs/*.ccxml` | CCS 目标配置 | MSPM0G3507 调试连接配置 |
-| `Application/Comms/` | 应用层 C 模块 | 蓝牙调试命令；保留但当前未运行的 K230 二进制帧、CRC8、握手和目标解析 |
-| `Application/Core/` | 应用运行层 C 模块 | `App` 提供完整整车初始化；`TestApp` 提供跳过 OLED/MPU 等阻塞模块的快速测试通道；两者都向 Mission 提供统一上下文 |
-| `Application/Gimbal/` | 无刷云台应用层 C 模块 | 统一管理 X/Y 地址、使能、T 型多圈位置目标、交替反馈查询、到位与超时状态 |
-| `Application/Mission/` | 通用任务执行层 C 模块 | 校验并执行题目层提供的静态状态图、生命周期回调、有序条件转换和打断处理 |
-| `Accomplish/` | 具体题目/测试实现 C 模块 | 每个实现独立保存用户参数、状态编号、回调、转换表和静态状态图；当前启用 `Brushless_Motor_Test.c/.h` |
-| `Application/Control/` | 运动控制层 C 模块 | MotionManager、通用 PID、公共双轮速度闭环、直线、巡线、目标角转向和短暂主动刹车 |
-| `Application/Debug/` | 应用层 C 模块 | OLED 调试页面编排与 10 Hz 刷新 |
-| `Application/Servo/` | 舵机硬件模块 | TIMA0 双通道 PWM、角度限位和脉宽换算 |
-| `Application/State/` | 状态层 C 模块 | Z 轴航向角解算、编码器里程与速度状态 |
-| `Hardware/Board/` | 板级驱动 | 按键、LED、蜂鸣器 |
-| `Hardware/Comms/` | 通信驱动 | UART1 蓝牙和 UART2 F32C 的中断接收环形缓冲区与短帧阻塞发送接口 |
-| `Hardware/Display/` | 显示驱动与数据 | OLED I2C 驱动、帧缓冲、字模和图像数据 |
-| `Hardware/Motor/` | 电机驱动 | TIMG8/TB6612 小车电机、编码器，以及 F32C UART 帧编码、校验与反馈解码 |
-| `Hardware/Sensors/` | 传感器驱动 | 五路灰度 GPIO、MPU6050 软件 I2C |
-| `System/` | 系统基础模块 | 阻塞延时、100 Hz SysTick 计数和全局硬件中断开关 |
-| `Debug/`、`Release/` | 生成目录 | 目标文件、依赖文件、链接文件和固件输出；不手工修改 |
-| `.gitignore` | Git 配置 | 排除构建产物 |
-| `README.md` | 工程索引 | 时钟、Pin 口、文件职责、公共接口和公共参数 |
-| `状态机.md` | Markdown 教程 | 说明如何为新题目创建 Accomplish 参数文件、状态图、主程序依赖和验证流程 |
+| `Application/Core/App.c/.h` | 应用运行层 | 完整整车初始化、固定更新链和 Mission 上下文 |
+| `Application/Core/TestApp.c/.h` | 可选测试运行层 | 跳过 OLED、MPU6050、灰度和里程的快速测试入口；当前未使用 |
+| `Application/Comms/BluetoothDebug.c/.h` | 应用通信层 | 解析 `C/L/R/U/O/D` 命令并提供任务事件 |
+| `Application/Comms/K230Link.c/.h` | 应用通信层 | K230 帧、CRC8、握手和目标解析；当前未运行 |
+| `Application/Control/MotionManager.c/.h` | 统一运动调度 | 保证同一时刻只有直线、巡线、转向或刹车之一控制双轮 |
+| `Application/Control/MotionStraight.c/.h` | 直线控制 | 定距速度规划、连续航向保持和可选终点速度 |
+| `Application/Control/MotionLine.c/.h` | 巡线控制 | 五路灰度离散权重差速和连续丢线确认 |
+| `Application/Control/MotionWheel.c/.h` | 公共轮速控制 | 双轮 PI、前馈、差速修正和 PWM 限幅 |
+| `Application/Control/Nav.c/.h` | 转向控制 | 双轮反向旋转到连续绝对角或相对角 |
+| `Application/Control/PID.c/.h` | 通用控制器 | 位置式 PID 计算、复位和调参 |
+| `Application/Debug/DebugDisplay.c/.h` | 显示编排 | OLED 零漂页、整车页和 Gimbal 页 |
+| `Application/Gimbal/Gimbal.c/.h` | 云台应用层 | 管理 X/Y 地址、T 型多圈位置目标、反馈和到位状态 |
+| `Application/Servo/Servo.c/.h` | 舵机控制 | 双路角度限位与 TIMA0 脉宽换算 |
+| `Application/State/Heading.c/.h` | 航向状态 | MPU6050 零漂、连续偏航积分和尺度标定 |
+| `Application/State/Odometry.c/.h` | 里程状态 | 编码器增量到双轮路程与速度的换算 |
 
-### 4.1 源文件快速定位
+### 4.2 Hardware 与 System
 
-| 源文件 / 头文件 | 文件职责 |
-|---|---|
-| `Application/Comms/BluetoothDebug.c/.h` | 解析 `C/L/R/U/O/D` 命令，保存单槽任务事件，并限制自动运动期间的开环电机调试 |
-| `Application/Core/App.c/.h` | 封装系统初始化和每拍固定更新，向 Mission 提供 dt、按键边沿和蓝牙信号 |
-| `Application/Core/TestApp.c/.h` | 当前 main 使用的快速测试通道；只运行按键、蓝牙、F32C、MotionManager 和 100 Hz Mission 上下文，不访问 OLED/MPU/灰度/里程 |
-| `Application/Mission/Mission.c/.h` | 定义状态图公共类型，校验题目状态图并执行每拍最多一次的状态转换 |
-| `Accomplish/25E.c/.h` | 保存 25E 参数和状态图：每轮绝对目标在上一目标上增加 180°；当前未由 main 加载 |
-| `Accomplish/25H.c/.h` | 保存 25H 参数和状态图：KEY1 启动巡线，左侧双黑线后直行 150 mm、固定时长零速保持，绝对左转目标每轮减少 90°并循环 |
-| `Accomplish/Brushless_Motor_Test.c/.h` | 当前加载的云台测试状态图：开机自动回到协议 0°，X 每轮累加 180°，Y 在 0°/180° 往返；KEY2/C0 停止失能且不自动重启 |
-| `Application/Comms/K230Link.c/.h` | 解析 `AA 55` 二进制帧和 CRC8，执行 READY/READY_ACK 双向握手，保存最新 TARGET |
-| `Application/Gimbal/Gimbal.c/.h` | 头文件保存地址、速度、加速度、反馈周期、超时和到位参数；源文件管理双轴运行状态和按地址反馈 |
-| `Application/Control/PID.c/.h` | 通用 PID 初始化、调参、复位和单步计算 |
-| `Application/Control/MotionStraight.c/.h` | 头文件顶部保存直线参数；源文件实现距离规划、5/6 末段减速、可选终点速度、MPU6050 航向 PD 和软停车状态机 |
-| `Application/Control/MotionWheel.c/.h` | 头文件顶部保存公共轮速参数；源文件实现 MotionStraight、MotionLine 与 Nav 共用的双轮速度 PI、前馈、差速修正合成和 PWM 限幅 |
-| `Application/Control/MotionLine.c/.h` | 头文件顶部保存巡线参数；源文件实现五路灰度离散权重差速、连续丢线确认、丢线正常完成和状态管理；巡线层不使用 PID |
-| `Application/Control/MotionManager.c/.h` | 统一包装直线、巡线、转向和短暂刹车；自动停止旧模式并只更新当前模式 |
-| `Application/Control/Nav.c/.h` | 头文件顶部保存转向参数；源文件实现连续航向目标、双轮等速反向转向和到角稳定判定 |
-| `Application/Debug/DebugDisplay.c/.h` | 组织启动零漂提示、小车基础页和 F32C 双轴角度测试页 |
-| `Application/Servo/Servo.c/.h` | 将舵机角度换算为 TIMA0 比较值，并执行纵向/横向限位 |
-| `Application/State/Heading.c/.h` | MPU6050 Z 轴零漂标定、角速度积分和尺度标定 |
-| `Application/State/Odometry.c/.h` | 读取编码器增量，累计左右路程并计算 mm/s 速度 |
-| `Hardware/Board/Beep.c/.h` | 蜂鸣器与 LED2 的非阻塞提示状态机 |
-| `Hardware/Board/Key.c/.h` | 四个低有效按键的非阻塞状态读取 |
-| `Hardware/Board/LED.c/.h` | LED1、LED2 的开、关、翻转接口 |
-| `Hardware/Comms/Serial.c/.h` | UART1/UART2 RX 中断、独立环形缓冲区和阻塞短帧发送；UART2 当前专用于 F32C |
-| `Hardware/Display/OLED.c/.h` | OLED I2C 传输、128×64 帧缓冲、文本和图形绘制 |
-| `Hardware/Display/OLED_Data.c/.h` | ASCII/中文字模和公共位图常量 |
-| `Hardware/Motor/Encoder.c/.h` | GPIOA 中断中的左右编码器四倍频正交解码 |
-| `Hardware/Motor/Motor.c/.h` | 左右物理电机到 TB6612 A/B 通道的映射、方向和制动 |
-| `Hardware/Motor/PWM.c/.h` | TIMG8 双通道占空比到比较值的换算 |
-| `Hardware/Motor/F32C.c/.h` | 生成 F32C `7A...BCC...7B` 命令帧，支持多圈位置 T 模式、速度/加速度、使能及反馈请求与解析 |
-| `Hardware/Sensors/Graydetect.c/.h` | 五路灰度状态位图、通道读取和加权偏差 |
-| `Hardware/Sensors/MPU6050.c/.h` | PA10/PA11 软件 I2C、MPU6050 配置和原始数据读取 |
-| `System/Delay.c/.h` | 基于 32 MHz CPUCLK 的 us/ms/s 阻塞延时 |
-| `System/Tick.c/.h` | SysTick ISR 累计与主循环原子取出 100 Hz 节拍 |
-| `System/Interrupt.c/.h` | 在 App 和 Mission 初始化完成后统一开启或关闭全局硬件中断 |
+| 文件 / 目录 | 类型 | 职责 |
+|---|---|---|
+| `Hardware/Board/` | 板级驱动 | 按键、LED 和蜂鸣器 |
+| `Hardware/Comms/Serial.c/.h` | UART 驱动 | UART1/UART2 中断接收环形缓冲区和发送接口 |
+| `Hardware/Display/OLED.c/.h` | OLED 驱动 | I2C0 显存、文本、数字、图像和图形绘制 |
+| `Hardware/Display/OLED_Data.c/.h` | 字模数据 | ASCII、中文字模和图像数据 |
+| `Hardware/Motor/Motor.c/.h` | 有刷电机驱动 | TB6612 方向、PWM、释放和主动刹车 |
+| `Hardware/Motor/PWM.c/.h` | PWM 驱动 | TIMG8 双通道占空比换算 |
+| `Hardware/Motor/Encoder.c/.h` | 编码器驱动 | GPIO 双边沿中断正交计数 |
+| `Hardware/Motor/F32C.c/.h` | 无刷电机协议 | F32C 命令编码、校验和反馈解码 |
+| `Hardware/Sensors/Graydetect.c/.h` | 灰度驱动 | 五路 GPIO 位图和区域误差 |
+| `Hardware/Sensors/MPU6050.c/.h` | IMU 驱动 | 软件 I2C 初始化和原始数据读取 |
+| `System/Delay.c/.h` | 系统基础 | 微秒、毫秒和秒级阻塞延时 |
+| `System/Tick.c/.h` | 系统基础 | 100 Hz 累计节拍 |
+| `System/Interrupt.c/.h` | 系统基础 | 全局中断统一开关 |
 
-## 5. 公共函数接口
+### 4.3 Mission 与 Accomplish
 
-以下只列出头文件公开声明。`.c` 文件内的 `static` 函数和变量属于文件内部实现，不作为跨模块接口使用。
+| 文件 / 目录 | 类型 | 职责 |
+|---|---|---|
+| `Application/Mission/Mission.c/.h` | 通用任务执行层 | 校验并执行静态状态图、回调和有序转换 |
+| `Accomplish/25E.c/.h` | 题目状态图 | 25E 参数、状态、回调和转换表 |
+| `Accomplish/25H.c/.h` | 当前题目状态图 | KEY1 启动的巡线、150 mm 直行和连续绝对左转循环 |
+| `Accomplish/Brushless_Motor_Test.c/.h` | 可选测试状态图 | F32C 双轴多圈位置循环测试；当前未加载 |
+| `状态机.md` | 使用说明 | 新建 Accomplish 状态图的编写流程 |
 
-### 5.1 `Application/Comms/BluetoothDebug.h`
+### 4.4 工程入口与配置
+
+| 文件 | 类型 | 职责 |
+|---|---|---|
+| `main.c` | C 源文件 | 选择 App 运行通道和当前 Accomplish 状态图 |
+| `main.syscfg` | TI SysConfig | 时钟、PinMux、GPIO、UART、I2C、PWM 和 SysTick 配置 |
+| `.project`、`.cproject`、`.settings/` | CCS 元数据 | 工程、编译器、SDK 和 IDE 配置 |
+| `targetConfigs/*.ccxml` | CCS 目标配置 | MSPM0G3507 调试连接 |
+
+## 5. Application 公共接口与参数
+
+### 5.1 Core、通信与显示
 
 ```c
-void BluetoothDebug_Init(void);
+void App_Init(void);                              /* 初始化完整整车，保持全局中断关闭。 */
+uint8_t App_Update(App_UpdateContext_t *context); /* 有新 Tick 时更新整车并填写 Mission 上下文。 */
+
+void TestApp_Init(void);                          /* 初始化可选快速测试通道。 */
+uint8_t TestApp_Update(App_UpdateContext_t *context); /* 更新测试通道并填写同类型上下文。 */
+
+void BluetoothDebug_Init(void);                   /* 清空蓝牙命令与事件状态。 */
 void BluetoothDebug_Update(uint8_t elapsedTicks,
-                           uint8_t manualMotorEnabled);
-uint8_t BluetoothDebug_PopSignal(uint8_t *signal);
-int16_t BluetoothDebug_GetLeftCommand(void);
-int16_t BluetoothDebug_GetRightCommand(void);
+                           uint8_t manualMotorEnabled); /* 解析命令；参数决定是否允许 L/R/U。 */
+uint8_t BluetoothDebug_PopSignal(uint8_t *signal); /* 取出一个 C0~C255 单次事件。 */
+int16_t BluetoothDebug_GetLeftCommand(void);      /* 返回最近一次左轮开环 PWM。 */
+int16_t BluetoothDebug_GetRightCommand(void);     /* 返回最近一次右轮开环 PWM。 */
+
+void K230Link_Init(void);                         /* 初始化 K230 帧解析与握手状态。 */
+void K230Link_Update(uint8_t elapsedTicks);        /* 按节拍推进握手并解析接收帧。 */
+uint8_t K230Link_IsReady(void);                    /* 返回双方握手是否完成。 */
+uint8_t K230Link_GetTarget(K230Link_Target_t *target); /* 读取最新目标数据。 */
+
+void DebugDisplay_Init(void);                     /* 初始化 OLED 与刷新计数。 */
+void DebugDisplay_ShowHeadingCalibration(uint8_t mpuReady); /* 显示 MPU 零漂或离线页。 */
+void DebugDisplay_Update(uint8_t elapsedTicks);    /* 按刷新周期更新整车或 Gimbal 页面。 */
 ```
 
-### 5.1.1 `Application/Comms/K230Link.h`
+| 头文件 | 公共参数 | 当前值 | 作用 |
+|---|---|---:|---|
+| `BluetoothDebug.h` | `BLUETOOTH_COMMAND_IDLE_TICKS` | `3U` | 无结束符命令空闲 30 ms 后执行 |
+| `BluetoothDebug.h` | `BLUETOOTH_TASK_SIGNAL_MAX` | `255U` | Mission 信号上限 |
+| `K230Link.h` | `K230_LINK_FRAME_MAGIC_0`、`K230_LINK_FRAME_MAGIC_1` | `0xAA/0x55` | 帧头 |
+| `K230Link.h` | `K230_LINK_FRAME_VERSION` | `0x01` | 协议版本 |
+| `K230Link.h` | `K230_LINK_MAX_PAYLOAD_LENGTH` | `32U` | 最大载荷长度 |
+| `K230Link.h` | `K230_LINK_READY_RETRY_TICKS` | `10U` | READY 重发周期，100 ms |
+| `K230Link.h` | `K230_LINK_MESSAGE_READY`、`K230_LINK_MESSAGE_READY_ACK`、`K230_LINK_MESSAGE_TARGET` | `0x01/0x02/0x10` | 消息类型 |
+| `DebugDisplay.h` | `DEBUG_DISPLAY_REFRESH_TICKS` | `10U` | OLED 刷新周期，100 ms |
+
+### 5.2 MotionManager
 
 ```c
-typedef struct
-{
-    uint8_t valid;
-    int16_t offsetX;
-    int16_t offsetY;
-    uint8_t sequence;
-} K230Link_Target_t;
-
-void K230Link_Init(void);
-void K230Link_Update(uint8_t elapsedTicks);
-uint8_t K230Link_IsReady(void);
-uint8_t K230Link_GetTarget(K230Link_Target_t *target);
-```
-
-### 5.1.2 `Application/Core/App.h`
-
-```c
-typedef struct
-{
-    uint8_t elapsedTicks;
-    float dt;
-    uint8_t pressedKeys;
-    uint8_t pressedEdges;
-    uint8_t hasBluetoothSignal;
-    uint8_t bluetoothSignal;
-} App_UpdateContext_t;
-
-void App_Init(void);
-uint8_t App_Update(App_UpdateContext_t *context);
-```
-
-### 5.1.2.1 `Application/Core/TestApp.h`
-
-```c
-void TestApp_Init(void);
-uint8_t TestApp_Update(App_UpdateContext_t *context);
-```
-
-`TestApp` 与完整 `App` 使用同一个 `App_UpdateContext_t`，因此 Mission 无需针对测试通道修改接口。两个初始化通道互斥，`main.c` 每次只能选择其中一个。
-
-### 5.1.3 `Application/Gimbal/Gimbal.h`
-
-```c
-Gimbal_Result_t Gimbal_Init(void);
-Gimbal_Result_t Gimbal_Enable(void);
-Gimbal_Result_t Gimbal_Disable(void);
-Gimbal_Result_t Gimbal_SetTargetAngle(
-    Gimbal_Axis_t axis, float targetAngleDeg);
-Gimbal_Result_t Gimbal_SetTargetAngles(
-    float targetXDeg, float targetYDeg);
-void Gimbal_Update(float dt);
-uint8_t Gimbal_IsEnabled(void);
-uint8_t Gimbal_HasFeedback(Gimbal_Axis_t axis);
-uint8_t Gimbal_IsAxisAtTarget(Gimbal_Axis_t axis);
-uint8_t Gimbal_AreTargetsReached(void);
-float Gimbal_GetCurrentAngleDeg(Gimbal_Axis_t axis);
-float Gimbal_GetTargetAngleDeg(Gimbal_Axis_t axis);
-Gimbal_State_t Gimbal_GetState(void);
-Gimbal_Error_t Gimbal_GetError(void);
-```
-
-`Gimbal_SetTargetAngle(s)` 使用协议多圈绝对角，单位为度。应用层当前只轮询总角度；速度、电压等原始反馈类型保留在 F32C 硬件层，后续确有需要时再加入应用层轮询计划。
-
-### 5.2 `Application/Control/PID.h`
-
-```c
-typedef struct
-{
-    float Kp, Ki, Kd;
-    float integral;
-    float prevError;
-    float outMax;
-    float integralMax;
-} PID_t;
-
-void PID_Init(PID_t *pid, float kp, float ki, float kd,
-              float outMax, float integralMax);
-void PID_SetTunings(PID_t *pid, float kp, float ki, float kd);
-void PID_Reset(PID_t *pid);
-float PID_Update(PID_t *pid, float setpoint, float measure, float dt);
-```
-
-### 5.3 `Application/Control/MotionStraight.h`
-
-```c
-MotionStraight_Result_t MotionStraight_Init(void);
-MotionStraight_Result_t MotionStraight_Start(
-    float distanceMM, float speedMMps, float endSpeedMMps);
-MotionStraight_Result_t MotionStraight_StartForward(
-    uint32_t distanceMM, float speedMMps, float endSpeedMMps);
-MotionStraight_Result_t MotionStraight_StartBackward(
-    uint32_t distanceMM, float speedMMps, float endSpeedMMps);
-void MotionStraight_Update(float dt);
-void MotionStraight_Stop(void);
-uint8_t MotionStraight_IsConfigured(void);
-uint8_t MotionStraight_IsBusy(void);
-uint8_t MotionStraight_IsFinished(void);
-MotionStraight_State_t MotionStraight_GetState(void);
-MotionStraight_Error_t MotionStraight_GetError(void);
-float MotionStraight_GetRemainingDistanceMM(void);
-```
-
-`MotionStraight_State_t` 包含空闲、运行、终点低速持续、完成和错误状态。终点速度为正数时进入 `MOTION_STRAIGHT_STATE_CONTINUING` 并继续占用电机，此时 `MotionStraight_IsFinished()` 和 `MotionStraight_IsBusy()` 都返回 1，调用 `MotionStraight_Stop()` 后才释放；终点速度为零时进入完成状态。`MotionStraight_Error_t` 区分 MPU 掉线、里程换算无效、更新周期非法和公共轮速层错误；`MotionStraight_Result_t` 返回启动、忙、参数、配置和传感器检查结果。
-
-### 5.4 `Application/Control/MotionWheel.h`
-
-```c
-MotionWheel_Result_t MotionWheel_Init(void);
-MotionWheel_Result_t MotionWheel_Update(
-    const MotionWheel_Command_t *command, float dt);
-void MotionWheel_Reset(void);
-void MotionWheel_Stop(void);
-uint8_t MotionWheel_IsConfigured(void);
-float MotionWheel_GetMaximumCommandPWM(void);
-float MotionWheel_GetLeftCommandPWM(void);
-float MotionWheel_GetRightCommandPWM(void);
-```
-
-`MotionWheel_Command_t` 包含左右轮目标速度 `targetSpeedLMMps/targetSpeedRMMps` 和上层控制器提供的附加修正 `trimLPWM/trimRPWM`。MotionWheel 是电机闭环的唯一公共写入层，上层模式不得并行调用。
-
-### 5.5 `Application/Control/MotionLine.h`
-
-```c
-MotionLine_Result_t MotionLine_Init(void);
-MotionLine_Result_t MotionLine_Start(float speedMMps);
-void MotionLine_Update(float dt);
-void MotionLine_Stop(void);
-uint8_t MotionLine_IsConfigured(void);
-uint8_t MotionLine_IsBusy(void);
-uint8_t MotionLine_IsFinished(void);
-MotionLine_State_t MotionLine_GetState(void);
-MotionLine_Error_t MotionLine_GetError(void);
-float MotionLine_GetLineError(void);
-```
-
-`MotionLine_GetLineError()` 当前返回最近一次有效灰度位图得到的离散权重，范围为 `-6~+6`，它不再是 PID 输入误差。
-
-### 5.6 `Application/Control/Nav.h`
-
-```c
-Nav_Result_t Nav_Init(void);
-Nav_Result_t Nav_StartTo(float targetYawDeg, float speedMMps);
-Nav_Result_t Nav_StartBy(float deltaYawDeg, float speedMMps);
-void Nav_Update(float dt);
-void Nav_Stop(void);
-uint8_t Nav_IsConfigured(void);
-uint8_t Nav_IsBusy(void);
-uint8_t Nav_IsFinished(void);
-Nav_State_t Nav_GetState(void);
-Nav_Error_t Nav_GetError(void);
-float Nav_GetTargetYawDeg(void);
-float Nav_GetAngleErrorDeg(void);
-```
-
-`Nav_StartTo()` 接受连续绝对航向角，`Nav_StartBy()` 接受相对转角，速度参数单位为 mm/s；两者都固定使用双轮等速反向转向。
-
-### 5.6.1 `Application/Control/MotionManager.h`
-
-```c
-MotionManager_Result_t MotionManager_Init(void);
+MotionManager_Result_t MotionManager_Init(void); /* 初始化全部运动模块。 */
 MotionManager_Result_t MotionManager_StartForward(
-    uint32_t distanceMM, float speedMMps, float endSpeedMMps);
+    uint32_t distanceMM, float speedMMps, float endSpeedMMps); /* 定距前进。 */
 MotionManager_Result_t MotionManager_StartBackward(
-    uint32_t distanceMM, float speedMMps, float endSpeedMMps);
-MotionManager_Result_t MotionManager_StartLine(float speedMMps);
+    uint32_t distanceMM, float speedMMps, float endSpeedMMps); /* 定距后退。 */
+MotionManager_Result_t MotionManager_StartLine(float speedMMps); /* 持续巡线。 */
 MotionManager_Result_t MotionManager_TurnTo(
-    float targetYawDeg, float speedMMps);
+    float targetYawDeg, float speedMMps);          /* 转到连续绝对角。 */
 MotionManager_Result_t MotionManager_TurnBy(
-    float deltaYawDeg, float speedMMps);
-MotionManager_Result_t MotionManager_StartBrake(void);
-void MotionManager_Update(float dt);
-void MotionManager_Stop(void);
-uint8_t MotionManager_IsConfigured(void);
-uint8_t MotionManager_IsBusy(void);
-uint8_t MotionManager_IsFinished(void);
-MotionManager_Mode_t MotionManager_GetMode(void);
-MotionManager_Error_t MotionManager_GetError(void);
+    float deltaYawDeg, float speedMMps);           /* 按相对角转动。 */
+MotionManager_Result_t MotionManager_StartBrake(void); /* 启动短时主动刹车模式。 */
+void MotionManager_Update(float dt);               /* 只更新当前运动模式。 */
+void MotionManager_Stop(void);                     /* 停止并释放当前模式。 */
+uint8_t MotionManager_IsConfigured(void);          /* 返回初始化状态。 */
+uint8_t MotionManager_IsBusy(void);                /* 返回当前动作是否运行。 */
+uint8_t MotionManager_IsFinished(void);            /* 返回当前动作是否完成。 */
+MotionManager_Mode_t MotionManager_GetMode(void);  /* 返回当前运动模式。 */
+MotionManager_Error_t MotionManager_GetError(void);/* 返回统一错误码。 */
 ```
 
-`MotionManager_StartBrake()` 不带运行时参数；平滑过渡和主动刹车持续时间统一在 `MotionManager.h` 顶部的 `MOTION_MANAGER_BRAKE_*` 中调整。它应作为定距直行结束后的独立 Mission 状态使用，不能在 Accomplish 文件中直接调用 `Motor_Brake()`。
+| 参数 | 当前值 | 作用 |
+|---|---:|---|
+| `MOTION_MANAGER_BRAKE_RELEASE_SECONDS` | `0.01f` | 主动刹车前的 PWM 释放时间 |
+| `MOTION_MANAGER_BRAKE_HOLD_SECONDS` | `0.05f` | `Motor_Brake()` 保持时间；不会由终点速度 0 自动调用 |
 
-### 5.6.2 `Application/Mission/Mission.h`
+### 5.3 直线、巡线、转向与轮速
 
 ```c
-typedef Mission_CallbackResult_t (*Mission_EnterCallback_t)(void);
-typedef Mission_ActionStatus_t (*Mission_UpdateCallback_t)(float dt);
-typedef void (*Mission_ExitCallback_t)(Mission_ExitReason_t reason);
-typedef uint8_t (*Mission_ConditionCallback_t)(
-    const Mission_Runtime_t *runtime,
-    const App_UpdateContext_t *updateContext);
+MotionStraight_Result_t MotionStraight_Init(void); /* 初始化直线控制器。 */
+MotionStraight_Result_t MotionStraight_Start(
+    float distanceMM, float speedMMps, float endSpeedMMps); /* 带符号距离的底层入口。 */
+MotionStraight_Result_t MotionStraight_StartForward(
+    uint32_t distanceMM, float speedMMps, float endSpeedMMps); /* 前进包装。 */
+MotionStraight_Result_t MotionStraight_StartBackward(
+    uint32_t distanceMM, float speedMMps, float endSpeedMMps); /* 后退包装。 */
+void MotionStraight_Update(float dt);               /* 更新速度规划、航向和轮速。 */
+void MotionStraight_Stop(void);                     /* 停止直线并复位控制器。 */
+uint8_t MotionStraight_IsConfigured(void);          /* 返回初始化状态。 */
+uint8_t MotionStraight_IsBusy(void);                /* 返回是否运行。 */
+uint8_t MotionStraight_IsFinished(void);            /* 返回是否到达目标。 */
+MotionStraight_State_t MotionStraight_GetState(void); /* 返回直线状态。 */
+MotionStraight_Error_t MotionStraight_GetError(void); /* 返回直线错误。 */
+float MotionStraight_GetRemainingDistanceMM(void);  /* 返回带方向的剩余距离。 */
 
+MotionLine_Result_t MotionLine_Init(void);          /* 初始化巡线控制器。 */
+MotionLine_Result_t MotionLine_Start(float speedMMps); /* 启动巡线。 */
+void MotionLine_Update(float dt);                   /* 更新灰度权重和轮速目标。 */
+void MotionLine_Stop(void);                         /* 停止巡线。 */
+uint8_t MotionLine_IsConfigured(void);              /* 返回初始化状态。 */
+uint8_t MotionLine_IsBusy(void);                    /* 返回是否巡线。 */
+uint8_t MotionLine_IsFinished(void);                /* 返回是否确认丢线。 */
+MotionLine_State_t MotionLine_GetState(void);       /* 返回巡线状态。 */
+MotionLine_Error_t MotionLine_GetError(void);       /* 返回巡线错误。 */
+float MotionLine_GetLineError(void);                /* 返回当前离散线路误差。 */
+
+Nav_Result_t Nav_Init(void);                        /* 初始化转向控制器。 */
+Nav_Result_t Nav_StartTo(float targetYawDeg, float speedMMps); /* 连续绝对角转向。 */
+Nav_Result_t Nav_StartBy(float deltaYawDeg, float speedMMps);  /* 相对角转向。 */
+void Nav_Update(float dt);                          /* 更新转向速度规划。 */
+void Nav_Stop(void);                                /* 停止转向。 */
+uint8_t Nav_IsConfigured(void);                     /* 返回初始化状态。 */
+uint8_t Nav_IsBusy(void);                           /* 返回是否转向。 */
+uint8_t Nav_IsFinished(void);                       /* 返回是否稳定到角。 */
+Nav_State_t Nav_GetState(void);                     /* 返回转向状态。 */
+Nav_Error_t Nav_GetError(void);                     /* 返回转向错误。 */
+float Nav_GetTargetYawDeg(void);                    /* 返回连续绝对目标角。 */
+float Nav_GetAngleErrorDeg(void);                   /* 返回当前角度误差。 */
+
+MotionWheel_Result_t MotionWheel_Init(void);        /* 初始化公共双轮 PI。 */
+MotionWheel_Result_t MotionWheel_Update(
+    const MotionWheel_Command_t *command, float dt); /* 执行双轮速度和差速修正。 */
+void MotionWheel_Reset(void);                       /* 清空 PI 和输出记录。 */
+void MotionWheel_Stop(void);                        /* 释放电机并复位 PI。 */
+uint8_t MotionWheel_IsConfigured(void);             /* 返回初始化状态。 */
+float MotionWheel_GetMaximumCommandPWM(void);       /* 返回公共 PWM 上限。 */
+float MotionWheel_GetLeftCommandPWM(void);          /* 返回最近左轮 PWM。 */
+float MotionWheel_GetRightCommandPWM(void);         /* 返回最近右轮 PWM。 */
+```
+
+| 头文件 | 公共参数 | 当前值 | 作用 |
+|---|---|---:|---|
+| `MotionStraight.h` | `MOTION_STRAIGHT_HEADING_KP`、`MOTION_STRAIGHT_HEADING_KD` | `6.0/0.4` | 航向回正和阻尼 |
+| `MotionStraight.h` | `MOTION_STRAIGHT_HEADING_LIMIT_PWM` | `700.0f` | 航向差速修正上限 |
+| `MotionStraight.h` | `MOTION_STRAIGHT_CORRECTION_SIGN` | `-1` | 航向修正方向 |
+| `MotionStraight.h` | `MOTION_STRAIGHT_MAX_SPEED_MMPS` | `1000.0f` | 直线速度请求上限 |
+| `MotionStraight.h` | `MOTION_STRAIGHT_ACCELERATION_MMPS2` | `300.0f` | 起步加速度 |
+| `MotionStraight.h` | `MOTION_STRAIGHT_DECELERATION_START_RATIO` | `5/6` | 进入末段减速的位置比例 |
+| `MotionStraight.h` | `MOTION_STRAIGHT_DISTANCE_TOLERANCE_MM` | `5.0f` | 到达距离容差 |
+| `MotionStraight.h` | `MOTION_STRAIGHT_ZERO_SPEED_HOLD_SECONDS` | `0.05f` | 终点速度为 0 时的固定闭环保持时间 |
+| `MotionLine.h` | `MOTION_LINE_OUTER_WEIGHT`、`MOTION_LINE_INNER_WEIGHT` | `6/3` | 最外侧与内侧灰度权重绝对值 |
+| `MotionLine.h` | `MOTION_LINE_MAX_ADJUST_RATIO` | `0.2f` | 最大差速调整比例 |
+| `MotionLine.h` | `MOTION_LINE_MAX_SPEED_MMPS` | `1000.0f` | 巡线速度请求上限 |
+| `MotionLine.h` | `MOTION_LINE_LOST_CONFIRM_TICKS` | `50U` | 连续全白 500 ms 后确认丢线 |
+| `MotionWheel.h` | `MOTION_WHEEL_KP`、`MOTION_WHEEL_KI` | `1.0/0.0` | 双轮速度 PI；积分当前关闭 |
+| `MotionWheel.h` | `MOTION_WHEEL_INTEGRAL_LIMIT` | `0.0f` | 轮速积分限幅 |
+| `MotionWheel.h` | `MOTION_WHEEL_FEEDFORWARD_PWM_PER_MMPS` | `2.0f` | 速度到 PWM 的前馈系数 |
+| `MotionWheel.h` | `MOTION_WHEEL_STATIC_FRICTION_PWM` | `0.0f` | 非零速度静摩擦补偿 |
+| `MotionWheel.h` | `MOTION_WHEEL_MAX_COMMAND_PWM` | `1000.0f` | 每侧最终 PWM 上限 |
+| `Nav.h` | `NAV_MAX_TURN_SPEED_MMPS` | `200.0f` | 转向轮速上限 |
+| `Nav.h` | `NAV_MIN_TURN_SPEED_MMPS` | `40.0f` | 接近目标时的最低轮速 |
+| `Nav.h` | `NAV_SLOWDOWN_ANGLE_DEG` | `45.0f` | 转向减速角度区间 |
+| `Nav.h` | `NAV_ACCELERATION_MMPS2` | `150.0f` | 起转加速度 |
+| `Nav.h` | `NAV_DECELERATION_MMPS2` | `600.0f` | 接近目标时的减速度 |
+| `Nav.h` | `NAV_ANGLE_TOLERANCE_DEG` | `2.0f` | 到角容差 |
+| `Nav.h` | `NAV_SETTLE_TICKS` | `3U` | 连续稳定 30 ms 后完成 |
+| `Nav.h` | `NAV_ROTATION_COMMAND_SIGN` | `1` | 转向命令方向 |
+
+### 5.4 PID、Gimbal、Servo 与状态
+
+```c
+void PID_Init(PID_t *pid, float kp, float ki, float kd,
+              float outMax, float integralMax);     /* 初始化位置式 PID。 */
+void PID_SetTunings(PID_t *pid, float kp, float ki, float kd); /* 更新增益。 */
+void PID_Reset(PID_t *pid);                         /* 清空积分和上次误差。 */
+float PID_Update(PID_t *pid, float setpoint, float measure, float dt); /* 单步计算。 */
+
+Gimbal_Result_t Gimbal_Init(void);                  /* 初始化 F32C 并保持禁用。 */
+Gimbal_Result_t Gimbal_Enable(void);                /* 使能并配置两个地址。 */
+Gimbal_Result_t Gimbal_Disable(void);               /* 失能两个地址。 */
+Gimbal_Result_t Gimbal_SetTargetAngle(
+    Gimbal_Axis_t axis, float targetAngleDeg);       /* 设置单轴多圈绝对角。 */
+Gimbal_Result_t Gimbal_SetTargetAngles(
+    float targetXDeg, float targetYDeg);             /* 设置双轴多圈绝对角。 */
+void Gimbal_Update(float dt);                       /* 解析反馈并轮询双轴。 */
+uint8_t Gimbal_IsEnabled(void);                     /* 返回使能状态。 */
+uint8_t Gimbal_HasFeedback(Gimbal_Axis_t axis);     /* 返回单轴是否收到角度。 */
+uint8_t Gimbal_IsAxisAtTarget(Gimbal_Axis_t axis);  /* 返回单轴是否稳定到位。 */
+uint8_t Gimbal_AreTargetsReached(void);             /* 返回双轴是否到位。 */
+float Gimbal_GetCurrentAngleDeg(Gimbal_Axis_t axis);/* 返回反馈角。 */
+float Gimbal_GetTargetAngleDeg(Gimbal_Axis_t axis); /* 返回目标角。 */
+Gimbal_State_t Gimbal_GetState(void);               /* 返回运行状态。 */
+Gimbal_Error_t Gimbal_GetError(void);               /* 返回错误状态。 */
+
+void Servo_Init(void);                              /* 初始化双路角度状态。 */
+void Servo_SetVerticalAngle(uint16_t angle);         /* 限位后设置纵向角。 */
+void Servo_SetHorizontalAngle(uint16_t angle);       /* 限位后设置横向角。 */
+uint16_t Servo_GetVerticalAngle(void);               /* 返回纵向目标角。 */
+uint16_t Servo_GetHorizontalAngle(void);             /* 返回横向目标角。 */
+void Servo_Reset(void);                             /* 恢复两个默认角。 */
+
+void Heading_Init(void);                            /* 初始化 MPU 并复位航向。 */
+void Heading_Calibrate(void);                       /* 静止阻塞采样零漂。 */
+void Heading_Update(float dt);                      /* 积分连续 Z 轴航向。 */
+uint8_t Heading_IsReady(void);                      /* 返回 MPU 是否在线。 */
+float Heading_GetYaw(void);                         /* 返回连续累计偏航角。 */
+void Heading_SetYaw(float yaw);                     /* 设置当前航向基准。 */
+void Heading_ScaleCalibStart(void);                 /* 开始陀螺尺度标定。 */
+float Heading_ScaleCalibFinish(uint16_t turns);     /* 按真实圈数应用尺度。 */
+void Heading_ScaleCalibCancel(void);                /* 取消尺度标定。 */
+float Heading_GetCalibAngle(void);                  /* 返回标定累计原始角。 */
+float Heading_GetScale(void);                       /* 返回当前尺度因子。 */
+void Heading_SetScale(float scale);                 /* 设置尺度因子。 */
+
+void Odometry_Init(void);                           /* 初始化编码器和里程。 */
+void Odometry_Update(uint8_t ticks);                /* 更新双轮路程与速度。 */
+void Odometry_Reset(void);                          /* 清零当前分段里程。 */
+float Odometry_GetDistanceMM(void);                 /* 返回左右平均路程。 */
+float Odometry_GetDistanceLMM(void);                /* 返回左轮路程。 */
+float Odometry_GetDistanceRMM(void);                /* 返回右轮路程。 */
+float Odometry_GetSpeedL(void);                     /* 返回左轮速度。 */
+float Odometry_GetSpeedR(void);                     /* 返回右轮速度。 */
+```
+
+| 头文件 | 公共参数 | 当前值 | 作用 |
+|---|---|---:|---|
+| `Gimbal.h` | `GIMBAL_X_MOTOR_ADDRESS`、`GIMBAL_Y_MOTOR_ADDRESS` | `1/2` | X/Y 电机地址 |
+| `Gimbal.h` | `GIMBAL_DEFAULT_SPEED_RPM` | `100` | 默认 T 型规划速度 |
+| `Gimbal.h` | `GIMBAL_DEFAULT_ACCELERATION_RPMS2` | `100U` | 默认加速度 |
+| `Gimbal.h` | `GIMBAL_FEEDBACK_REQUEST_PERIOD_SECONDS` | `0.03f` | 地址轮询周期 |
+| `Gimbal.h` | `GIMBAL_FEEDBACK_TIMEOUT_SECONDS` | `1.0f` | 反馈超时 |
+| `Gimbal.h` | `GIMBAL_POSITION_TOLERANCE_DEG` | `2.0f` | 到位角度容差 |
+| `Gimbal.h` | `GIMBAL_POSITION_SETTLE_FEEDBACKS` | `2U` | 连续到位反馈次数 |
+| `Servo.h` | `SERVO_PHYSICAL_RANGE_DEG` | `270U` | 电气角度量程 |
+| `Servo.h` | `SERVO_MIN_PULSE_US`、`SERVO_MAX_PULSE_US` | `500/2500 us` | 角度脉宽范围 |
+| `Servo.h` | `SERVO_FRAME_US` | `20000U` | 50 Hz 帧周期 |
+| `Servo.h` | `SERVO_VERTICAL_MIN_ANGLE`、`SERVO_VERTICAL_MAX_ANGLE`、`SERVO_VERTICAL_DEFAULT_ANGLE` | `0/270/135°` | 纵向限位与默认角 |
+| `Servo.h` | `SERVO_HORIZONTAL_MIN_ANGLE`、`SERVO_HORIZONTAL_MAX_ANGLE`、`SERVO_HORIZONTAL_DEFAULT_ANGLE` | `0/270/135°` | 横向限位与默认角 |
+| `Heading.h` | `HEADING_CALIBRATION_SAMPLES` | `400U` | 开机零漂采样数 |
+| `Heading.h` | `HEADING_CALIBRATION_INTERVAL_MS` | `2U` | 零漂采样间隔 |
+| `Odometry.h` | `Odometry_CountsPerMM` | `6.23f` | 每毫米编码器计数，需实车标定 |
+
+## 6. Hardware 与 System 公共接口和参数
+
+### 6.1 板级、通信与传感器
+
+```c
+void LED_Init(void);               /* 初始化 LED 输出。 */
+void LED1_ON(void);                /* 点亮 LED1。 */
+void LED1_OFF(void);               /* 熄灭 LED1。 */
+void LED1_Turn(void);              /* 翻转 LED1。 */
+void LED2_ON(void);                /* 点亮 LED2。 */
+void LED2_OFF(void);               /* 熄灭 LED2。 */
+void LED2_Turn(void);              /* 翻转 LED2。 */
+void LED_RGB_ON(void);             /* 同时点亮两个 LED。 */
+void LED_RGB_OFF(void);            /* 同时熄灭两个 LED。 */
+
+void Beep_Init(void);              /* 初始化蜂鸣器并关闭输出。 */
+void Beep_On(void);                /* 打开蜂鸣器。 */
+void Beep_Off(void);               /* 关闭蜂鸣器。 */
+void Beep_Notify(uint8_t times);   /* 非阻塞短鸣指定次数。 */
+void Beep_Long(void);              /* 触发长鸣。 */
+void Beep_Tick(void);              /* 100 Hz 推进鸣叫状态。 */
+
+void Key_Init(void);               /* 初始化四个低有效按键。 */
+uint8_t Key_GetPressedMask(void);  /* 返回 bit0~bit3 按下位图。 */
+uint8_t Key_GetNum(void);          /* 返回单个按键编号，无按键为 0。 */
+
+void Serial1_Init(void);                           /* 初始化 UART1 蓝牙缓冲区。 */
+uint32_t Serial1_Available(void);                  /* 返回 UART1 待读字节数。 */
+uint8_t Serial1_ReadByte(uint8_t *byte);           /* 非阻塞读取 UART1 字节。 */
+void Serial1_SendByte(uint8_t byte);               /* UART1 发送单字节。 */
+void Serial1_SendArray(const uint8_t *array, uint16_t length); /* UART1 发送数组。 */
+void Serial1_SendString(const char *string);       /* UART1 发送字符串。 */
+void Serial1_Printf(const char *format, ...);      /* UART1 格式化发送。 */
+void Serial2_Init(void);                           /* 初始化 UART2 F32C 缓冲区。 */
+uint32_t Serial2_Available(void);                  /* 返回 UART2 待读字节数。 */
+uint8_t Serial2_ReadByte(uint8_t *byte);           /* 非阻塞读取 UART2 字节。 */
+void Serial2_SendByte(uint8_t byte);               /* UART2 发送单字节。 */
+void Serial2_SendArray(const uint8_t *array, uint16_t length); /* UART2 发送数组。 */
+
+void Graydetect_Init(void);                        /* 初始化五路上拉输入。 */
+uint8_t Graydetect_GetState(void);                 /* 返回五路位图，黑线为 1。 */
+uint8_t Graydetect_GetBit(uint8_t index);          /* 返回 0~4 指定通道。 */
+float Graydetect_GetError(uint8_t side);           /* 返回指定区域加权误差。 */
+uint8_t Graydetect_OnLine(uint8_t side);           /* 返回指定区域是否压线。 */
+
+void MPU6050_Init(void);                           /* 初始化软件 I2C 和 MPU6050。 */
+uint8_t MPU6050_IsReady(void);                     /* 返回设备是否在线。 */
+uint8_t MPU6050_GetID(void);                       /* 读取 WHO_AM_I。 */
+void MPU6050_GetData(int16_t *ax, int16_t *ay, int16_t *az,
+                     int16_t *gx, int16_t *gy, int16_t *gz); /* 读取六轴原始值。 */
+int16_t MPU6050_GetGyroZ(void);                    /* 读取 Z 轴陀螺原始值。 */
+```
+
+| 头文件 | 公共参数 | 当前值 | 作用 |
+|---|---|---:|---|
+| `Serial.h` | `SERIAL1_RX_BUFFER_SIZE` | `1024U` | UART1 RX 环形缓冲区 |
+| `Serial.h` | `SERIAL2_RX_BUFFER_SIZE` | `256U` | UART2 RX 环形缓冲区 |
+| `Serial.h` | `Serial1_RxFlag` | 公共状态 | UART1 收到数据后置位 |
+| `Graydetect.h` | `GRAY_SIDE_ALL`、`GRAY_SIDE_LEFT`、`GRAY_SIDE_RIGHT` | `0/1/2` | 灰度区域选择 |
+
+### 6.2 电机、编码器与 F32C
+
+```c
+void PWM_Init(void);                         /* 启动 TIMG8 双通道 PWM。 */
+void PWM_SetCompareA(uint16_t Compare);       /* 设置右电机 A 通道，范围 0~1000。 */
+void PWM_SetCompareB(uint16_t Compare);       /* 设置左电机 B 通道，范围 0~1000。 */
+
+void Motor_Init(void);                       /* 初始化 PWM 并释放双轮。 */
+void Motor_SetLeftPWM(int16_t PWM);           /* 设置物理左轮有符号 PWM。 */
+void Motor_SetRightPWM(int16_t PWM);          /* 设置物理右轮有符号 PWM。 */
+void Motor_SetPWM(int16_t LeftPWM, int16_t RightPWM); /* 同时设置双轮 PWM。 */
+void Motor_StopAll(void);                    /* PWM 归零并释放双轮。 */
+void Motor_Brake(void);                      /* TB6612 短路制动，快速刹车。 */
+void Motor_Run(int16_t leftSpeed, int16_t rightSpeed); /* 双轮开环运行。 */
+void Motor_Forward(int16_t speed);            /* 双轮同速前进。 */
+void Motor_Backward(int16_t speed);           /* 双轮同速后退。 */
+void Motor_TurnLeft(int16_t speed);           /* 单侧开环左转。 */
+void Motor_TurnRight(int16_t speed);          /* 单侧开环右转。 */
+void Motor_SpinLeft(int16_t speed);           /* 双轮反向原地左转。 */
+void Motor_SpinRight(int16_t speed);          /* 双轮反向原地右转。 */
+void Motor_Stop(void);                       /* `Motor_StopAll()` 的兼容接口。 */
+
+void Encoder_Init(void);                     /* 初始化双轮正交中断计数。 */
+int16_t Encoder_Get(uint8_t n);               /* 读取并清零左轮 n=1 或右轮 n=2 增量。 */
+
+void F32C_Init(void);                         /* 初始化 UART2 解析状态。 */
+F32C_Result_t F32C_Enable(uint8_t address);   /* 使能指定地址。 */
+F32C_Result_t F32C_Disable(uint8_t address);  /* 失能指定地址。 */
+F32C_Result_t F32C_SetMode(uint8_t address, F32C_Mode_t mode); /* 设置控制模式。 */
+F32C_Result_t F32C_SetSpeedRPM(uint8_t address, int16_t speedRPM); /* 设置规划速度。 */
+F32C_Result_t F32C_SetAcceleration(
+    uint8_t address, uint16_t accelerationRPMS2); /* 设置规划加速度。 */
+F32C_Result_t F32C_ClearMultiTurnAngle(uint8_t address); /* 将当前位置记为多圈零点。 */
+F32C_Result_t F32C_SetMultiTurnPositionDegrees(
+    uint8_t address, float targetAngleDeg);   /* 设置多圈绝对角目标。 */
+F32C_Result_t F32C_RequestFeedback(
+    uint8_t address, F32C_FeedbackType_t type); /* 请求指定反馈。 */
+uint8_t F32C_PopFeedback(F32C_Feedback_t *feedback); /* 解析一帧有效反馈。 */
+```
+
+| 头文件 | 公共参数 | 当前值 | 作用 |
+|---|---|---:|---|
+| `PWM.h` | `PWM_MAX_DUTY` | `1000U` | 有刷电机 PWM 软件满量程 |
+| `F32C.h` | `F32C_MIN_ADDRESS` | `1U` | 最小有效电机地址 |
+| `F32C.h` | `F32C_MAX_SPEED_RPM` | `1000` | 协议速度上限 |
+| `F32C.h` | `F32C_MAX_MULTI_TURN_ANGLE_DEG` | `214748300.0f` | 多圈角度软件上限 |
+| `F32C.h` | `F32C_COMMAND_INTERVAL_MS` | `1U` | 相邻 F32C 指令最小间隔 |
+
+### 6.3 OLED 与 System
+
+```c
+void OLED_Init(void);                              /* 初始化 OLED 和显存。 */
+uint8_t OLED_IsReady(void);                        /* 返回 I2C 初始化结果。 */
+void OLED_Update(void);                            /* 刷新全部显存。 */
+void OLED_UpdateArea(int16_t x, int16_t y, uint8_t width, uint8_t height); /* 刷新区域。 */
+void OLED_Clear(void);                             /* 清空显存。 */
+void OLED_ClearArea(int16_t x, int16_t y, uint8_t width, uint8_t height); /* 清空区域。 */
+void OLED_Reverse(void);                           /* 反色全部显存。 */
+void OLED_ReverseArea(int16_t x, int16_t y, uint8_t width, uint8_t height); /* 反色区域。 */
+void OLED_ShowChar(int16_t x, int16_t y, char value, uint8_t fontSize); /* 显示字符。 */
+void OLED_ShowString(int16_t x, int16_t y, const char *string, uint8_t fontSize); /* 显示字符串。 */
+void OLED_ShowNum(int16_t x, int16_t y, uint32_t number, uint8_t length, uint8_t fontSize); /* 显示无符号数。 */
+void OLED_ShowSignedNum(int16_t x, int16_t y, int32_t number, uint8_t length, uint8_t fontSize); /* 显示有符号数。 */
+void OLED_ShowHexNum(int16_t x, int16_t y, uint32_t number, uint8_t length, uint8_t fontSize); /* 显示十六进制数。 */
+void OLED_ShowBinNum(int16_t x, int16_t y, uint32_t number, uint8_t length, uint8_t fontSize); /* 显示二进制数。 */
+void OLED_ShowFloatNum(int16_t x, int16_t y, double number,
+                       uint8_t intLength, uint8_t fraLength,
+                       uint8_t fontSize);            /* 显示浮点数。 */
+void OLED_ShowImage(int16_t x, int16_t y, uint8_t width,
+                    uint8_t height, const uint8_t *image); /* 显示位图。 */
+void OLED_Printf(int16_t x, int16_t y, uint8_t fontSize,
+                 const char *format, ...);          /* 格式化显示。 */
+void OLED_DrawPoint(int16_t x, int16_t y);          /* 绘制点。 */
+uint8_t OLED_GetPoint(int16_t x, int16_t y);        /* 读取显存像素。 */
+void OLED_DrawLine(int16_t x0, int16_t y0, int16_t x1, int16_t y1); /* 绘制线段。 */
+void OLED_DrawRectangle(int16_t x, int16_t y, uint8_t width,
+                        uint8_t height, uint8_t filled); /* 绘制矩形。 */
+void OLED_DrawTriangle(int16_t x0, int16_t y0, int16_t x1,
+                       int16_t y1, int16_t x2, int16_t y2,
+                       uint8_t filled);              /* 绘制三角形。 */
+void OLED_DrawCircle(int16_t x, int16_t y, uint8_t radius,
+                     uint8_t filled);                /* 绘制圆。 */
+void OLED_DrawEllipse(int16_t x, int16_t y, uint8_t a,
+                      uint8_t b, uint8_t filled);    /* 绘制椭圆。 */
+void OLED_DrawArc(int16_t x, int16_t y, uint8_t radius,
+                  int16_t startAngle, int16_t endAngle,
+                  uint8_t filled);                   /* 绘制圆弧。 */
+
+void Delay_us(uint32_t us);                         /* 阻塞微秒延时。 */
+void Delay_ms(uint32_t ms);                         /* 阻塞毫秒延时。 */
+void Delay_s(uint32_t s);                           /* 阻塞秒延时。 */
+void Tick_Init(void);                               /* 初始化累计 Tick。 */
+uint8_t Tick_Poll(void);                            /* 有 Tick 时消费一个并返回 1。 */
+uint8_t Tick_PollCount(void);                       /* 取出并清空累计 Tick 数。 */
+void Interrupt_Enable(void);                        /* 统一开启全局中断。 */
+void Interrupt_Disable(void);                       /* 统一关闭全局中断。 */
+```
+
+| 头文件 | 公共参数 / 数据 | 当前值 | 作用 |
+|---|---|---:|---|
+| `OLED.h` | `OLED_8X16/OLED_6X8` | `8U/6U` | 字体选择 |
+| `OLED.h` | `OLED_UNFILLED/OLED_FILLED` | `0U/1U` | 图形填充选择 |
+| `OLED_Data.h` | `OLED_CHARSET_UTF8` | 已启用 | 中文字模索引编码 |
+| `OLED_Data.h` | `OLED_F8x16/OLED_F6x8/OLED_CF16x16/Diode` | 公共只读数据 | ASCII、中文和图像数据 |
+| `Tick.h` | `TICK_HZ` | `100U` | 系统节拍频率 |
+| `Tick.h` | `TICK_DT` | `0.01f` | 单节拍秒数 |
+
+## 7. Mission 与 Accomplish 公共接口和参数
+
+### 7.1 Mission 状态图接口
+
+```c
 typedef struct
 {
-    Mission_ConditionCallback_t condition;
-    uint16_t targetState;
-    Mission_TransitionType_t type;
-} Mission_Transition_t;
-
-typedef struct
-{
-    Mission_EnterCallback_t onEnter;
-    Mission_UpdateCallback_t onUpdate;
-    Mission_ExitCallback_t onExit;
-    const Mission_Transition_t *transitions;
-    uint8_t transitionCount;
-    uint8_t interruptible;
+    Mission_EnterCallback_t onEnter;          /* 进入状态时调用一次。 */
+    Mission_UpdateCallback_t onUpdate;        /* 每个 Mission 节拍调用。 */
+    Mission_ExitCallback_t onExit;            /* 完成、打断、停止或错误时调用一次。 */
+    const Mission_Transition_t *transitions;  /* 按声明顺序检查的转换表。 */
+    uint8_t transitionCount;                  /* 转换数量。 */
+    uint8_t interruptible;                    /* 是否允许普通打断转换。 */
 } Mission_StateDefinition_t;
 
 typedef struct
 {
-    const Mission_StateDefinition_t *states;
-    uint16_t stateCount;
-    uint16_t startState;
-    uint16_t errorState;
+    const Mission_StateDefinition_t *states;  /* 静态状态数组。 */
+    uint16_t stateCount;                      /* 状态数量。 */
+    uint16_t startState;                      /* 起始状态编号。 */
+    uint16_t errorState;                      /* 错误状态编号。 */
 } Mission_GraphDefinition_t;
 
-void Mission_Init(const Mission_GraphDefinition_t *graph);
-void Mission_Update(const App_UpdateContext_t *updateContext);
-void Mission_Stop(void);
-Mission_Status_t Mission_GetStatus(void);
-const Mission_Runtime_t *Mission_GetRuntime(void);
-Mission_ActionStatus_t Mission_GetMotionActionStatus(void);
+void Mission_Init(const Mission_GraphDefinition_t *graph); /* 校验并进入起始状态。 */
+void Mission_Update(const App_UpdateContext_t *updateContext); /* 更新当前状态并执行最多一次转换。 */
+void Mission_Stop(void);                            /* 停止动作并回到起始状态。 */
+Mission_Status_t Mission_GetStatus(void);           /* 返回任务执行状态。 */
+const Mission_Runtime_t *Mission_GetRuntime(void);  /* 返回只读运行上下文。 */
+Mission_ActionStatus_t Mission_GetMotionActionStatus(void); /* 把 MotionManager 状态映射为动作状态。 */
 uint8_t Mission_ContextHasBluetoothSignal(
-    const App_UpdateContext_t *updateContext, uint8_t signal);
+    const App_UpdateContext_t *updateContext, uint8_t signal); /* 检查本拍蓝牙事件。 */
 ```
 
-### 5.6.3 `Accomplish/25E.h`
+转换数组从前到后就是优先级。动作运行时只检查打断转换，动作完成后只检查正常转换；每个系统节拍最多转换一次。`C0` 不受 `interruptible` 限制，始终停止并复位任务。
+
+### 7.2 Accomplish 状态图入口
 
 ```c
-const Mission_GraphDefinition_t *Accomplish25E_GetMissionGraph(void);
+const Mission_GraphDefinition_t *Accomplish25E_GetMissionGraph(void); /* 返回 25E 静态状态图。 */
+const Mission_GraphDefinition_t *Accomplish25H_GetMissionGraph(void); /* 返回当前 25H 静态状态图。 */
+const Mission_GraphDefinition_t *BrushlessMotorTest_GetMissionGraph(void); /* 返回 F32C 测试状态图。 */
 ```
 
-该函数只返回静态只读状态图，不进行硬件初始化。切换题目时由 `main.c` 选择对应 Accomplish 头文件和状态图函数。
-
-### 5.6.4 `Accomplish/25H.h`
-
-```c
-const Mission_GraphDefinition_t *Accomplish25H_GetMissionGraph(void);
-```
-
-该函数返回 25H 静态只读状态图。当前未由 `main.c` 加载；题目参数全部位于 `Accomplish/25H.h` 开头。
-
-### 5.6.5 `Accomplish/Brushless_Motor_Test.h`
-
-```c
-const Mission_GraphDefinition_t *
-BrushlessMotorTest_GetMissionGraph(void);
-```
-
-该函数返回当前 `main.c` 加载的 F32C 双轴循环测试状态图；测试上电自动启动，停止按键、X 方向和两轴目标角度位于该头文件开头。
-
-### 5.7 `Application/Debug/DebugDisplay.h`
-
-```c
-void DebugDisplay_Init(void);
-void DebugDisplay_ShowHeadingCalibration(uint8_t mpuReady);
-void DebugDisplay_Update(uint8_t elapsedTicks);
-```
-
-### 5.8 `Application/Servo/Servo.h`
-
-```c
-void Servo_Init(void);
-void Servo_SetVerticalAngle(uint16_t angle);
-void Servo_SetHorizontalAngle(uint16_t angle);
-uint16_t Servo_GetVerticalAngle(void);
-uint16_t Servo_GetHorizontalAngle(void);
-void Servo_Reset(void);
-```
-
-### 5.9 `Application/State/Heading.h`
-
-```c
-void Heading_Init(void);
-void Heading_Calibrate(void);
-void Heading_Update(float dt);
-uint8_t Heading_IsReady(void);
-float Heading_GetYaw(void);
-void Heading_SetYaw(float yaw);
-void Heading_ScaleCalibStart(void);
-float Heading_ScaleCalibFinish(uint16_t turns);
-void Heading_ScaleCalibCancel(void);
-float Heading_GetCalibAngle(void);
-float Heading_GetScale(void);
-void Heading_SetScale(float scale);
-```
-
-### 5.10 `Application/State/Odometry.h`
-
-```c
-void Odometry_Init(void);
-void Odometry_Update(uint8_t ticks);
-void Odometry_Reset(void);
-float Odometry_GetDistanceMM(void);
-float Odometry_GetDistanceLMM(void);
-float Odometry_GetDistanceRMM(void);
-float Odometry_GetSpeedL(void);
-float Odometry_GetSpeedR(void);
-```
-
-### 5.11 `Hardware/Board/Beep.h`
-
-```c
-void Beep_Init(void);
-void Beep_On(void);
-void Beep_Off(void);
-void Beep_Notify(uint8_t times);
-void Beep_Long(void);
-void Beep_Tick(void);
-```
-
-### 5.12 `Hardware/Board/Key.h`
-
-```c
-void Key_Init(void);
-uint8_t Key_GetPressedMask(void);
-uint8_t Key_GetNum(void);
-```
-
-`Key_GetPressedMask()` 的 bit0~bit3 对应 KEY1~KEY4；`Key_GetNum()` 返回当前第一个按下的键号，未按下返回 0。两个读取接口均不阻塞。
-
-### 5.13 `Hardware/Board/LED.h`
-
-```c
-void LED_Init(void);
-void LED1_ON(void);
-void LED1_OFF(void);
-void LED1_Turn(void);
-void LED2_ON(void);
-void LED2_OFF(void);
-void LED2_Turn(void);
-void LED_RGB_ON(void);
-void LED_RGB_OFF(void);
-```
-
-### 5.14 `Hardware/Comms/Serial.h`
-
-```c
-void Serial1_Init(void);
-uint32_t Serial1_Available(void);
-uint8_t Serial1_ReadByte(uint8_t *byte);
-void Serial1_SendByte(uint8_t byte);
-void Serial1_SendArray(const uint8_t *array, uint16_t length);
-void Serial1_SendString(const char *string);
-void Serial1_Printf(const char *format, ...);
-void Serial2_Init(void);
-uint32_t Serial2_Available(void);
-uint8_t Serial2_ReadByte(uint8_t *byte);
-void Serial2_SendByte(uint8_t byte);
-void Serial2_SendArray(const uint8_t *array, uint16_t length);
-```
-
-### 5.14.1 `Hardware/Motor/F32C.h`
-
-```c
-void F32C_Init(void);
-F32C_Result_t F32C_Enable(uint8_t address);
-F32C_Result_t F32C_Disable(uint8_t address);
-F32C_Result_t F32C_SetMode(uint8_t address, F32C_Mode_t mode);
-F32C_Result_t F32C_SetSpeedRPM(uint8_t address, int16_t speedRPM);
-F32C_Result_t F32C_SetAcceleration(
-    uint8_t address, uint16_t accelerationRPMS2);
-F32C_Result_t F32C_ClearMultiTurnAngle(uint8_t address);
-F32C_Result_t F32C_SetMultiTurnPositionDegrees(
-    uint8_t address, float targetAngleDeg);
-F32C_Result_t F32C_RequestFeedback(
-    uint8_t address, F32C_FeedbackType_t type);
-uint8_t F32C_PopFeedback(F32C_Feedback_t *feedback);
-```
-
-硬件层只负责编解码协议帧，不保存 X/Y 轴业务状态。`F32C_ClearMultiTurnAngle()` 把当前位置记为多圈 0°，不会驱动电机回零，调用前必须明确需要重建坐标。发送帧最长 9 字节且命令频率很低，当前采用阻塞短帧发送和 UART RX 中断环形缓冲区，没有启用 DMA。
-
-### 5.15 `Hardware/Display/OLED.h`
-
-```c
-void OLED_Init(void);
-uint8_t OLED_IsReady(void);
-void OLED_Update(void);
-void OLED_UpdateArea(int16_t x, int16_t y, uint8_t width, uint8_t height);
-void OLED_Clear(void);
-void OLED_ClearArea(int16_t x, int16_t y, uint8_t width, uint8_t height);
-void OLED_Reverse(void);
-void OLED_ReverseArea(int16_t x, int16_t y, uint8_t width, uint8_t height);
-void OLED_ShowChar(int16_t x, int16_t y, char value, uint8_t fontSize);
-void OLED_ShowString(int16_t x, int16_t y, const char *string, uint8_t fontSize);
-void OLED_ShowNum(int16_t x, int16_t y, uint32_t number, uint8_t length, uint8_t fontSize);
-void OLED_ShowSignedNum(int16_t x, int16_t y, int32_t number, uint8_t length, uint8_t fontSize);
-void OLED_ShowHexNum(int16_t x, int16_t y, uint32_t number, uint8_t length, uint8_t fontSize);
-void OLED_ShowBinNum(int16_t x, int16_t y, uint32_t number, uint8_t length, uint8_t fontSize);
-void OLED_ShowFloatNum(int16_t x, int16_t y, double number,
-                       uint8_t intLength, uint8_t fraLength, uint8_t fontSize);
-void OLED_ShowImage(int16_t x, int16_t y, uint8_t width, uint8_t height,
-                    const uint8_t *image);
-void OLED_Printf(int16_t x, int16_t y, uint8_t fontSize, const char *format, ...);
-void OLED_DrawPoint(int16_t x, int16_t y);
-uint8_t OLED_GetPoint(int16_t x, int16_t y);
-void OLED_DrawLine(int16_t x0, int16_t y0, int16_t x1, int16_t y1);
-void OLED_DrawRectangle(int16_t x, int16_t y, uint8_t width, uint8_t height, uint8_t filled);
-void OLED_DrawTriangle(int16_t x0, int16_t y0, int16_t x1, int16_t y1,
-                       int16_t x2, int16_t y2, uint8_t filled);
-void OLED_DrawCircle(int16_t x, int16_t y, uint8_t radius, uint8_t filled);
-void OLED_DrawEllipse(int16_t x, int16_t y, uint8_t a, uint8_t b, uint8_t filled);
-void OLED_DrawArc(int16_t x, int16_t y, uint8_t radius,
-                  int16_t startAngle, int16_t endAngle, uint8_t filled);
-```
-
-### 5.16 `Hardware/Motor/Encoder.h`
-
-```c
-void Encoder_Init(void);
-int16_t Encoder_Get(uint8_t n);
-```
-
-`Encoder_Get(1)` 读取并清零左编码器增量，`Encoder_Get(2)` 读取并清零右编码器增量。
-
-### 5.17 `Hardware/Motor/Motor.h`
-
-```c
-void Motor_Init(void);
-void Motor_SetLeftPWM(int16_t PWM);
-void Motor_SetRightPWM(int16_t PWM);
-void Motor_SetPWM(int16_t LeftPWM, int16_t RightPWM);
-void Motor_StopAll(void);
-void Motor_Brake(void);
-void Motor_Run(int16_t leftSpeed, int16_t rightSpeed);
-void Motor_Forward(int16_t speed);
-void Motor_Backward(int16_t speed);
-void Motor_TurnLeft(int16_t speed);
-void Motor_TurnRight(int16_t speed);
-void Motor_SpinLeft(int16_t speed);
-void Motor_SpinRight(int16_t speed);
-void Motor_Stop(void);
-```
-
-### 5.18 `Hardware/Motor/PWM.h`
-
-```c
-void PWM_Init(void);
-void PWM_SetCompareA(uint16_t Compare);
-void PWM_SetCompareB(uint16_t Compare);
-```
-
-### 5.19 `Hardware/Sensors/Graydetect.h`
-
-```c
-void Graydetect_Init(void);
-uint8_t Graydetect_GetState(void);
-uint8_t Graydetect_GetBit(uint8_t index);
-float Graydetect_GetError(uint8_t side);
-uint8_t Graydetect_OnLine(uint8_t side);
-```
-
-### 5.20 `Hardware/Sensors/MPU6050.h`
-
-```c
-void MPU6050_Init(void);
-uint8_t MPU6050_IsReady(void);
-uint8_t MPU6050_GetID(void);
-void MPU6050_GetData(int16_t *ax, int16_t *ay, int16_t *az,
-                     int16_t *gx, int16_t *gy, int16_t *gz);
-int16_t MPU6050_GetGyroZ(void);
-```
-
-### 5.21 `System/Delay.h`
-
-```c
-void Delay_us(uint32_t us);
-void Delay_ms(uint32_t ms);
-void Delay_s(uint32_t s);
-```
-
-### 5.22 `System/Tick.h`
-
-```c
-void Tick_Init(void);
-uint8_t Tick_Poll(void);
-uint8_t Tick_PollCount(void);
-```
-
-### 5.22.1 `System/Interrupt.h`
-
-```c
-void Interrupt_Enable(void);
-void Interrupt_Disable(void);
-```
-
-## 6. 公共参数和公共数据
-
-| 所在头文件 | 名称 | 当前值/类型 | 含义 |
+| 头文件 | 公共参数 | 当前值 | 作用 |
 |---|---|---:|---|
-| `BluetoothDebug.h` | `BLUETOOTH_COMMAND_IDLE_TICKS` | `3U` | 无结束符命令的 30 ms 空闲判定 |
-| `BluetoothDebug.h` | `BLUETOOTH_TASK_SIGNAL_MAX` | `255U` | C 任务信号最大编号；普通信号不排队 |
-| `K230Link.h` | `K230_LINK_FRAME_MAGIC_0/1` | `0xAAU` / `0x55U` | K230 帧头 |
-| `K230Link.h` | `K230_LINK_FRAME_VERSION` | `0x01U` | 当前通信协议版本 |
-| `K230Link.h` | `K230_LINK_MAX_PAYLOAD_LENGTH` | `32U` | 允许接收的最大 PAYLOAD 长度 |
-| `K230Link.h` | `K230_LINK_READY_RETRY_TICKS` | `10U` | 100 Hz 下每 100 ms 重发 READY |
-| `K230Link.h` | `K230_LINK_MESSAGE_READY/READY_ACK/TARGET` | `0x01U` / `0x02U` / `0x10U` | 消息类型编号 |
-| `DebugDisplay.h` | `DEBUG_DISPLAY_REFRESH_TICKS` | `10U` | OLED 10 Hz 刷新间隔 |
-| `MotionStraight.h` | `MOTION_STRAIGHT_*` | 见 6.2 | 航向 PD、直线速度规划、减速起点比例和距离允许误差 |
-| `MotionManager.h` | `MOTION_MANAGER_BRAKE_*` | 见 6.2.1 | 定距软停后的 PWM 释放与短暂主动刹车时间 |
-| `MotionWheel.h` | `MOTION_WHEEL_*` | 见 6.1 | MotionStraight、MotionLine 与 Nav 共用的速度 PI、前馈和 PWM 限幅 |
-| `MotionLine.h` | `MOTION_LINE_*` | 见 6.3 | 灰度权重、最大速度调整比例、巡线速度上限和丢线确认节拍 |
-| `Accomplish/25E.h` | `ACCOMPLISH_25E_*` | 见 6.5 | 25E 启动按键、直线距离与速度、入线确认、巡线速度和转向参数 |
-| `Accomplish/25H.h` | `ACCOMPLISH_25H_*` | 见 6.6 | 25H 启动按键、左侧标志掩码、巡线、150 mm 直行和绝对左转参数 |
-| `Accomplish/Brushless_Motor_Test.h` | `BRUSHLESS_MOTOR_TEST_*` | 见 6.7 | 双轴测试的停止按键、X 右转符号/步长和 Y 往返角度 |
-| `Gimbal.h` | `GIMBAL_*` | 见 6.8 | X/Y 地址、T 型规划速度/加速度、反馈轮询、超时和到位判定 |
-| `F32C.h` | `F32C_*` | 见 6.9 | 地址下限、协议速度/角度范围及相邻命令最小间隔 |
-| `Nav.h` | `NAV_*` | 见 6.4 | 双轮转向的加减速、低速区、到角误差和稳定判定 |
-| `Servo.h` | `SERVO_PHYSICAL_RANGE_DEG` | `270U` | 脉宽换算对应的舵机物理量程 |
-| `Servo.h` | `SERVO_MIN_PULSE_US` / `SERVO_MAX_PULSE_US` | `500U` / `2500U` | 舵机最小/最大高电平脉宽 |
-| `Servo.h` | `SERVO_FRAME_US` | `20000U` | 50 Hz 舵机帧周期 |
-| `Servo.h` | `SERVO_VERTICAL_MIN_ANGLE` / `MAX` / `DEFAULT` | `0U` / `270U` / `135U` | 纵向轴限位与上电角度 |
-| `Servo.h` | `SERVO_HORIZONTAL_MIN_ANGLE` / `MAX` / `DEFAULT` | `0U` / `270U` / `135U` | 横向轴限位与上电角度 |
-| `Heading.h` | `HEADING_CALIBRATION_SAMPLES` | `400U` | 开机零漂采样数 |
-| `Heading.h` | `HEADING_CALIBRATION_INTERVAL_MS` | `2U` | 零漂采样间隔 |
-| `Odometry.h` | `Odometry_CountsPerMM` | `float`，初值 `6.23f` | 每毫米编码器计数，必须按实车标定 |
-| `Serial.h` | `SERIAL1_RX_BUFFER_SIZE` | `1024U` | UART1 环形接收缓冲区容量 |
-| `Serial.h` | `SERIAL2_RX_BUFFER_SIZE` | `256U` | UART2 F32C 环形接收缓冲区容量 |
-| `Serial.h` | `Serial1_RxFlag` | `volatile uint8_t` | UART1 存在未读数据标志 |
-| `PWM.h` | `PWM_MAX_DUTY` | `1000U` | 电机 PWM 指令绝对值上限 |
-| `Graydetect.h` | `GRAY_SIDE_ALL/LEFT/RIGHT` | `0/1/2` | 灰度误差计算的通道范围 |
-| `OLED.h` | `OLED_8X16` / `OLED_6X8` | `8U` / `6U` | 字体尺寸选择 |
-| `OLED.h` | `OLED_UNFILLED` / `OLED_FILLED` | `0U` / `1U` | 图形空心/实心选择 |
-| `OLED_Data.h` | `OLED_F8x16`、`OLED_F6x8`、`OLED_CF16x16`、`Diode` | `const` 字模/位图数组 | OLED 公共显示数据 |
-| `OLED_Data.h` | `ChineseCell_t` / `OLED_CHARSET_UTF8` | 字模结构 / 字符集宏 | 中文字模索引与 16×16 数据格式 |
-| `Tick.h` | `TICK_HZ` / `TICK_DT` | `100U` / `0.01f` | 系统节拍频率与秒单位周期 |
-
-### 6.1 `MotionWheel.h` 参数
-
-以下宏位于 `Application/Control/MotionWheel.h` 开头，由直线、巡线和 Nav 共用：
-
-| 宏 | 单位 | 作用 |
-|---|---:|---|
-| `MOTION_WHEEL_KP` | PWM/(mm/s) | 左右轮各自的速度比例增益 |
-| `MOTION_WHEEL_KI` | PWM/mm | 左右轮各自的速度积分增益 |
-| `MOTION_WHEEL_INTEGRAL_LIMIT` | mm | 速度积分绝对值限幅；`KI>0` 时必须大于 0 |
-| `MOTION_WHEEL_FEEDFORWARD_PWM_PER_MMPS` | PWM/(mm/s) | 目标速度到 PWM 的线性前馈斜率 |
-| `MOTION_WHEEL_STATIC_FRICTION_PWM` | PWM | 克服静摩擦所需的符号前馈 |
-| `MOTION_WHEEL_MAX_COMMAND_PWM` | PWM | 每个车轮最终 PWM 绝对值上限，不得超过 `PWM_MAX_DUTY` |
-
-当前值：
-
-| 宏 | 当前值 |
-|---|---:|
-| `MOTION_WHEEL_KP` / `MOTION_WHEEL_KI` / `MOTION_WHEEL_INTEGRAL_LIMIT` | `1.0f` / `0.0f` / `0.0f` |
-| `MOTION_WHEEL_FEEDFORWARD_PWM_PER_MMPS` / `MOTION_WHEEL_STATIC_FRICTION_PWM` | `2.0f` / `0.0f` |
-| `MOTION_WHEEL_MAX_COMMAND_PWM` | `1000.0f` |
-
-### 6.2 `MotionStraight.h` 参数
-
-以下宏位于 `Application/Control/MotionStraight.h` 开头：
-
-| 宏 | 单位 | 作用 |
-|---|---:|---|
-| `MOTION_STRAIGHT_HEADING_KP` | PWM/° | 航向误差比例增益 |
-| `MOTION_STRAIGHT_HEADING_KD` | PWM/(°/s) | 航向误差微分增益 |
-| `MOTION_STRAIGHT_HEADING_LIMIT_PWM` | PWM | 航向差速修正绝对值上限，必须大于 0 |
-| `MOTION_STRAIGHT_CORRECTION_SIGN` | `1` 或 `-1` | 航向差速方向；偏差被放大时翻转符号 |
-| `MOTION_STRAIGHT_MAX_SPEED_MMPS` | mm/s | 允许请求的最大直线速度，超出时自动限幅 |
-| `MOTION_STRAIGHT_ACCELERATION_MMPS2` | mm/s² | 目标速度上升斜率 |
-| `MOTION_STRAIGHT_DECELERATION_START_RATIO` | 0~1 比例 | 首选减速起点占全程的比例；当前 `5/6` 表示最后 `1/6` 为减速段 |
-| `MOTION_STRAIGHT_DISTANCE_TOLERANCE_MM` | mm | 允许的终点距离误差；速度曲线在“目标距离减该值”处到达终点速度 |
-| `MOTION_STRAIGHT_ZERO_SPEED_HOLD_SECONDS` | s | 终点速度为零后，双轮速度 PI 持续跟踪 `0 mm/s` 的固定时长 |
-
-当前实车测试值：
-
-| 宏 | 当前值 |
-|---|---:|
-| `MOTION_STRAIGHT_HEADING_KP` / `MOTION_STRAIGHT_HEADING_KD` | `6.0f` / `0.4f` |
-| `MOTION_STRAIGHT_HEADING_LIMIT_PWM` / `MOTION_STRAIGHT_CORRECTION_SIGN` | `700.0f` / `-1` |
-| `MOTION_STRAIGHT_MAX_SPEED_MMPS` | `1000.0f` |
-| `MOTION_STRAIGHT_ACCELERATION_MMPS2` | `300.0f` |
-| `MOTION_STRAIGHT_DECELERATION_START_RATIO` / `MOTION_STRAIGHT_DISTANCE_TOLERANCE_MM` | `5.0f / 6.0f` / `5.0f` |
-| `MOTION_STRAIGHT_ZERO_SPEED_HOLD_SECONDS` | `0.05f` |
-
-### 6.2.1 `MotionManager.h` 刹车参数
-
-以下宏位于 `Application/Control/MotionManager.h` 开头，只在 Mission 的独立 BRAKE 状态中生效：
-
-| 宏 | 单位 | 当前值 | 作用 |
-|---|---:|---:|---|
-| `MOTION_MANAGER_BRAKE_RELEASE_SECONDS` | s | `0.01f` | 直线已软停后继续释放 PWM 的最短时间，避免直接从驱动切入制动 |
-| `MOTION_MANAGER_BRAKE_HOLD_SECONDS` | s | `0.05f` | 调用 `Motor_Brake()` 的保持时间；增大可减少滑行，但过大可能顿挫、发热 |
-
-### 6.3 `MotionLine.h` 参数
-
-以下宏位于 `Application/Control/MotionLine.h` 开头。25H 通过 MotionManager 启动巡线，连续丢线确认后把巡线标记为正常完成并返回等待；当前云台测试不使用巡线：
-
-| 宏 | 单位 | 当前值 | 作用 |
-|---|---:|---:|---|
-| `MOTION_LINE_OUTER_WEIGHT` | 无 | `6` | 左右最外侧灰度权重的绝对值，对应最大修正力度 |
-| `MOTION_LINE_INNER_WEIGHT` | 无 | `3` | 左右内侧灰度权重的绝对值，对应最大修正力度的一半 |
-| `MOTION_LINE_MAX_ADJUST_RATIO` | 比例 | `0.2f` | 权重达到正负 6 时，一侧减去、另一侧增加的巡线速度比例 |
-| `MOTION_LINE_MAX_SPEED_MMPS` | mm/s | `1000.0f` | 巡线请求软件上限；应结合公共轮速前馈和最终 PWM 上限设置 |
-| `MOTION_LINE_LOST_CONFIRM_TICKS` | 100 Hz 节拍 | `50U` | 连续五路全白达到 50 次后确认丢线，当前约为 500 ms |
-
-### 6.4 `Nav.h` 参数
-
-以下宏位于 `Application/Control/Nav.h` 开头，当前仍是低速测试值：
-
-| 宏 | 单位 | 当前值 | 作用 |
-|---|---:|---:|---|
-| `NAV_MAX_TURN_SPEED_MMPS` | mm/s | `200.0f` | Nav 接口允许请求的每侧轮最大速度；首次测试不要直接使用上限 |
-| `NAV_MIN_TURN_SPEED_MMPS` | mm/s | `40.0f` | 接近目标角时的每侧轮最低速度；转不动则增大，冲角明显则减小 |
-| `NAV_SLOWDOWN_ANGLE_DEG` | ° | `45.0f` | 剩余角进入低速区的阈值；冲角时增大该值 |
-| `NAV_ACCELERATION_MMPS2` | mm/s² | `150.0f` | 转向轮速上升斜率；越小起转越柔和 |
-| `NAV_DECELERATION_MMPS2` | mm/s² | `600.0f` | 转向轮速下降斜率；冲角时可增大，停车突兀时减小 |
-| `NAV_ANGLE_TOLERANCE_DEG` | ° | `2.0f` | 到角允许误差；太小可能在目标附近反复修正 |
-| `NAV_SETTLE_TICKS` | 100 Hz 周期 | `3U` | 连续稳定 30 ms 后判定完成 |
-| `NAV_ROTATION_COMMAND_SIGN` | `1` 或 `-1` | `1` | 角度与双轮指令方向映射；误差持续增大时翻转 |
-
-### 6.5 `Accomplish/25E.h` 参数
-
-| 宏 | 单位 | 当前值 | 作用 |
-|---|---:|---:|---|
-| `ACCOMPLISH_25E_START_KEY_MASK` | 按键位图 | `0x01U` | KEY1 的 bit0 掩码；等待状态检测按下沿后启动 25E |
-| `ACCOMPLISH_25E_STRAIGHT_DISTANCE_MM` | mm | `2000U` | 每轮直线寻找黑线的最大距离 |
-| `ACCOMPLISH_25E_STRAIGHT_SPEED_MMPS` | mm/s | `300.0f` | 直线巡航速度 |
-| `ACCOMPLISH_25E_STRAIGHT_END_SPEED_MMPS` | mm/s | `0.0f` | 走满最大距离仍未找到线时的终点速度；当前停车 |
-| `ACCOMPLISH_25E_LINE_SPEED_MMPS` | mm/s | `200.0f` | 巡线速度 |
-| `ACCOMPLISH_25E_LINE_DETECT_CONFIRM_TICKS` | 100 Hz 节拍 | `3U` | 直线阶段连续检测黑线 30 ms 后才进入巡线 |
-| `ACCOMPLISH_25E_TURN_TARGET_OFFSET_DEG` | ° | `180.0f` | 每轮在上一绝对目标上增加的角度；目标依次为启动航向加 180°、360°…… |
-| `ACCOMPLISH_25E_TURN_SPEED_MMPS` | mm/s | `80.0f` | 180° 转向的每侧轮速度请求 |
-
-### 6.6 `Accomplish/25H.h` 参数
-
-| 宏 | 单位 | 当前值 | 作用 |
-|---|---:|---:|---|
-| `ACCOMPLISH_25H_START_KEY_MASK` | 按键位图 | `0x01U` | KEY1 的 bit0 掩码；等待状态检测按下沿后启动 25H |
-| `ACCOMPLISH_25H_LEFT_MARKER_MASK` | 灰度位图 | `0x03U` | bit0 和 bit1 必须同时为 1 才触发左侧标志 |
-| `ACCOMPLISH_25H_LINE_SPEED_MMPS` | mm/s | `200.0f` | 正常巡线速度 |
-| `ACCOMPLISH_25H_FORWARD_DISTANCE_MM` | mm | `150U` | 检测到左侧标志后继续向前直行的距离 |
-| `ACCOMPLISH_25H_FORWARD_SPEED_MMPS` | mm/s | `200.0f` | 150 mm 定距直行速度 |
-| `ACCOMPLISH_25H_FORWARD_END_SPEED_MMPS` | mm/s | `0.0f` | 定距完成后的终点速度；当前减速至零并固定保持后再转向 |
-| `ACCOMPLISH_25H_TURN_STEP_DEG` | ° | `-90.0f` | 每轮绝对目标减少的角度；目标依次为启动航向减 90°、180°、270°…… |
-| `ACCOMPLISH_25H_TURN_SPEED_MMPS` | mm/s | `80.0f` | Nav 原地转向的每侧轮速度请求 |
-
-### 6.7 `Accomplish/Brushless_Motor_Test.h` 参数
-
-| 宏 | 单位 | 当前值 | 作用 |
-|---|---:|---:|---|
-| `BRUSHLESS_MOTOR_TEST_STOP_KEY_MASK` | 按键位图 | `0x02U` | KEY2 按下沿停止并失能双轴 |
-| `BRUSHLESS_MOTOR_TEST_X_RIGHT_SIGN` | 方向符号 | `1.0f` | X 目标的右转符号；实物方向相反时改为 `-1.0f` |
-| `BRUSHLESS_MOTOR_TEST_X_STEP_DEG` | ° | `180.0f` | 每完成一段后 X 多圈绝对目标增加量 |
-| `BRUSHLESS_MOTOR_TEST_Y_LOW_DEG` | ° | `0.0f` | Y 往返下目标 |
-| `BRUSHLESS_MOTOR_TEST_Y_HIGH_DEG` | ° | `180.0f` | Y 往返上目标 |
-
-### 6.8 `Application/Gimbal/Gimbal.h` 参数
-
-| 宏 | 单位 | 当前值 | 作用 |
-|---|---:|---:|---|
-| `GIMBAL_X_MOTOR_ADDRESS` | 地址 | `1U` | X 轴 F32C 地址 |
-| `GIMBAL_Y_MOTOR_ADDRESS` | 地址 | `2U` | Y 轴 F32C 地址 |
-| `GIMBAL_DEFAULT_SPEED_RPM` | RPM | `100` | 多圈位置模式正速度上限 |
-| `GIMBAL_DEFAULT_ACCELERATION_RPMS2` | RPM/s | `100U` | T 型规划加速度命令值 |
-| `GIMBAL_FEEDBACK_REQUEST_PERIOD_SECONDS` | s | `0.03f` | 每次只查询一个地址；X/Y 交替，单轴实际周期约为该值的两倍 |
-| `GIMBAL_FEEDBACK_TIMEOUT_SECONDS` | s | `1.0f` | 任一轴连续无有效反馈则失能双轴并报错 |
-| `GIMBAL_POSITION_TOLERANCE_DEG` | ° | `2.0f` | 到达目标的角度容差 |
-| `GIMBAL_POSITION_SETTLE_FEEDBACKS` | 次 | `2U` | 连续进入容差的反馈次数，达到后才切换下一段 |
-
-### 6.9 `Hardware/Motor/F32C.h` 参数
-
-| 宏 | 单位 | 当前值 | 作用 |
-|---|---:|---:|---|
-| `F32C_MIN_ADDRESS` | 地址 | `1U` | 接受的最小电机地址 |
-| `F32C_MAX_SPEED_RPM` | RPM | `1000` | 协议速度输入的软件限幅 |
-| `F32C_MAX_MULTI_TURN_ANGLE_DEG` | ° | `214748300.0f` | 在 `int32 × 0.1°` 协议极限内为 float 转换保留余量的对称安全范围 |
-| `F32C_COMMAND_INTERVAL_MS` | ms | `1U` | 任意相邻电机命令间的最小阻塞间隔 |
-
-`PID_t` 的 `Kp/Ki/Kd`、`integral`、`prevError`、`outMax` 和 `integralMax` 为 PID 实例的公共状态与参数。除上述公开声明外，其余 `static` 数据和源文件内宏均为模块内部实现。
+| `25E.h` | `ACCOMPLISH_25E_START_KEY_MASK` | `0x01U` | KEY1 启动掩码 |
+| `25E.h` | `ACCOMPLISH_25E_STRAIGHT_DISTANCE_MM` | `2000U` | 单轮直线最大距离 |
+| `25E.h` | `ACCOMPLISH_25E_STRAIGHT_SPEED_MMPS` | `300.0f` | 直线巡航速度 |
+| `25E.h` | `ACCOMPLISH_25E_STRAIGHT_END_SPEED_MMPS` | `0.0f` | 走满距离后的终点速度 |
+| `25E.h` | `ACCOMPLISH_25E_LINE_SPEED_MMPS` | `200.0f` | 巡线速度 |
+| `25E.h` | `ACCOMPLISH_25E_LINE_DETECT_CONFIRM_TICKS` | `3U` | 连续检测到线 30 ms 后切换 |
+| `25E.h` | `ACCOMPLISH_25E_TURN_TARGET_OFFSET_DEG` | `180.0f` | 每轮连续绝对角增量 |
+| `25E.h` | `ACCOMPLISH_25E_TURN_SPEED_MMPS` | `80.0f` | 转向轮速 |
+| `25H.h` | `ACCOMPLISH_25H_START_KEY_MASK` | `0x01U` | KEY1 启动掩码 |
+| `25H.h` | `ACCOMPLISH_25H_LEFT_MARKER_MASK` | `0x03U` | bit0、bit1 同时为黑线的标志条件 |
+| `25H.h` | `ACCOMPLISH_25H_LINE_SPEED_MMPS` | `200.0f` | 巡线速度 |
+| `25H.h` | `ACCOMPLISH_25H_FORWARD_DISTANCE_MM` | `150U` | 标志后前进距离 |
+| `25H.h` | `ACCOMPLISH_25H_FORWARD_SPEED_MMPS` | `200.0f` | 标志后直线速度 |
+| `25H.h` | `ACCOMPLISH_25H_FORWARD_END_SPEED_MMPS` | `0.0f` | 标志后直线终点速度 |
+| `25H.h` | `ACCOMPLISH_25H_TURN_STEP_DEG` | `-90.0f` | 每轮连续绝对左转目标增量 |
+| `25H.h` | `ACCOMPLISH_25H_TURN_SPEED_MMPS` | `80.0f` | 转向轮速 |
+| `Brushless_Motor_Test.h` | `BRUSHLESS_MOTOR_TEST_STOP_KEY_MASK` | `0x02U` | KEY2 停止测试 |
+| `Brushless_Motor_Test.h` | `BRUSHLESS_MOTOR_TEST_X_RIGHT_SIGN` | `1.0f` | X 轴右转方向符号 |
+| `Brushless_Motor_Test.h` | `BRUSHLESS_MOTOR_TEST_X_STEP_DEG` | `180.0f` | X 轴每轮多圈角增量 |
+| `Brushless_Motor_Test.h` | `BRUSHLESS_MOTOR_TEST_Y_LOW_DEG`、`BRUSHLESS_MOTOR_TEST_Y_HIGH_DEG` | `0/180°` | Y 轴往返目标 |

@@ -45,6 +45,8 @@ void App_Init(void)
     Motor_Init();
     Servo_Init();
     Serial1_Init();
+
+    /* 仅初始化 F32C 的 UART2 通信和运行状态，不使能或驱动无刷电机。 */
     if (Gimbal_Init() != GIMBAL_RESULT_OK)
     {
         Beep_Long();
