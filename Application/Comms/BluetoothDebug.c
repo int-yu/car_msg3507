@@ -1,4 +1,5 @@
 #include "Application/Comms/BluetoothDebug.h"
+#include "Application/Debug/Telemetry.h"
 #include "Application/Servo/Servo.h"
 #include "Hardware/Comms/Serial.h"
 #include "Hardware/Motor/Motor.h"
@@ -28,7 +29,8 @@ static uint8_t BluetoothDebug_IsCommand(char value)
 {
     return ((value == 'L') || (value == 'R') || (value == 'U') ||
             (value == 'C') ||
-            (value == 'O') || (value == 'D')) ? 1U : 0U;
+            (value == 'O') || (value == 'D') ||
+            (value == 'G') || (value == 'M')) ? 1U : 0U;
 }
 
 static char BluetoothDebug_ToUpper(char value)
@@ -186,6 +188,41 @@ static void BluetoothDebug_ExecuteCommand(void)
                 value, SERVO_HORIZONTAL_MIN_ANGLE, SERVO_HORIZONTAL_MAX_ANGLE));
             Serial1_Printf("OK D=%u\r\n",
                            (unsigned)Servo_GetHorizontalAngle());
+            break;
+
+        case 'G':
+            /* 范围检查必须在 int32_t 上做：(uint8_t)256 == 0，而 G0 是合法值（关闭遥测），
+               只靠被调函数的 uint8_t 参数检查会让 G256 被静默当成 G0 执行。
+               超限时带上当前安全上限，便于用户知道当前掩码下到底能设多少。 */
+            if ((s_parser.isNegative != 0U) ||
+                (value > (int32_t)TELEMETRY_RATE_HARD_LIMIT_HZ) ||
+                (Telemetry_SetRateHz((uint8_t)value) == 0U))
+            {
+                Serial1_Printf("ERR RANGE MAX=%u\r\n",
+                               (unsigned)Telemetry_GetMaxRateHz());
+            }
+            else
+            {
+                Serial1_Printf("OK G=%u\r\n",
+                               (unsigned)Telemetry_GetRateHz());
+            }
+            break;
+
+        case 'M':
+            /* 改掩码可能触发自动降频（字段增多行变长，安全上限下降），
+               因此成功时同时回报新频率，用户能立即看到是否被限速。 */
+            if ((s_parser.isNegative != 0U) ||
+                (value > (int32_t)TELEMETRY_FIELD_ALL) ||
+                (Telemetry_SetFieldMask((uint8_t)value) == 0U))
+            {
+                Serial1_SendString("ERR RANGE\r\n");
+            }
+            else
+            {
+                Serial1_Printf("OK M=%u G=%u\r\n",
+                               (unsigned)Telemetry_GetFieldMask(),
+                               (unsigned)Telemetry_GetRateHz());
+            }
             break;
 
         default:
