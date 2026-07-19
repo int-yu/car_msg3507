@@ -15,7 +15,7 @@
 | TIMG8 | 32 MHz，周期 1600 = 20 kHz | `Hardware/Motor/PWM`、`MotionWheel`、`MotionManager`、`Accomplish/25H` | 25H 通过 MotionManager 依次选择巡线、定距直线和绝对角转向，再由 MotionWheel 输出双轮 PWM |
 | TIMA0 | BUSCLK / 32 = 1 MHz，周期 20000 = 50 Hz | `Application/Servo` | 双路舵机 PWM；1 个计数等于 1 us |
 | I2C0 | BUSCLK 32 MHz，SCL 400 kHz | `Hardware/Display/OLED` | OLED 控制器通信 |
-| UART1 | BUSCLK 32 MHz，9600 baud，8N1，RX 中断 | `Hardware/Comms/Serial`、`Application/Comms/BluetoothDebug`、`App`、`Mission` | `C0` 全局停车；保留其他任务事件和手动调试命令，当前 25H 使用 KEY1 启动 |
+| UART1 | BUSCLK 32 MHz，115200 baud，8N1，RX 中断 | `Hardware/Comms/Serial`、`Application/Comms/BluetoothDebug`、`App`、`Mission` | 无线 DAPLink 串口，接电脑调试网页；`C0` 全局停车；保留其他任务事件和手动调试命令，当前 25H 使用 KEY1 启动 |
 | UART2 | BUSCLK 32 MHz，115200 baud，8N1，当前不启用 RX NVIC | `main.syscfg` 预留 | K230 硬件配置保留；当前 App 不调用 `K230Link_Init/Update()`，不发送握手帧 |
 | GPIO 软件 I2C | CPU 延时产生时序 | `Hardware/Sensors/MPU6050`、`Application/State/Heading`、`Accomplish/25H` | 提供连续多圈航向；25H 保存 KEY1 启动基准，左转绝对目标依次为基准减 90°、180°、270°……；不占用 I2C 外设实例 |
 | GPIOA GROUP1 IRQ | A/B 相双边沿 | `Hardware/Motor/Encoder`、`MotionWheel` | 左右编码器软件正交解码，为公共双轮速度 PI 提供速度反馈 |
@@ -42,8 +42,8 @@
 | PA31 | I2C0 SCL | OLED | 400 kHz |
 | PB0 | GPIO 输出 | 左电机 BIN1 | TB6612 B 通道方向；由 MotionManager 当前模式经 MotionWheel 输出 |
 | PB1 | GPIO 输出 | 左电机 BIN2 | TB6612 B 通道方向；由 MotionManager 当前模式经 MotionWheel 输出 |
-| PB6 | UART1 TX | 蓝牙 | MCU 发送到蓝牙 RX |
-| PB7 | UART1 RX、上拉 | 蓝牙 | 蓝牙 TX 发送到 MCU，RX 中断接收；`C0` 全局停车，`C1` 当前未绑定 25H |
+| PB6 | UART1 TX | 无线 DAPLink 串口 | MCU 发送到 DAPLink RX；115200 |
+| PB7 | UART1 RX、上拉 | 无线 DAPLink 串口 | DAPLink TX 发送到 MCU，RX 中断接收；115200；`C0` 全局停车，`C1` 当前未绑定 25H |
 | PB8 | TIMA0 CCP0 | 横向舵机 | `D` 命令，`Servo_SetHorizontalAngle()` |
 | PB9 | TIMA0 CCP1 | 纵向舵机 | `O` 命令，`Servo_SetVerticalAngle()` |
 | PB10 | GPIO 输入、上拉 | KEY4 | 低电平按下，按键位图 bit3；App 生成按下沿事件，具体含义由 Mission 决定 |
