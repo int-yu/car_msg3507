@@ -119,6 +119,24 @@ uint8_t App_Update(App_UpdateContext_t *context)
 
     MotionManager_Update(context->dt);
     App_ReportMotionError();
+
+    {
+        uint8_t captureOk;
+        uint16_t captureIndex;
+
+        if (K230Link_PopCaptureAck(&captureOk, &captureIndex) != 0U)
+        {
+            if (captureOk != 0U)
+            {
+                Serial1_Printf("OK CAP %u\r\n", (unsigned)captureIndex);
+            }
+            else
+            {
+                Serial1_SendString("ERR CAP FAIL\r\n");
+            }
+        }
+    }
+
     Telemetry_Update(elapsedTicks, context->pressedKeys);
 
     for (index = 0U; index < elapsedTicks; index++)

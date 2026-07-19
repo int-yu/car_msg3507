@@ -1,4 +1,5 @@
 #include "Application/Comms/BluetoothDebug.h"
+#include "Application/Comms/K230Link.h"
 #include "Application/Control/MotionManager.h"
 #include "Application/Debug/Telemetry.h"
 #include "Application/Servo/Servo.h"
@@ -35,7 +36,8 @@ static uint8_t BluetoothDebug_IsCommand(char value)
             (value == 'O') || (value == 'D') ||
             (value == 'G') || (value == 'M') ||
             (value == 'V') || (value == 'F') || (value == 'B') ||
-            (value == 'T') || (value == 'A') || (value == 'Z')) ? 1U : 0U;
+            (value == 'T') || (value == 'A') || (value == 'Z') ||
+            (value == 'P')) ? 1U : 0U;
 }
 
 static char BluetoothDebug_ToUpper(char value)
@@ -340,6 +342,26 @@ static void BluetoothDebug_ExecuteCommand(void)
             }
             Heading_SetYaw(0.0f);
             Serial1_SendString("OK Z=1\r\n");
+            break;
+
+        case 'P':
+            if ((s_parser.isNegative != 0U) || (value <= 0) ||
+                (value > (int32_t)K230_LINK_CAPTURE_MAX_COUNT))
+            {
+                Serial1_SendString("ERR RANGE\r\n");
+                break;
+            }
+            if (K230Link_IsReady() == 0U)
+            {
+                Serial1_SendString("ERR CAP NOLINK\r\n");
+                break;
+            }
+            if (K230Link_RequestCapture((uint8_t)value) == 0U)
+            {
+                Serial1_SendString("ERR CAP BUSY\r\n");
+                break;
+            }
+            Serial1_Printf("OK CAP REQ %d\r\n", (int)value);
             break;
 
         default:

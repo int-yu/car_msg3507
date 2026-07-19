@@ -16,7 +16,7 @@
 | TIMA0 | BUSCLK / 32 = 1 MHz，周期 20000 = 50 Hz | `Application/Servo` | 双路舵机 PWM；1 个计数等于 1 us |
 | I2C0 | BUSCLK 32 MHz，SCL 400 kHz | `Hardware/Display/OLED` | OLED 控制器通信 |
 | UART1 | BUSCLK 32 MHz，115200 baud，8N1，RX 中断 | `Hardware/Comms/Serial`、`Application/Comms/BluetoothDebug`、`App`、`Mission` | 无线 DAPLink 串口，接电脑调试网页；`C0` 全局停车；保留其他任务事件和手动调试命令，当前 25H 使用 KEY1 启动 |
-| UART2 | BUSCLK 32 MHz，115200 baud，8N1，当前不启用 RX NVIC | `main.syscfg` 预留 | K230 硬件配置保留；当前 App 不调用 `K230Link_Init/Update()`，不发送握手帧 |
+| UART2 | BUSCLK 32 MHz，115200 baud，8N1，当前不启用 RX NVIC | `Hardware/Comms/Serial`、`Application/Comms/K230Link` | K230 硬件配置保留；`App_Init()` 调用 `K230Link_Init()`，`App_Update()` 调用 `K230Link_Update()`，握手帧正常收发 |
 | GPIO 软件 I2C | CPU 延时产生时序 | `Hardware/Sensors/MPU6050`、`Application/State/Heading`、`Accomplish/25H` | 提供连续多圈航向；25H 保存 KEY1 启动基准，左转绝对目标依次为基准减 90°、180°、270°……；不占用 I2C 外设实例 |
 | GPIOA GROUP1 IRQ | A/B 相双边沿 | `Hardware/Motor/Encoder`、`MotionWheel` | 左右编码器软件正交解码，为公共双轮速度 PI 提供速度反馈 |
 
@@ -34,8 +34,8 @@
 | PA17 | GPIO 输入、上拉、双边沿中断 | 左编码器 A | GPIOA GROUP1 IRQ；`MotionWheel` 左轮反馈 |
 | PA19 | SWDIO | 下载调试 | 不作为普通 GPIO 使用 |
 | PA20 | SWCLK | 下载调试 | 不作为普通 GPIO 使用 |
-| PA21 | UART2 TX | K230 RX 预留 | 当前 App 不发送数据；恢复 K230Link 时连接 K230 GPIO4（RX） |
-| PA22 | UART2 RX | K230 TX 预留 | 当前 App 不启用接收中断；恢复 K230Link 时连接 K230 GPIO3（TX） |
+| PA21 | UART2 TX | K230 RX | K230Link 握手已启用；连接 K230 GPIO4（RX） |
+| PA22 | UART2 RX | K230 TX | K230Link 握手已启用；连接 K230 GPIO3（TX） |
 | PA24 | GPIO 输入、上拉、双边沿中断 | 左编码器 B | GPIOA GROUP1 IRQ；`MotionWheel` 左轮反馈 |
 | PA28 | I2C0 SDA | OLED | 400 kHz |
 | PA30 | GPIO 输入、上拉 | KEY1 | 低电平按下，按键位图 bit0；App 生成按下沿事件，当前用于启动 25H |
@@ -76,7 +76,7 @@ Interrupt_Enable();
 5. `Accomplish25H_GetMissionGraph()` 返回 25H 的静态状态图；`Mission_Init()` 校验节点数、起始/错误状态和所有转换目标后进入等待状态。
 6. `Interrupt_Enable()` 最后开启全局硬件中断。UART、编码器和 SysTick ISR 只采集数据，不执行 Mission 或运动切换。
 
-K230 握手继续关闭：App 不调用 `K230Link_Init/Update()`。K230Link 源码和 UART2 SysConfig 配置保留。
+K230 握手已启用：`App_Init()` 调用 `K230Link_Init()`，`App_Update()` 每拍调用 `K230Link_Update()`，握手帧正常收发。K230Link 源码和 UART2 SysConfig 配置均保留并生效。
 
 ### 3.2 100 Hz 主循环与 Mission
 
@@ -112,17 +112,19 @@ OLED 每 10 个系统节拍刷新一次，即 10 Hz。页面内容为：
 | 6 | 右轮编码器实测速度 `RV`，单位 mm/s |
 | 7 | 统一运动状态：`M:IDLE`、`M:LINE`、`M:STRAIGHT`、`M:TURN` 或 `M:ERROR` |
 
-K230Link 库保留的统一帧格式如下，当前 App 不调用：
+K230Link 统一帧格式：
 
 ```text
 AA 55 | VER | TYPE | SEQ | LEN | PAYLOAD | CRC8
 ```
 
-- `VER=0x01`；`TYPE` 为 `READY=0x01`、`READY_ACK=0x02` 或 `TARGET=0x10`。
+- `VER=0x01`；`TYPE` 为 `READY=0x01`、`READY_ACK=0x02`、`TARGET=0x10`、`CAPTURE=0x20`、`CAPTURE_ACK=0x21`。
 - `SEQ` 为 8 位帧序号，`LEN` 最大为 32。
 - CRC 使用 CRC-8/ATM，多项式 `0x07`、初始值 0，校验范围为 `VER` 到 `PAYLOAD`。
 - TARGET 的 PAYLOAD 固定为 `valid:u8 + offsetX:int16_LE + offsetY:int16_LE`，共 5 字节。
-- 恢复 K230 联调后，K230 `uart_io.py` 测试入口可在握手后持续发送 `valid=1、offsetX=123、offsetY=-45`。
+- CAPTURE（MCU → K230）的 PAYLOAD 为 `count:u8`，共 1 字节；`count` 为连拍张数，范围 `1~20`。
+- CAPTURE_ACK（K230 → MCU）的 PAYLOAD 为 `ok:u8 + index:uint16_LE`，共 3 字节；`ok=1` 表示成功，`index` 为存入 TF 卡的起始文件序号。
+- K230 `uart_io.py` 测试入口可在握手后持续发送 `valid=1、offsetX=123、offsetY=-45`。
 
 ### 3.3 蓝牙任务与调试协议
 
@@ -146,6 +148,7 @@ AA 55 | VER | TYPE | SEQ | LEN | PAYLOAD | CRC8
 | `T<number>` | 相对转角，带符号 | `-3600~3600` 度，忙时 `ERR BUSY` | `T90` |
 | `A<number>` | 绝对连续航向角 | `-3600~3600` 度，忙时 `ERR BUSY` | `A90` |
 | `Z<number>` | `Z1` 把当前朝向定为 0° 基准 | 仅接受 1，忙时 `ERR BUSY` | `Z1` |
+| `P<number>` | 请求 K230 连拍并存 TF 卡 | `1~20`，链路未就绪返回 `ERR CAP NOLINK` | `P1` |
 
 **`T` 与 `A` 的参考系差异。** `T` 是相对转角，从当前航向再偏转指定度数，支持带符号输入（`T-90` 反转 90°）。`A` 是绝对连续航向角，目标为 `Heading_GetYaw()` 的累计值空间中的绝对角度。两者底层均使用 `Nav`，**`Nav` 不做 ±180° 最短路径优化**：当前连续航向为 370° 时，`A90` 会计算误差 `90 - 370 = -280°`，选择倒转 280° 而不是顺转 80° 走最短路径。若想总是最短路径到达某个方向，应在上位机计算出当前航向与目标方向之间的最短差值后，改用 `T` 命令发送相对角。`Z1` 把当前朝向重置为 0° 基准后，再用 `A` 命令指向绝对角度才符合直觉。
 
@@ -419,6 +422,9 @@ void K230Link_Init(void);
 void K230Link_Update(uint8_t elapsedTicks);
 uint8_t K230Link_IsReady(void);
 uint8_t K230Link_GetTarget(K230Link_Target_t *target);
+uint8_t K230Link_RequestCapture(uint8_t count);
+uint8_t K230Link_IsCapturePending(void);
+uint8_t K230Link_PopCaptureAck(uint8_t *ok, uint16_t *index);
 ```
 
 ### 5.1.2 `Application/Core/App.h`
