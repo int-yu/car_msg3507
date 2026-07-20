@@ -151,6 +151,29 @@ kbd {
 }
 .chip.good { color: var(--ok); border-color: #2c5c44; }
 .chip.bad { color: var(--err); border-color: #6b3237; }
+.drive-pad {
+    display: grid; grid-template-columns: repeat(3, 1fr); gap: 6px;
+    max-width: 240px; margin: 8px 0;
+}
+.drive-key {
+    display: flex; flex-direction: column; align-items: center; gap: 1px;
+    padding: 9px 0; font-weight: bold; font-family: Consolas, monospace;
+}
+.drive-key small { font-weight: normal; font-size: 10px; color: var(--dim); font-family: inherit; }
+.drive-key.held { background: var(--accent-dim); border-color: var(--accent); color: var(--accent); }
+.drive-key.held small { color: var(--accent); }
+#drivePanel.armed { border-color: var(--accent); box-shadow: 0 0 0 1px var(--accent-dim), 0 2px 10px #0006; }
+.mark-row { display: flex; gap: 5px; flex-wrap: wrap; }
+.mark-row button { font-size: 12px; padding: 3px 9px; }
+.mark-row button.hot { border-color: var(--warn); color: var(--warn); }
+.rec-dot {
+    display: inline-block; width: 8px; height: 8px; border-radius: 50%;
+    background: var(--err); margin-right: 5px; animation: pulse 1.2s infinite;
+}
+@keyframes pulse { 0%,100% { opacity: 1; } 50% { opacity: .25; } }
+.session { display: flex; gap: 6px; align-items: center; padding: 5px 0; border-top: 1px solid var(--line); font-size: 12px; flex-wrap: wrap; }
+.session:first-child { border-top: none; }
+.session > span:first-child { flex: 1; min-width: 150px; }
 .run { display: flex; gap: 6px; align-items: center; padding: 5px 0; border-top: 1px solid var(--line); font-size: 12px; flex-wrap: wrap; }
 .run:first-child { border-top: none; }
 .run > span:first-child { flex: 1; min-width: 180px; }
@@ -223,6 +246,36 @@ kbd {
             <span class="hint">Z1 只把当前朝向定为 0°；Z2 会重采陀螺仪零漂并归零，请保持车辆静止约 0.8 秒</span>
         </div>
         <p class="hint">自动运动进行中时固件返回 <code>ERR BUSY</code>；<code>W</code> 是无规划斜坡的闭环恒速（阶跃激励），运动中重复发 W 可链式改目标。</p>
+    </div>
+
+    <div class="panel" id="drivePanel">
+        <h2>遥控采集 <small>键盘驾驶 + 打标记 + 整段录制</small></h2>
+        <div class="row">
+            <button id="btnDriveMode" disabled>启用键盘驾驶</button>
+            <label>档速</label>
+            <input type="number" id="driveSpeed" value="250" min="20" max="800">
+            <label>转向°</label>
+            <input type="number" id="driveTurn" value="30" min="5" max="180">
+        </div>
+        <div class="drive-pad">
+            <span></span>
+            <button class="drive-key" data-drive="forward" disabled>W<small>前进</small></button>
+            <span></span>
+            <button class="drive-key" data-drive="left" disabled>A<small>左转</small></button>
+            <button class="drive-key danger" data-drive="stop" disabled>S<small>停</small></button>
+            <button class="drive-key" data-drive="right" disabled>D<small>右转</small></button>
+        </div>
+        <p class="hint" id="driveHint">启用后用 <kbd>W</kbd><kbd>A</kbd><kbd>S</kbd><kbd>D</kbd> 驾驶；转向是相对角命令，会等它转完再响应下一个键。</p>
+        <div class="row" style="margin-top:10px">
+            <button id="btnRecord" class="primary" disabled>开始录制</button>
+            <span class="hint" id="recordStatus">未录制</span>
+        </div>
+        <div class="row">
+            <label>标记</label>
+            <div id="markButtons" class="mark-row"></div>
+        </div>
+        <p class="hint">录制中按 <kbd>1</kbd>~<kbd>5</kbd> 打标记，写进 CSV 的 <code>mark</code> 列，供后续按场景切分训练数据。</p>
+        <div id="sessionList"><span class="hint">还没有录制会话。</span></div>
     </div>
 
     <details class="panel" id="advancedParams">
@@ -724,6 +777,54 @@ function countCaptureChannels(mask) {
         }
     }
     return count;
+}
+
+/*
+ * 录制会话：把实时流样本按标记切分成段。
+ * 每个样本带 mark 列（0 = 未标记），相邻同 mark 的样本归为一段。
+ * 用途是把一次遥控跑批出的长数据按场景（直道/弯道/障碍）拆开，
+ * 供后续训练或分析分别取用。
+ */
+function segmentByMark(samples) {
+    const segments = [];
+    let current = null;
+    for (const s of samples) {
+        const mark = s.mark || 0;
+        if (!current || current.mark !== mark) {
+            current = {
+                mark,
+                startMs: s.ms,
+                endMs: s.ms,
+                samples: [s],
+            };
+            segments.push(current);
+        } else {
+            current.endMs = s.ms;
+            current.samples.push(s);
+        }
+    }
+    return segments;
+}
+
+/* 会话摘要：时长、样本数、各标记的样本占比，用于列表展示与导出命名。 */
+function summarizeSession(samples) {
+    if (!Array.isArray(samples) || samples.length === 0) {
+        return { count: 0, durationMs: 0, markCounts: {}, rateHz: 0 };
+    }
+    const durationMs = samples[samples.length - 1].ms - samples[0].ms;
+    const markCounts = {};
+    for (const s of samples) {
+        const mark = s.mark || 0;
+        markCounts[mark] = (markCounts[mark] || 0) + 1;
+    }
+    return {
+        count: samples.length,
+        durationMs,
+        markCounts,
+        /* 实际到达率，可能低于设定频率（丢行、掩码切换）。 */
+        rateHz: durationMs > 0 ?
+            Math.round((samples.length - 1) / (durationMs / 1000)) : 0,
+    };
 }
 
 /* 只估算前馈部分，不含 PI 反馈和航向/巡线 trim；最终固件仍会夹到 ±1000。 */
@@ -1457,12 +1558,20 @@ function setConnected(on) {
     $('btnConnect').disabled = on;
     $('btnDisconnect').disabled = !on;
     document.querySelectorAll(
-        'button[data-send], button[data-cmd], #btnMask, #btnMaxRate, #btnRaw, #btnStop, ' +
+        'button[data-send], button[data-cmd], button[data-drive], ' +
+        '#btnMask, #btnMaxRate, #btnRaw, #btnStop, #btnDriveMode, #btnRecord, ' +
         '#btnParamRefresh, #btnParamApplyStored, #btnSessStart, ' +
         '#btnCalFinish, #btnOdomMark, #btnOdomCalc')
         .forEach((b) => { b.disabled = !on; });
     $('servoO').disabled = !on;
     $('servoD').disabled = !on;
+    if (!on) {
+        /* 断开后键盘不该还在"驾驶"一台连不上的车。 */
+        setDriveEnabled(false);
+        if (recording) {
+            stopRecording();
+        }
+    }
 }
 
 async function connect() {
@@ -1508,6 +1617,7 @@ async function readLoop() {
             if (session && samplesAdded > 0) {
                 watchSession();
             }
+            captureForRecording(samplesAdded);
             if (captureAdded > 0) {
                 /* dump 可能有上千行，进度只在状态栏更新，不触发重绘。 */
                 $('sessStatus').textContent =
@@ -2811,6 +2921,235 @@ function renderRuns() {
     }
 }
 
+/* ---------- 遥控采集 ---------- */
+
+/*
+ * 键盘驾驶。W/S 走恒速命令（W<speed> / W0），A/D 走相对转角（T±angle）。
+ * 转向是"忙则拒绝"的动作命令，所以按键期间要跟踪 busy 状态，避免刷屏 ERR BUSY。
+ */
+const MARK_LABELS = ['直道', '弯道', '路口', '障碍', '异常'];
+let driveEnabled = false;
+let driveTurning = false;
+let currentMark = 0;
+let recording = null;      /* { startedAt, samples[], marks[] } */
+let sessions = [];         /* 已完成的录制会话 */
+let sessionSeq = 0;
+const SESSION_STORE_KEY = 'carDebugSessionsV1';
+
+function setDriveEnabled(on) {
+    driveEnabled = on && !!writer;
+    $('drivePanel').classList.toggle('armed', driveEnabled);
+    $('btnDriveMode').textContent = driveEnabled ? '停用键盘驾驶' : '启用键盘驾驶';
+    $('btnDriveMode').classList.toggle('primary', driveEnabled);
+    $('driveHint').innerHTML = driveEnabled ?
+        '键盘已接管：<kbd>W</kbd> 前进 <kbd>S</kbd> 停 <kbd>A</kbd>/<kbd>D</kbd> 转向 · <kbd>Esc</kbd> 急停' :
+        '启用后用 <kbd>W</kbd><kbd>A</kbd><kbd>S</kbd><kbd>D</kbd> 驾驶；转向是相对角命令，会等它转完再响应下一个键。';
+    if (!driveEnabled) {
+        document.querySelectorAll('.drive-key').forEach(
+            (b) => b.classList.remove('held'));
+    }
+}
+
+async function driveAction(action) {
+    if (!writer) {
+        return;
+    }
+    const speed = Math.abs(parseInt($('driveSpeed').value, 10) || 250);
+    const turn = Math.abs(parseInt($('driveTurn').value, 10) || 30);
+
+    if (action === 'forward') {
+        await send('W' + speed);
+    } else if (action === 'stop') {
+        await send('W0');
+    } else if (action === 'left' || action === 'right') {
+        /* 转向期间固件会拒绝新动作，本地先挡一层，免得刷满 ERR BUSY。 */
+        if (driveTurning) {
+            return;
+        }
+        driveTurning = true;
+        const sign = action === 'left' ? -1 : 1;
+        try {
+            await sendAndWait('T' + (sign * turn), (line) =>
+                line === 'OK' || line.startsWith('ERR'), 1200);
+        } catch (err) {
+            /* 超时不致命，放开锁让下一次按键可用。 */
+        }
+        /* 转向动作本身还要跑一会儿，靠 mode 回 IDLE/DONE 解锁更准，
+           但这里用保守延时即可——遥控场景对 50ms 级精度不敏感。 */
+        setTimeout(() => { driveTurning = false; }, 250);
+    }
+}
+
+function flashDriveKey(action) {
+    const btn = document.querySelector(`.drive-key[data-drive="${action}"]`);
+    if (!btn) {
+        return;
+    }
+    btn.classList.add('held');
+    setTimeout(() => btn.classList.remove('held'), 160);
+}
+
+/* ---------- 录制 ---------- */
+
+function renderMarkButtons() {
+    const box = $('markButtons');
+    box.innerHTML = '';
+    MARK_LABELS.forEach((label, i) => {
+        const value = i + 1;
+        const btn = document.createElement('button');
+        btn.className = 'mini' + (currentMark === value ? ' hot' : '');
+        btn.textContent = `${value} ${label}`;
+        btn.title = `按数字键 ${value} 也可切换`;
+        btn.onclick = () => setMark(currentMark === value ? 0 : value);
+        box.appendChild(btn);
+    });
+    const clear = document.createElement('button');
+    clear.className = 'mini' + (currentMark === 0 ? ' hot' : '');
+    clear.textContent = '0 无';
+    clear.onclick = () => setMark(0);
+    box.appendChild(clear);
+}
+
+function setMark(value) {
+    currentMark = value;
+    renderMarkButtons();
+    if (recording) {
+        recording.marks.push({
+            ms: latestSample() ? latestSample().ms : 0,
+            mark: value,
+            at: Date.now(),
+        });
+        log(`标记 → ${value === 0 ? '无' : MARK_LABELS[value - 1]}`, 'ok');
+    }
+}
+
+function startRecording() {
+    recording = { startedAt: Date.now(), samples: [], marks: [] };
+    $('btnRecord').textContent = '停止录制';
+    $('btnRecord').classList.remove('primary');
+    $('btnRecord').classList.add('danger');
+    log('=== 开始录制 ===', 'ok');
+    updateRecordStatus();
+}
+
+function stopRecording() {
+    if (!recording) {
+        return;
+    }
+    const summary = summarizeSession(recording.samples);
+    if (summary.count > 0) {
+        sessions.unshift({
+            id: ++sessionSeq,
+            time: new Date(recording.startedAt),
+            samples: recording.samples,
+            summary,
+        });
+        if (sessions.length > 6) {
+            sessions.pop();
+        }
+        log(`=== 录制结束 · ${summary.count} 样本 · ` +
+            `${(summary.durationMs / 1000).toFixed(1)}s · 实际 ${summary.rateHz}Hz ===`, 'ok');
+    } else {
+        log('录制结束，但没有采到样本（检查遥测频率是否为 0）', 'err');
+    }
+    recording = null;
+    $('btnRecord').textContent = '开始录制';
+    $('btnRecord').classList.add('primary');
+    $('btnRecord').classList.remove('danger');
+    updateRecordStatus();
+    persistSessions();
+    renderSessions();
+}
+
+function updateRecordStatus() {
+    const el = $('recordStatus');
+    if (!recording) {
+        el.textContent = '未录制';
+        return;
+    }
+    const summary = summarizeSession(recording.samples);
+    el.innerHTML = '<span class="rec-dot"></span>' +
+        `录制中 · ${summary.count} 样本 · ${(summary.durationMs / 1000).toFixed(1)}s` +
+        (summary.rateHz > 0 ? ` · ${summary.rateHz}Hz` : '');
+}
+
+/* 由读取循环调用：录制时把样本连同当前标记一起存下来。 */
+function captureForRecording(addedCount) {
+    if (!recording || addedCount <= 0) {
+        return;
+    }
+    const fresh = parser.samples.slice(-addedCount);
+    for (const s of fresh) {
+        recording.samples.push({ ...s, mark: currentMark });
+    }
+    updateRecordStatus();
+}
+
+function persistSessions() {
+    try {
+        /* 样本可能上万条，localStorage 有 5MB 上限；只存元数据，
+           数据本身留在内存，页面刷新后需要重新录制。 */
+        const meta = sessions.map((s) => ({
+            id: s.id, time: s.time.toISOString(), summary: s.summary,
+        }));
+        localStorage.setItem(SESSION_STORE_KEY, JSON.stringify(meta));
+    } catch (err) {
+        /* 存不下不影响使用。 */
+    }
+}
+
+function renderSessions() {
+    const box = $('sessionList');
+    box.innerHTML = '';
+    if (sessions.length === 0) {
+        box.innerHTML = '<span class="hint">还没有录制会话。</span>';
+        return;
+    }
+    for (const session of sessions) {
+        const div = document.createElement('div');
+        div.className = 'session';
+        const marks = Object.entries(session.summary.markCounts)
+            .filter(([mark]) => mark !== '0')
+            .map(([mark, n]) => `${MARK_LABELS[mark - 1] || mark}×${n}`)
+            .join(' ');
+        const info = document.createElement('span');
+        info.textContent =
+            `#${session.id} ${session.time.toTimeString().slice(0, 8)} · ` +
+            `${session.summary.count} 样本 · ` +
+            `${(session.summary.durationMs / 1000).toFixed(1)}s · ` +
+            `${session.summary.rateHz}Hz` + (marks ? ` · ${marks}` : '');
+
+        const btnCsv = document.createElement('button');
+        btnCsv.className = 'mini';
+        btnCsv.textContent = '整段 CSV';
+        btnCsv.onclick = () => downloadText(samplesToCsv(session.samples),
+            `session${session.id}.csv`, 'text/csv');
+
+        const btnSplit = document.createElement('button');
+        btnSplit.className = 'mini';
+        btnSplit.textContent = '按标记分段';
+        btnSplit.title = '每个标记段导出一个 CSV，便于按场景分类使用';
+        btnSplit.onclick = () => {
+            const segments = segmentByMark(session.samples)
+                .filter((seg) => seg.samples.length >= 5);
+            if (segments.length === 0) {
+                log('没有足够长的分段可导出', 'err');
+                return;
+            }
+            segments.forEach((seg, i) => {
+                const name = seg.mark === 0 ? 'unmarked' :
+                    (MARK_LABELS[seg.mark - 1] || `mark${seg.mark}`);
+                downloadText(samplesToCsv(seg.samples),
+                    `session${session.id}_${i + 1}_${name}.csv`, 'text/csv');
+            });
+            log(`已导出 ${segments.length} 个分段`, 'ok');
+        };
+
+        div.append(info, btnCsv, btnSplit);
+        box.appendChild(div);
+    }
+}
+
 /* ---------- 绘图 ---------- */
 
 function rebuildSeries() {
@@ -3206,6 +3545,60 @@ document.querySelectorAll('.mk').forEach((cb) => {
     cb.addEventListener('change', renderRateLimit);
 });
 $('gVal').addEventListener('input', renderRateLimit);
+
+/* ---------- 遥控采集事件 ---------- */
+
+$('btnDriveMode').onclick = () => setDriveEnabled(!driveEnabled);
+$('btnRecord').onclick = () => {
+    if (recording) {
+        stopRecording();
+    } else {
+        startRecording();
+    }
+};
+document.querySelectorAll('.drive-key').forEach((btn) => {
+    btn.onclick = () => {
+        flashDriveKey(btn.dataset.drive);
+        driveAction(btn.dataset.drive);
+    };
+});
+
+/*
+ * 键盘驾驶与标记。只在启用驾驶模式后接管 WASD，避免误触；
+ * 数字键标记则在录制中始终可用，因为打标记本身没有危险。
+ */
+document.addEventListener('keydown', (e) => {
+    /* 正在输入框里打字时不接管按键。 */
+    const typing = e.target && (e.target.tagName === 'INPUT' ||
+        e.target.tagName === 'TEXTAREA' || e.target.isContentEditable);
+    if (typing) {
+        return;
+    }
+
+    if (recording && e.key >= '0' && e.key <= '5') {
+        setMark(Number(e.key));
+        e.preventDefault();
+        return;
+    }
+
+    if (!driveEnabled || e.repeat) {
+        return;
+    }
+    const action = {
+        w: 'forward', W: 'forward',
+        s: 'stop', S: 'stop',
+        a: 'left', A: 'left',
+        d: 'right', D: 'right',
+    }[e.key];
+    if (action) {
+        e.preventDefault();
+        flashDriveKey(action);
+        driveAction(action);
+    }
+});
+
+renderMarkButtons();
+renderSessions();
 $('btnFocusSeries').onclick = () => {
     pendingFocusedSeriesSelection = true;
     rebuildSeries();

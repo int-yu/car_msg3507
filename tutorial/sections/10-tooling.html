@@ -1,0 +1,1878 @@
+<section class="lesson-section" id="module-10" data-title="网页调试、测试、烧录与工程文件" data-group="工具链与交付">
+  <h2>模块 10：网页调试、测试、烧录与工程文件</h2>
+  <p class="lesson-lead">这一节把“写完 C 代码之后发生什么”串起来：CCS/SysConfig 生成并编译固件，链接得到 <code>.out</code>；flash 脚本通过 SWD 烧入芯片；MCU 又把遥测经 UART1 发给网页，网页解析、绘图并导出；Node 测试直接验证网页里的真实解析器。</p>
+
+  <div class="module-map">
+    <h3>1. 先看它在整车中的位置</h3>
+    <dl>
+      <dt>一句话职责</dt>
+      <dd>提供开发、构建、烧录、在线调试、遥测可视化和解析器回归测试所需的工程外壳。</dd>
+      <dt>上游输入</dt>
+      <dd>C 源码、<code>main.syscfg</code>、CCS 工程配置、MCU 发出的 H/D 遥测行，以及用户在网页上的按钮/滑块操作。</dd>
+      <dt>下游输出</dt>
+      <dd><code>Debug/ArcLineTest.out</code>、烧录到 MSPM0G3507 的固件、UART 命令、实时曲线、导出 CSV 和测试通过/失败状态码。</dd>
+      <dt>依赖</dt>
+      <dd>CCS Theia、TI Arm Clang、MSPM0 SDK、SysConfig、XDS110/DAPLink、pyOCD、PowerShell、Node.js 与支持 Web Serial 的 Chrome/Edge。</dd>
+      <dt>调用者</dt>
+      <dd>开发者在 CCS、终端或浏览器中主动使用；固件 Telemetry 则持续向网页输入数据。</dd>
+      <dt>总体位置</dt>
+      <dd><code>源码/main.syscfg → CCS build → .out → pyOCD/SWD → MCU</code>，以及 <code>MCU Telemetry → UART1 → car_debug → parser → plot/export</code>。</dd>
+    </dl>
+  </div>
+
+  <h3>2. 初学者需要先知道</h3>
+  <ul>
+    <li><dfn data-term="toolchain">工具链</dfn>：编译器、链接器、生成器和烧录器组成的一条加工线，把源码变成芯片可运行程序。</li>
+    <li><dfn data-term="ELF / .out">ELF 固件文件</dfn>：既含机器码，也可含符号和调试信息；本工程链接输出为 <code>ArcLineTest.out</code>。</li>
+    <li><dfn data-term="Web Serial API">网页串口接口</dfn>：浏览器经用户授权访问本机串口。网页不能静默选择设备，必须由点击触发选择框。</li>
+    <li><dfn data-term="stream">流</dfn>：串口数据像连续水流，不保证一次 read 正好得到一整行；可能半行、多行或从任意位置切开。</li>
+    <li><dfn data-term="lock">流锁</dfn>：调用 <code>getReader()/getWriter()</code> 后，该对象独占 readable/writable；关闭端口前必须取消读取并释放锁。</li>
+    <li><dfn data-term="parser">解析器</dfn>：把原始文本转换为有字段名和类型的样本对象。</li>
+    <li><dfn data-term="unit test">单元测试</dfn>：给一个小功能输入固定样例，自动比较实际与期望；失败时进程返回非零，适合脚本和 CI 判断。</li>
+    <li><dfn data-term="SWD">Serial Wire Debug</dfn>：ARM 常用双线调试/烧录接口；频率过高或廉价探针接线较差时可能不稳定。</li>
+    <li><dfn data-term="project metadata">工程元数据</dfn>：IDE 用 XML/JSON 保存项目名、芯片、编译参数、SDK、目标探针等。它不是业务 C 代码，但会决定如何构建。</li>
+    <li><dfn data-term="generated file">生成文件</dfn>：由 SysConfig/编译器自动写出的文件，下一次生成可能覆盖手改内容；应修改源配置而不是结果。</li>
+  </ul>
+
+  <h3>3. 文件导读</h3>
+  <table>
+    <thead><tr><th>文件</th><th>职责</th><th>维护方式</th></tr></thead>
+    <tbody>
+      <tr><td><code>car_debug.html</code></td><td>单文件 Web Serial 上位机、遥测解析、Canvas 曲线和 CSV 导出。</td><td>手写；协议变化时与固件同步。</td></tr>
+      <tr><td><code>tests/test_csv_parse.mjs</code></td><td>从网页抽取真实 TelemetryParser 并执行 15 组测试。</td><td>手写；新增解析边界时补测试。</td></tr>
+      <tr><td><code>flash.ps1/.bat</code></td><td>检查 Debug ELF、调用 pyOCD 擦除/烧录/复位；bat 是双击入口。</td><td>手写；输出路径或工具改变时同步。</td></tr>
+      <tr><td><code>README.md</code></td><td>硬件、接口、参数和文件职责总索引。</td><td>手工同步，但可能滞后，必须与源码核对。</td></tr>
+      <tr><td><code>targetConfigs/*</code></td><td>CCS 调试探针、SWD 频率和目标芯片。</td><td>当前自动管理，优先用 CCS 属性修改。</td></tr>
+      <tr><td><code>.project/.cproject/.ccsproject</code></td><td>Eclipse CDT/CCS 的项目、工具链、SDK、链接和目标配置元数据。</td><td>应纳入工程；优先通过 IDE 设置修改，手改 XML 风险高。</td></tr>
+      <tr><td><code>.clangd</code></td><td>让 clangd 找到 Debug 编译数据库，并压制编辑器诊断。</td><td>文件自称自动生成，不应作为长期手调入口。</td></tr>
+      <tr><td><code>25.theia-workspace</code></td><td>告诉 CCS Theia 当前工作区只打开项目根目录。</td><td>简单 JSON，可手改，但通常无需。</td></tr>
+    </tbody>
+  </table>
+
+  <h3>4. 逐行讲解</h3>
+  <h4>4.1 <code>car_debug.html</code> 的 HTML/CSS/JS 三层</h4>
+  <pre class="source-code"><code data-source="car_debug.html" data-lines="1-17">&lt;!DOCTYPE html&gt;
+&lt;html lang="zh-CN"&gt;
+&lt;head&gt;
+&lt;meta charset="utf-8"&gt;
+&lt;meta name="viewport" content="width=device-width, initial-scale=1"&gt;
+&lt;title&gt;小车串口调试台&lt;/title&gt;
+&lt;style&gt;
+:root {
+    --bg: #0e1117;
+    --panel: #161b24;
+    --panel2: #10141c;
+    --line: #262d3b;
+    --fg: #e8ecf3;
+    --dim: #8b93a3;
+    --accent: #58a6ff;
+    --accent-dim: #1f3a5f;
+    --ok: #4cc98a;</code></pre>
+  <ol class="line-notes">
+    <li><strong>第 1～2 行：</strong>声明 HTML5，并把页面语言设为简体中文，帮助浏览器和辅助工具理解文本。</li>
+    <li><strong>第 3～6 行：</strong>head 中指定 UTF-8、移动端视口和浏览器标题。</li>
+    <li><strong>第 7～17 行：</strong>页面内联 CSS，不依赖外部资源；<code>:root</code> 定义统一颜色变量，后续样式通过 <code>var()</code> 引用。</li>
+  </ol>
+  <p>CSS 第 18～49 行统一设置盒模型、页面、标题、双栏、面板、按钮、输入框和状态颜色；它们属于视觉规则，不影响串口协议，因此不逐条复制。</p>
+  <p>CSS 第 50～64 行定义终端滚动/颜色、Canvas 尺寸、曲线选项与掩码布局；关键行为由后面的 JavaScript 控制。</p>
+
+  <h4>4.2 页面结构：连接、命令和状态</h4>
+  <pre class="source-code"><code data-source="car_debug.html" data-lines="194-247">&lt;body&gt;
+
+&lt;h1&gt;小车串口调试台 &lt;span class="hint" style="font-weight:normal"&gt;无线 DAPLink 串口 · 115200 8N1&lt;/span&gt;&lt;/h1&gt;
+
+&lt;div class="panel row topbar"&gt;
+    &lt;button id="btnConnect" class="primary"&gt;连接串口&lt;/button&gt;
+    &lt;button id="btnDisconnect" disabled&gt;断开&lt;/button&gt;
+    &lt;span class="status"&gt;状态：&lt;span id="connState" class="off"&gt;未连接&lt;/span&gt;&lt;/span&gt;
+    &lt;span class="status" style="margin-left:auto"&gt;模式：&lt;b id="modeVal"&gt;—&lt;/b&gt; · 样本 &lt;b id="sampleCount"&gt;0&lt;/b&gt;&lt;/span&gt;
+    &lt;span class="hint"&gt;&lt;kbd&gt;Esc&lt;/kbd&gt; 急停&lt;/span&gt;
+    &lt;button id="btnStop" class="danger" disabled&gt;急停 C0&lt;/button&gt;
+&lt;/div&gt;
+
+&lt;div class="grid"&gt;
+&lt;div&gt;
+
+    &lt;div class="panel"&gt;
+        &lt;h2&gt;运动&lt;/h2&gt;
+        &lt;div class="row"&gt;
+            &lt;label&gt;速度&lt;/label&gt;
+            &lt;input type="number" id="vVal" value="200" min="20" max="800"&gt;
+            &lt;button data-send="V" data-from="vVal" disabled&gt;设定 V&lt;/button&gt;
+            &lt;span class="hint"&gt;20~800 mm/s&lt;/span&gt;
+        &lt;/div&gt;
+        &lt;div class="row"&gt;
+            &lt;label&gt;距离&lt;/label&gt;
+            &lt;input type="number" id="distVal" value="500" min="1" max="10000"&gt;
+            &lt;button data-send="F" data-from="distVal" disabled&gt;前进 F&lt;/button&gt;
+            &lt;button data-send="B" data-from="distVal" disabled&gt;后退 B&lt;/button&gt;
+        &lt;/div&gt;
+        &lt;div class="row"&gt;
+            &lt;label&gt;角度&lt;/label&gt;
+            &lt;input type="number" id="angVal" value="90" min="-3600" max="3600"&gt;
+            &lt;button data-send="T" data-from="angVal" disabled&gt;相对 T&lt;/button&gt;
+            &lt;button data-send="A" data-from="angVal" disabled&gt;绝对 A&lt;/button&gt;
+        &lt;/div&gt;
+        &lt;div class="row"&gt;
+            &lt;label&gt;恒速&lt;/label&gt;
+            &lt;input type="number" id="wVal" value="300" min="-800" max="800"&gt;
+            &lt;button data-send="W" data-from="wVal" disabled&gt;恒速 W&lt;/button&gt;
+            &lt;button data-cmd="W0" disabled&gt;停 W0&lt;/button&gt;
+        &lt;/div&gt;
+        &lt;p class="hint known-hardware"&gt;已知硬件：左轮硬件当前不能反转。网页保留负速度命令，但会醒目提醒，不会替你屏蔽。&lt;/p&gt;
+        &lt;div class="row"&gt;
+            &lt;label&gt;巡线&lt;/label&gt;
+            &lt;input type="number" id="nVal" value="200" min="20" max="800"&gt;
+            &lt;button data-send="N" data-from="nVal" disabled&gt;巡线 N&lt;/button&gt;
+            &lt;button data-cmd="N0" disabled&gt;停 N0&lt;/button&gt;
+        &lt;/div&gt;
+        &lt;div class="row"&gt;
+            &lt;button data-cmd="Z1" disabled&gt;航向归零 Z1&lt;/button&gt;
+            &lt;button data-cmd="Z2" disabled&gt;重新采样航向 Z2&lt;/button&gt;
+            &lt;span class="hint"&gt;Z1 只把当前朝向定为 0°；Z2 会重采陀螺仪零漂并归零，请保持车辆静止约 0.8 秒&lt;/span&gt;
+        &lt;/div&gt;</code></pre>
+  <ol class="line-notes">
+    <li><strong>第 83～93 行：</strong>进入 body；顶栏提供连接/断开、状态、mode、样本数和 C0 急停，需串口的按钮初始 disabled。</li>
+    <li><strong>第 95～105 行：</strong>进入运动面板；V 输入限定 20～800，按钮用 data-send/data-from 描述命令。</li>
+    <li><strong>第 106～117 行：</strong>距离输入服务 F/B，角度输入服务 T 相对转角和 A 绝对航向。</li>
+    <li><strong>第 118～129 行：</strong>W 是无规划闭环恒速阶跃，N 是巡线；各自提供数值命令和 W0/N0 停止按钮。</li>
+    <li><strong>第 130～133 行：</strong>Z1 只把当前朝向设为 0；新增 Z2 会重新静止采样陀螺仪零漂并归零，约 0.8 秒内必须保持车辆不动。两个按钮都用 data-cmd，后面的通用事件绑定会直接发送对应文本。</li>
+    <li><strong>第 134～136 行：</strong>结束按钮行，并提示 W 可在运行中链式修改目标。</li>
+  </ol>
+  <p>HTML 第 108～130 行定义 O/D 舵机滑块和 P 拍照面板；真正的 100ms 节流与命令发送在第 647～667 行实现。</p>
+  <pre class="source-code"><code data-source="car_debug.html" data-lines="397-452">        &lt;h2&gt;遥测&lt;/h2&gt;
+        &lt;div class="row"&gt;
+            &lt;label&gt;频率&lt;/label&gt;
+            &lt;input type="number" id="gVal" value="20" min="0" max="100"&gt;
+            &lt;button data-send="G" data-from="gVal" disabled&gt;设定 G&lt;/button&gt;
+            &lt;button id="btnMaxRate" disabled&gt;用满上限&lt;/button&gt;
+            &lt;span class="hint" id="rateLimitHint"&gt;上限：勾选字段后自动计算&lt;/span&gt;
+        &lt;/div&gt;
+        &lt;div class="row" style="align-items:flex-start"&gt;
+            &lt;label style="padding-top:2px"&gt;字段&lt;/label&gt;
+            &lt;div class="masks" style="flex:1"&gt;
+                &lt;label&gt;&lt;input type="checkbox" class="mk" value="1" checked&gt;yaw 航向角&lt;/label&gt;
+                &lt;label&gt;&lt;input type="checkbox" class="mk" value="2" checked&gt;gray/keys 灰度按键&lt;/label&gt;
+                &lt;label&gt;&lt;input type="checkbox" class="mk" value="4" checked&gt;LD/RD 左右路程&lt;/label&gt;
+                &lt;label&gt;&lt;input type="checkbox" class="mk" value="8" checked&gt;LV/RV 左右速度&lt;/label&gt;
+                &lt;label&gt;&lt;input type="checkbox" class="mk" value="16" checked&gt;mode 运动模式&lt;/label&gt;
+                &lt;label&gt;&lt;input type="checkbox" class="mk" value="32" checked&gt;k230 视觉目标&lt;/label&gt;
+                &lt;label&gt;&lt;input type="checkbox" class="mk" value="64" checked&gt;TL/TR 目标轮速&lt;/label&gt;
+                &lt;label&gt;&lt;input type="checkbox" class="mk" value="128" checked&gt;PL/PR 输出 PWM&lt;/label&gt;
+                &lt;label&gt;&lt;input type="checkbox" class="mk" value="256" checked&gt;navT/navE 转向&lt;/label&gt;
+                &lt;label&gt;&lt;input type="checkbox" class="mk" value="512" checked&gt;lerr 巡线误差&lt;/label&gt;
+                &lt;label&gt;&lt;input type="checkbox" class="mk" value="1024"&gt;LV 仅左轮速度&lt;/label&gt;
+                &lt;label&gt;&lt;input type="checkbox" class="mk" value="2048"&gt;RV 仅右轮速度&lt;/label&gt;
+                &lt;label&gt;&lt;input type="checkbox" class="mk" value="4096"&gt;TL 仅左目标&lt;/label&gt;
+                &lt;label&gt;&lt;input type="checkbox" class="mk" value="8192"&gt;TR 仅右目标&lt;/label&gt;
+                &lt;label&gt;&lt;input type="checkbox" class="mk" value="16384"&gt;PL 仅左 PWM&lt;/label&gt;
+                &lt;label&gt;&lt;input type="checkbox" class="mk" value="32768"&gt;PR 仅右 PWM&lt;/label&gt;
+            &lt;/div&gt;
+            &lt;button id="btnMask" disabled&gt;应用 M&lt;/button&gt;
+        &lt;/div&gt;
+        &lt;p class="hint"&gt;勾选后上限实时更新。调单轮请用「仅左/仅右」单侧字段——行长减半、可用频率翻倍。固件遥测是阻塞发送，超限会拖慢 100 Hz 主循环里的运动控制。&lt;/p&gt;
+        &lt;p class="hint"&gt;调 PID 时不必纠结这里：试验会自动切到本阶段的最优掩码，并用板载 100 Hz 捕获算指标。&lt;/p&gt;
+    &lt;/div&gt;
+
+    &lt;div class="panel"&gt;
+        &lt;h2&gt;曲线 &lt;small&gt;原始数据完整保存；绘图自动抽样降载，目标 vs 实测仍共用同一刻度&lt;/small&gt;&lt;/h2&gt;
+        &lt;canvas id="plot"&gt;&lt;/canvas&gt;
+        &lt;div class="row" style="margin-top:8px"&gt;
+            &lt;div id="series" style="flex:1"&gt;&lt;span class="hint"&gt;连接后按表头自动列出可画的数值列&lt;/span&gt;&lt;/div&gt;
+            &lt;button id="btnFocusSeries" type="button"&gt;恢复当前阶段曲线&lt;/button&gt;
+        &lt;/div&gt;
+        &lt;div class="row"&gt;
+            &lt;label&gt;窗口&lt;/label&gt;
+            &lt;input type="number" id="winVal" value="600" min="50" max="20000"&gt;
+            &lt;span class="hint"&gt;条&lt;/span&gt;
+            &lt;button id="btnPause"&gt;暂停&lt;/button&gt;
+            &lt;button id="btnClear"&gt;清空数据&lt;/button&gt;
+            &lt;button id="btnExport"&gt;导出 CSV&lt;/button&gt;
+        &lt;/div&gt;
+    &lt;/div&gt;
+
+    &lt;div class="panel"&gt;
+        &lt;h2&gt;原始终端&lt;/h2&gt;
+        &lt;div id="terminal"&gt;&lt;/div&gt;
+        &lt;div class="row" style="margin-top:8px"&gt;
+            &lt;input type="text" id="rawCmd" placeholder="直接输入命令，回车发送" style="flex:1;width:auto"&gt;</code></pre>
+  <ol class="line-notes">
+    <li><strong>第 223～229 行：</strong>遥测频率 G 可设 0～100；动态上限仍由固件裁决。</li>
+    <li><strong>第 230～245 行：</strong>字段掩码已扩为 10 组：除原六组外，新增目标轮速 TL/TR、输出 PL/PR、转向 navT/navE 和巡线误差 lerr，对应权值一直到 512。</li>
+    <li><strong>第 246～247 行：</strong>全字段提示上限约 14Hz，轮速试验子集约 30Hz。</li>
+    <li><strong>第 249～261 行：</strong>Canvas 曲线按同量纲共享刻度，并新增暂停按钮；窗口、清空与导出仍保留。</li>
+    <li><strong>第 265～273 行：</strong>原始终端显示普通回复，支持直接输入、发送和清屏。</li>
+    <li><strong>第 275～278 行：</strong>闭合页面布局并进入脚本。</li>
+  </ol>
+
+  <h4>4.3 TelemetryParser：动态列类型</h4>
+  <pre class="source-code"><code data-source="car_debug.html" data-lines="462-521">/* ==PARSER_BEGIN== */
+/*
+ * 遥测 CSV 解析器。
+ *
+ * 固件在掩码改变时重发一行表头 H,...，随后每行数据以 D, 开头。
+ * 列的语义不是「一个掩码位一列」——gray/keys、LD/RD、LV/RV 各占两列，
+ * 而 k230 只占一列却装着 valid:x:y 三个值，所以一律按表头列名逐列取值。
+ */
+class TelemetryParser {
+    constructor() {
+        this.buffer = '';       /* 串口数据不保证按行到达，未成行的尾巴留在这里 */
+        this.columns = [];      /* 当前表头的列名，不含前导的 H */
+        this.samples = [];
+        this.maxSamples = 20000;
+        this.trimBatch = 1000;  /* 分块裁剪，避免满容量后每行 shift() 搬动整个数组 */
+        /* 板载捕获（通道 B）与实时流分开保存：前者 100 Hz 与控制环同频，
+           是调参指标的可信来源；后者频率低但连续，用于监视。 */
+        this.captureColumns = [];
+        this.captureSamples = [];
+    }
+
+    /* gray 是十六进制两位（1F），其余数值列都是十进制。 */
+    static get HEX_COLUMNS() { return ['gray']; }
+
+    /* mode 是文本，画不了图，只能显示。 */
+    static get TEXT_COLUMNS() { return ['mode']; }
+
+    /* ms 是时间戳，作为横轴使用；画成曲线只会是一条单调直线，还白占一个颜色。 */
+    static get AXIS_COLUMNS() { return ['ms']; }
+
+    /* 冒号分隔的复合列，展开成多个虚拟列后才能进曲线选择器。 */
+    static get COMPOSITE_COLUMNS() {
+        return { k230: ['k230_valid', 'k230_x', 'k230_y'] };
+    }
+
+    /* 列 → 量纲分组。同组曲线共享纵轴缩放，目标 vs 实测才能直接对比；
+       不在表里的列各自独立归一化（组名就是列名自己）。 */
+    static get UNIT_GROUPS() {
+        return {
+            LV: 'mmps', RV: 'mmps', TL: 'mmps', TR: 'mmps',
+            PL: 'pwm', PR: 'pwm',
+            yaw: 'deg', navT: 'deg', navE: 'deg',
+            LD: 'mm', RD: 'mm',
+        };
+    }
+
+    static unitOf(column) {
+        return TelemetryParser.UNIT_GROUPS[column] || column;
+    }
+
+    /* 展开复合列后，实际可画图的列名清单。 */
+    numericColumns() {
+        const composite = TelemetryParser.COMPOSITE_COLUMNS;
+        const text = TelemetryParser.TEXT_COLUMNS;
+        const axis = TelemetryParser.AXIS_COLUMNS;
+        const out = [];
+        for (const col of this.columns) {
+            if (composite[col]) {
+                out.push(...composite[col]);
+            } else if (!text.includes(col) &amp;&amp; !axis.includes(col)) {</code></pre>
+  <ol class="line-notes">
+    <li><strong>第 279～293 行：</strong>PARSER_BEGIN 后定义类；构造器保存半行、列名、样本和 20000 条上限。</li>
+    <li><strong>第 295～307 行：</strong>gray、mode、ms 与 k230 分别声明为十六进制、文本、横轴和复合列。</li>
+    <li><strong>第 309～318 行：</strong>UNIT_GROUPS 把目标/实测轮速归为 mmps，把 PL/PR 归为 pwm，把 yaw/navT/navE 归为 deg，LD/RD 归为 mm。</li>
+    <li><strong>第 320～322 行：</strong>unitOf 返回列的量纲组；未登记列以自身名称作为独立组。</li>
+    <li><strong>第 324～338 行：</strong>numericColumns 展开复合列，排除文本和横轴，返回可画数值列。</li>
+  </ol>
+
+  <h4>4.4 分包缓存、H/D 分流和样本上限</h4>
+  <pre class="source-code"><code data-source="car_debug.html" data-lines="528-584">    /*
+     * 喂入一段原始文本。返回 { textLines, headerChanged }：
+     * textLines 是本次收到的非遥测行（OK/ERR 等），供终端显示。
+     */
+    feed(text) {
+        this.buffer += text;
+        const textLines = [];
+        let headerChanged = false;
+        let samplesAdded = 0;
+        let captureStarted = false;
+        let captureAdded = 0;
+
+        /* \r\n 和 \n 都要能拆；固件用 \r\n，但转发链路上可能被规整过。 */
+        const lines = this.buffer.split(/\r?\n/);
+        this.buffer = lines.pop();   /* 最后一段没有换行符，是半截行，留待下次拼接 */
+
+        for (const raw of lines) {
+            const line = raw.trim();
+            if (line === '') {
+                continue;
+            }
+            if (line.startsWith('H,')) {
+                this.columns = line.slice(2).split(',');
+                /* 列定义变了，旧样本的列对不上，只能丢弃。 */
+                this.samples = [];
+                headerChanged = true;
+            } else if (line.startsWith('D,')) {
+                const sample = this._parseRow(line);
+                if (sample !== null) {
+                    this.samples.push(sample);
+                    samplesAdded += 1;
+                    if (this.samples.length &gt; this.maxSamples) {
+                        this.samples.splice(0, Math.min(this.trimBatch,
+                            this.samples.length - 1));
+                    }
+                }
+            } else if (line.startsWith('CH,')) {
+                /* 捕获 dump 的表头：与实时流分开存，两者列集和采样率都不同。 */
+                this.captureColumns = line.slice(3).split(',');
+                this.captureSamples = [];
+                captureStarted = true;
+            } else if (line.startsWith('C,')) {
+                const sample = this._parseCaptureRow(line);
+                if (sample !== null) {
+                    this.captureSamples.push(sample);
+                    captureAdded += 1;
+                }
+            } else {
+                textLines.push(line);
+            }
+        }
+        return {
+            textLines, headerChanged, samplesAdded,
+            captureStarted, captureAdded,
+        };
+    }</code></pre>
+  <ol class="line-notes">
+    <li><strong>第 532～542 行：</strong>feed 追加旧半行，按 CRLF/LF 拆分，并把最后未闭合部分留在 buffer。四个计数器分别汇报本次的表头变化、新增实时样本、捕获开始与新增捕获样本。</li>
+    <li><strong>第 544～548 行：</strong>逐个 trim 完整行并跳过空行。</li>
+    <li><strong>第 549～553 行：</strong><code>H,</code> 行建立新 columns、清旧样本并标记表头变化。</li>
+    <li><strong>第 554～564 行：</strong><code>D,</code> 行解析成功才加入样本；超过 20000 条按批裁剪最旧的一段（不是逐条 shift，那样每行都要搬动整个数组）。</li>
+    <li><strong>第 565～570 行：</strong><code>CH,</code> 是<strong>板载捕获</strong>的表头。捕获数据与实时流<strong>分开存放</strong>：两者列集不同、采样率也不同（捕获 100Hz 与控制环同频，实时流受串口带宽限制只有 20~50Hz），混在一起会让指标计算取到错误的时间基准。</li>
+    <li><strong>第 571～577 行：</strong><code>C,</code> 是捕获数据行，走独立的 <code>_parseCaptureRow()</code>——捕获行全是十进制数值，没有十六进制列和冒号复合列，解析比实时流简单。</li>
+    <li><strong>第 578～583 行：</strong>其他文本（<code>OK</code>/<code>ERR</code> 回应）交给终端，最终把五项统计一并返回，调用方据此决定是否重绘、是否推进试验状态机。</li>
+  </ol>
+  <div class="deep-dive">
+    <h4>为什么 reader.read() 不能直接 split 当前 value</h4>
+    <p><strong>输入：</strong>Web Serial 任意长度的 Uint8Array，可能是半行，也可能包含多行和下一行开头。</p>
+    <p><strong>过程：</strong>TextDecoder 流式解码 → 追加旧 buffer → 按换行切分 → pop 保存未闭合尾巴 → 只解析已经完整的行。</p>
+    <p><strong>输出：</strong>不会把半截数字当成完整样本，也不会丢失跨 read 边界的内容。</p>
+    <p><strong>边界条件：</strong>若发送端永远不发换行，buffer 会持续增长；本固件每行用 CRLF 结束。</p>
+    <p><strong>设计原因：</strong>串口/USB 分包边界与业务行边界无关，解析器必须自己恢复完整记录。</p>
+  </div>
+
+  <h4>4.5 类型解析、k230 展开与导出</h4>
+  <pre class="source-code"><code data-source="car_debug.html" data-lines="614-724">    /* 返回 null 表示这一行不可信，整行丢弃。 */
+    _parseRow(line) {
+        const values = line.slice(2).split(',');
+        /* 列数对不上多半是掉电重连或掩码切换瞬间的残行，不要勉强解析。 */
+        if (this.columns.length === 0 || values.length !== this.columns.length) {
+            return null;
+        }
+
+        const composite = TelemetryParser.COMPOSITE_COLUMNS;
+        const hex = TelemetryParser.HEX_COLUMNS;
+        const text = TelemetryParser.TEXT_COLUMNS;
+        const sample = {};
+
+        for (let i = 0; i &lt; this.columns.length; i += 1) {
+            const col = this.columns[i];
+            const value = values[i];
+
+            if (composite[col]) {
+                const names = composite[col];
+                const parts = value.split(':');
+                if (parts.length !== names.length || parts.some((part) =&gt; part.trim() === '')) {
+                    return null;
+                }
+                for (let j = 0; j &lt; names.length; j += 1) {
+                    const n = Number(parts[j]);
+                    if (!Number.isFinite(n)) {
+                        return null;
+                    }
+                    sample[names[j]] = n;
+                }
+            } else if (text.includes(col)) {
+                sample[col] = value;
+            } else if (hex.includes(col)) {
+                if (!/^[0-9a-f]+$/i.test(value)) {
+                    return null;
+                }
+                const n = parseInt(value, 16);
+                if (!Number.isFinite(n)) {
+                    return null;
+                }
+                sample[col] = n;
+            } else {
+                if (value.trim() === '') {
+                    return null;
+                }
+                const n = Number(value);
+                if (!Number.isFinite(n)) {
+                    return null;
+                }
+                sample[col] = n;
+            }
+        }
+        return sample;
+    }
+
+    clear() {
+        this.samples = [];
+    }
+
+    /* 导出时把当前样本还原成标准 CSV（复合列已展开，比原始格式更好用）。 */
+    toCsv() {
+        return samplesToCsv(this.samples);
+    }
+}
+
+/* 样本数组 → 标准 CSV 文本；试验记录导出与实时导出共用。 */
+function samplesToCsv(samples) {
+    if (samples.length === 0) {
+        return '';
+    }
+    const cols = Object.keys(samples[0]);
+    const head = cols.join(',');
+    const body = samples.map((s) =&gt; cols.map((c) =&gt; s[c]).join(',')).join('\n');
+    return head + '\n' + body + '\n';
+}
+
+/*
+ * 生成可直接粘贴给 AI 的调参数据包（Markdown）。
+ * meta: { loop, structure, params, excitation, rateHz, columnsNote, expectation }
+ */
+function buildAiPack(meta, samples) {
+    const lines = [];
+    lines.push('# PID 调参数据包 — ' + meta.loop);
+    lines.push('');
+    lines.push('- 控制结构: ' + meta.structure);
+    lines.push('- 本次参数: ' + meta.params);
+    lines.push('- 激励: ' + meta.excitation);
+    lines.push('- 采样率: ' + meta.rateHz + ' Hz（ms 列为固件毫秒时间戳）');
+    lines.push('- 列说明: ' + meta.columnsNote);
+    lines.push('- 调参目标: ' + meta.expectation);
+    if (meta.metricsNote) {
+        lines.push('- 网页自动指标: ' + meta.metricsNote);
+    }
+    lines.push('');
+    lines.push('请根据以下数据评估本次响应（上升时间、超调、振荡、稳态误差、输出饱和），' +
+               '并给出下一组参数的具体数值建议和理由。');
+    lines.push('');
+    lines.push('```csv');
+    lines.push(samplesToCsv(samples).trimEnd());
+    lines.push('```');
+    return lines.join('\n');
+}
+
+/*
+ * 解析 Q 命令回应：
+ * "OK Q MAX=57 MASK=5136 RATE=50 CAPST=0 CAPN=0 CAPMAX=1024"
+ * 返回 null 表示不是合法的 Q 回应（例如老固件不支持）。
+ */
+function parseCapabilityReply(line) {
+    const m = /^OK Q MAX=(\d+) MASK=(\d+) RATE=(\d+)(?: CAPST=(\d+) CAPN=(\d+) CAPMAX=(\d+))?/
+        .exec(line || '');</code></pre>
+  <ol class="line-notes">
+    <li><strong>第 378～384 行：</strong>_parseRow 去掉 D 前缀并校验表头存在、列数完全一致。</li>
+    <li><strong>第 386～424 行：</strong>逐列处理复合、文本、十六进制和普通数值；任一结构/数值非法就丢整行。</li>
+    <li><strong>第 427～435 行：</strong>clear 只清样本；toCsv 复用独立的 samplesToCsv。</li>
+    <li><strong>第 437～446 行：</strong>samplesToCsv 统一服务实时导出与试验记录，按第一条样本键生成表头和数据行。</li>
+    <li><strong>第 448～470 行：</strong>buildAiPack 把控制结构、参数、激励、采样率、列说明和完整 CSV 组合成可复制给 AI 的 Markdown。</li>
+    <li><strong>第 472～486 行：</strong>estimateWheelBasePwm 估算“速度×前馈+同方向静摩擦”，再夹到 ±1000，并显式标记是否饱和。</li>
+    <li><strong>第 488 行：</strong>PARSER_END 结束测试抽取区域。</li>
+  </ol>
+
+  <h4>4.6 页面状态和安全终端输出</h4>
+  <pre class="source-code"><code data-source="car_debug.html" data-lines="1468-1511">let port = null;
+let writer = null;
+/* reader 和读循环本身都要能被 disconnect() 取到：readable 流还锁着时
+   port.close() 会被拒绝，必须先 cancel 再等读循环退出。 */
+let reader = null;
+let readTask = null;
+let readAbort = null;
+let selected = new Set();
+let pendingFocusedSeriesSelection = true;
+let focusedTelemetryApplyChain = Promise.resolve();
+let focusedTelemetryGeneration = 0;
+let needsRedraw = false;
+let plotPaused = false;
+let plotSnapshot = null;   /* 暂停时冻结的样本快照，悬浮读数在暂停时也可用 */
+let hoverX = null;         /* 曲线区悬浮读数的横坐标（CSS 像素） */
+let lastPlotAt = 0;
+let redrawTimer = null;
+const PLOT_MIN_INTERVAL_MS = 50; /* 最多 20 FPS；数据仍按固件频率完整保存。 */
+
+let paramCache = {};     /* id -&gt; { name, value, min, max, def } */
+let paramRenderPending = false;
+let lastRateHz = 20;     /* 最近一次固件回报的遥测频率，写进试验记录 */
+let session = null;      /* 进行中的调参试验 */
+let runs = [];           /* 试验记录，新的在前 */
+let runSeq = 0;
+let referenceRunId = null; /* 设为基准的试验记录，虚线叠加在实时曲线上 */
+let odomStart = null;    /* 里程标定起点 {LD, RD} */
+let replyWaiters = [];
+let focusState = { loop: 'wheel', side: 'left', stage: 'p' };
+
+const $ = (id) =&gt; document.getElementById(id);
+const termEl = $('terminal');
+const plotEl = $('plot');
+const ctx = plotEl.getContext('2d');
+
+/* ---------- 终端 ---------- */
+
+function log(text, cls) {
+    const atBottom = termEl.scrollTop + termEl.clientHeight &gt;= termEl.scrollHeight - 4;
+    const span = document.createElement('span');
+    if (cls) {
+        span.className = cls;
+    }
+    span.textContent = text + '\n';</code></pre>
+  <ol class="line-notes">
+    <li><strong>第 561～570 行：</strong>保存串口读写锁、异步读任务、曲线选择和暂停/重绘状态。</li>
+    <li><strong>第 572～577 行：</strong>缓存运行时参数、最近频率、当前调参会话、历史记录和里程标定起点。</li>
+    <li><strong>第 579～582 行：</strong>取得终端、Canvas 和 2D 上下文。</li>
+    <li><strong>第 586～600 行：</strong>log 用 textContent 安全输出，最多保留 500 项，并只在用户原本位于底部时自动滚动。</li>
+    <li><strong>第 602～604 行：</strong>logReply 按 OK/ERR 选择颜色。</li>
+  </ol>
+
+  <h4>4.7 Web Serial 连接、读取与 reader cancel</h4>
+  <pre class="source-code"><code data-source="car_debug.html" data-lines="1553-1664">/* ---------- 串口 ---------- */
+
+function setConnected(on) {
+    $('connState').textContent = on ? '已连接' : '未连接';
+    $('connState').className = on ? 'on' : 'off';
+    $('btnConnect').disabled = on;
+    $('btnDisconnect').disabled = !on;
+    document.querySelectorAll(
+        'button[data-send], button[data-cmd], button[data-drive], ' +
+        '#btnMask, #btnMaxRate, #btnRaw, #btnStop, #btnDriveMode, #btnRecord, ' +
+        '#btnParamRefresh, #btnParamApplyStored, #btnSessStart, ' +
+        '#btnCalFinish, #btnOdomMark, #btnOdomCalc')
+        .forEach((b) =&gt; { b.disabled = !on; });
+    $('servoO').disabled = !on;
+    $('servoD').disabled = !on;
+    if (!on) {
+        /* 断开后键盘不该还在"驾驶"一台连不上的车。 */
+        setDriveEnabled(false);
+        if (recording) {
+            stopRecording();
+        }
+    }
+}
+
+async function connect() {
+    if (!('serial' in navigator)) {
+        alert('当前浏览器不支持 Web Serial API，请用 Chrome 或 Edge 打开。');
+        return;
+    }
+    try {
+        port = await navigator.serial.requestPort();
+        await port.open({ baudRate: 115200, dataBits: 8, stopBits: 1, parity: 'none' });
+        writer = port.writable.getWriter();
+        focusedTelemetryGeneration += 1;
+        /* 新连接可能是另一块板或新固件，不能沿用上次连接捕获的“上电默认”。 */
+        paramCache = {};
+        scheduleParamRender();
+        setConnected(true);
+        log('串口已连接 115200 8N1', 'ok');
+        readAbort = false;
+        readTask = readLoop();
+        await applyFocusedTelemetrySelection(true);
+        /* 稍等固件把 READY 横幅吐完，再拉一次完整参数表。 */
+        setTimeout(() =&gt; { send('K?'); }, 300);
+    } catch (err) {
+        log('连接失败：' + err.message, 'err');
+    }
+}
+
+async function readLoop() {
+    const decoder = new TextDecoder();
+    reader = port.readable.getReader();
+    try {
+        while (!readAbort) {
+            const { value, done } = await reader.read();
+            if (done) {
+                break;
+            }
+            const { textLines, headerChanged, samplesAdded, captureAdded } =
+                parser.feed(decoder.decode(value, { stream: true }));
+            textLines.forEach(handleTextLine);
+            if (headerChanged) {
+                rebuildSeries();
+            }
+            if (session &amp;&amp; samplesAdded &gt; 0) {
+                watchSession();
+            }
+            captureForRecording(samplesAdded);
+            if (captureAdded &gt; 0) {
+                /* dump 可能有上千行，进度只在状态栏更新，不触发重绘。 */
+                $('sessStatus').textContent =
+                    `正在取回板载 100 Hz 捕获数据… ${parser.captureSamples.length} 样本`;
+            }
+            if (headerChanged || samplesAdded &gt; 0) {
+                requestRedraw();
+            }
+        }
+    } catch (err) {
+        /* cancel() 会让挂起的 read() 以异常结束，这是正常的断开路径。 */
+        if (!readAbort) {
+            log('读取中断：' + err.message, 'err');
+            if (session) {
+                await stopSession('读取中断', true);
+            } else {
+                await emergencyStop();
+            }
+        }
+    } finally {
+        reader.releaseLock();
+        reader = null;
+    }
+}
+
+async function disconnect() {
+    /* 先作废自动遥测队列，防止剩余 M/G 排在急停 C0 后面。 */
+    focusedTelemetryGeneration += 1;
+    try {
+        /* W/N 是持续运动；主动断开前先按当前模式停车，再释放串口。 */
+        if (session) {
+            await stopSession('串口断开', true);
+        } else {
+            await emergencyStop();
+        }
+        readAbort = true;
+        /* 必须先解除挂起的 read() 并等读循环真正退出（它在 finally 里
+           releaseLock），否则 readable 仍处于 locked，port.close() 会被拒绝，
+           port 不会置空，下次连接就会失败。 */
+        if (reader) {
+            await reader.cancel().catch(() =&gt; {});
+        }
+        if (readTask) {
+            await readTask.catch(() =&gt; {});</code></pre>
+  <ol class="line-notes">
+    <li><strong>第 627～643 行：</strong>setConnected 同步连接状态，并启停普通命令、参数、标定、试验和舵机控件；断开时结束正在进行的会话。</li>
+    <li><strong>第 646～660 行：</strong>检测 Web Serial，按 115200 8N1 打开、取得 writer 并启动读循环；连接 300ms 后发送 K? 拉取参数表。</li>
+    <li><strong>第 666～683 行：</strong>readLoop 流式解码后交 parser；文本先进入 handleTextLine 更新参数/频率，再处理表头、调参会话和重绘。</li>
+    <li><strong>第 685～693 行：</strong>主动 cancel 的读异常不报警，finally 必定释放 reader 锁。</li>
+    <li><strong>第 696～721 行：</strong>disconnect 按 cancel reader → 等 readTask → release writer → close port 的顺序关闭。</li>
+    <li><strong>第 724～738 行：</strong>send 忽略空命令，用 CRLF 编码发送并记录错误。</li>
+  </ol>
+
+  <div class="deep-dive">
+    <h4><code>disconnect()</code> 为什么不能直接 port.close()</h4>
+    <p><strong>输入：</strong>仍在 <code>await reader.read()</code> 的 readable 流、reader/writer 锁和打开端口。</p>
+    <p><strong>过程：</strong>置 readAbort → cancel reader → await readTask → readLoop finally 释放 reader → release writer → close port。</p>
+    <p><strong>输出：</strong>端口可靠关闭，下次可重新连接。</p>
+    <p><strong>边界条件：</strong>取消 read 可能抛异常，但主动断开路径会忽略；顺序颠倒时 close 会因 readable locked 被拒绝。</p>
+    <p><strong>设计原因：</strong>Web Streams 的锁是一种所有权协议，关闭物理资源前必须先结束正在使用它的异步任务。</p>
+  </div>
+
+  <h4>4.8 动态曲线选择器</h4>
+  <pre class="source-code"><code data-source="car_debug.html" data-lines="3153-3197">/* ---------- 绘图 ---------- */
+
+function rebuildSeries() {
+    const cols = parser.numericColumns();
+    const box = $('series');
+    box.innerHTML = '';
+    if (cols.length === 0) {
+        box.innerHTML = '&lt;span class="hint"&gt;当前掩码没有可画的数值列&lt;/span&gt;';
+        return;
+    }
+    const recommended = focusedSeriesNames();
+    if (pendingFocusedSeriesSelection) {
+        /* 切换焦点时只保留推荐列；等新表头完整到齐后，把控制权交还给手动勾选。 */
+        selected = new Set(recommended.filter((column) =&gt; cols.includes(column)));
+        if (recommended.length &gt; 0 &amp;&amp; recommended.every((column) =&gt; cols.includes(column))) {
+            pendingFocusedSeriesSelection = false;
+        }
+    } else {
+        /* 表头重建只剔除已经消失的列，不覆盖用户手动增删的选择。 */
+        selected = new Set([...selected].filter((column) =&gt; cols.includes(column)));
+    }
+    cols.forEach((col, i) =&gt; {
+        const color = PALETTE[i % PALETTE.length];
+        const label = document.createElement('label');
+        const cb = document.createElement('input');
+        cb.type = 'checkbox';
+        cb.checked = selected.has(col);
+        cb.onchange = () =&gt; {
+            if (cb.checked) {
+                selected.add(col);
+            } else {
+                selected.delete(col);
+            }
+            requestRedraw();
+        };
+        const sw = document.createElement('span');
+        sw.className = 'sw';
+        sw.style.background = color;
+        label.append(cb, sw, document.createTextNode(col));
+        label.title = '刻度组：' + TelemetryParser.unitOf(col);
+        box.appendChild(label);
+    });
+}
+
+function drawPlot() {</code></pre>
+  <ol class="line-notes">
+    <li><strong>第 1143～1152 行：</strong>按动态表头重建可画列；没有数值列时显示提示。</li>
+    <li><strong>第 1153～1165 行：</strong>保留仍存在的勾选项；若全空，优先同时选 TL、LV、yaw，便于目标/实测对比。</li>
+    <li><strong>第 1166～1179 行：</strong>逐列创建颜色复选框，变化时更新 Set 并重绘。</li>
+    <li><strong>第 1180～1187 行：</strong>添加色块和列名，并用 title 告知该列所属量纲组。</li>
+  </ol>
+
+  <h4>4.9 Canvas 绘图与按帧合并</h4>
+  <pre class="source-code"><code data-source="car_debug.html" data-lines="3197-3313">function drawPlot() {
+    /* 超高 DPI 画布像素数会成倍放大；2 倍已足够清晰。 */
+    const dpr = Math.min(window.devicePixelRatio || 1, 2);
+    const w = plotEl.clientWidth;
+    const h = plotEl.clientHeight;
+    if (plotEl.width !== w * dpr || plotEl.height !== h * dpr) {
+        plotEl.width = w * dpr;
+        plotEl.height = h * dpr;
+    }
+    ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+    ctx.clearRect(0, 0, w, h);
+
+    const pad = { l: 46, r: 58, t: 8, b: 20 };
+    const plotW = w - pad.l - pad.r;
+    const plotH = h - pad.t - pad.b;
+
+    ctx.strokeStyle = '#20263293';
+    ctx.lineWidth = 1;
+    for (let i = 0; i &lt;= 4; i += 1) {
+        const y = pad.t + (plotH * i) / 4;
+        ctx.beginPath();
+        ctx.moveTo(pad.l, y);
+        ctx.lineTo(pad.l + plotW, y);
+        ctx.stroke();
+    }
+
+    /* 暂停时画冻结快照，实时数据仍在后台累积。 */
+    const source = plotSnapshot || parser.samples;
+    const win = Math.max(2, parseInt($('winVal').value, 10) || 600);
+    const rawData = source.slice(-win);
+    const renderLimit = Math.max(200, Math.floor(plotW * 2));
+    const data = downsampleForPlot(rawData, renderLimit, [...selected]);
+    $('sampleCount').textContent = parser.samples.length;
+    if (rawData.length &gt; 0 &amp;&amp; rawData[rawData.length - 1].mode !== undefined) {
+        $('modeVal').textContent = rawData[rawData.length - 1].mode;
+    }
+    if (data.length &lt; 2 || selected.size === 0) {
+        return;
+    }
+
+    const cols = parser.numericColumns();
+
+    /* 横轴用真实 ms 时间；ms 异常（乱序/缺失）时退回样本序号。 */
+    const baseMs = rawData[0].ms;
+    const spanMs = rawData[rawData.length - 1].ms - baseMs;
+    const timeValid = Number.isFinite(spanMs) &amp;&amp; spanMs &gt; 0;
+    const xOf = (i, s) =&gt; timeValid ?
+        pad.l + (plotW * (s.ms - baseMs)) / spanMs :
+        pad.l + (plotW * i) / (data.length - 1);
+
+    /* 基准试验：同一时间刻度下的虚线叠加，各自从记录起点对齐。 */
+    const refCandidate = runs.find((r) =&gt; r.id === referenceRunId);
+    const ref = refCandidate &amp;&amp; runMatchesFocus(refCandidate) ? refCandidate : null;
+    const refRaw = (ref &amp;&amp; ref.samples.length &gt; 1) ? ref.samples : null;
+    const refBaseMs = refRaw ? refRaw[0].ms : 0;
+    const refVisible = (refRaw &amp;&amp; timeValid) ? refRaw.filter((sample) =&gt;
+        sample.ms - refBaseMs &lt;= spanMs) : refRaw;
+    const refData = refVisible ?
+        downsampleForPlot(refVisible, renderLimit, [...selected]) : null;
+
+    /* 同量纲曲线共用一组 min/max：目标、实测和基准在同一刻度上才能比。 */
+    const groupRange = {};
+    const feedRange = (samples, col) =&gt; {
+        const group = TelemetryParser.unitOf(col);
+        let range = groupRange[group];
+        if (!range) {
+            range = { min: Infinity, max: -Infinity };
+            groupRange[group] = range;
+        }
+        for (const s of samples) {
+            const v = s[col];
+            if (typeof v === 'number') {
+                if (v &lt; range.min) { range.min = v; }
+                if (v &gt; range.max) { range.max = v; }
+            }
+        }
+    };
+    for (const col of selected) {
+        feedRange(data, col);
+        if (refData) {
+            feedRange(refData, col);
+        }
+    }
+    for (const group of Object.keys(groupRange)) {
+        const range = groupRange[group];
+        range.span = range.max - range.min;
+        if (!(range.span &gt; 1e-9)) {
+            range.span = 1;
+            range.min -= 0.5;
+        }
+    }
+    const yOf = (v, range) =&gt;
+        pad.t + plotH - ((v - range.min) / range.span) * plotH;
+
+    const drawSeries = (samples, col, color, dashed, xFn) =&gt; {
+        const range = groupRange[TelemetryParser.unitOf(col)];
+        if (!range || !Number.isFinite(range.min)) {
+            return;
+        }
+        ctx.strokeStyle = color;
+        ctx.lineWidth = dashed ? 1.2 : 1.5;
+        ctx.setLineDash(dashed ? [5, 4] : []);
+        ctx.globalAlpha = dashed ? 0.55 : 1;
+        ctx.beginPath();
+        let started = false;
+        for (let i = 0; i &lt; samples.length; i += 1) {
+            const v = samples[i][col];
+            if (typeof v !== 'number') {
+                continue;
+            }
+            const x = xFn(i, samples[i]);
+            if (x === null || x &gt; pad.l + plotW + 0.5) {
+                break;   /* 基准比本次长的尾巴不画，避免出界 */
+            }
+            const y = yOf(v, range);
+            if (started) {
+                ctx.lineTo(x, y);</code></pre>
+  <ol class="line-notes">
+    <li><strong>第 1189～1212 行：</strong>按设备像素比设置 Canvas、清屏并绘制网格。</li>
+    <li><strong>第 1214～1222 行：</strong>取最近窗口样本，更新计数/mode，不足两点或无选择时返回。</li>
+    <li><strong>第 1224～1250 行：</strong>先按 unitOf 分组扫描共同 min/max；目标与实测同量纲因此共享纵轴，常量组用 span=1 避免除零。</li>
+    <li><strong>第 1252～1288 行：</strong>逐选中列按样本索引画线，并在右侧显示列名和最新值。</li>
+    <li><strong>第 1291～1305 行：</strong>requestRedraw 合并到下一动画帧；暂停时数据继续收集但不画。</li>
+  </ol>
+
+  <h4>4.10 命令按钮、舵机节流、清空与 CSV 下载</h4>
+  <pre class="source-code"><code data-source="car_debug.html" data-lines="3474-3574">/* ---------- 事件绑定 ---------- */
+
+$('btnConnect').onclick = connect;
+$('btnDisconnect').onclick = disconnect;
+$('btnStop').onclick = () =&gt; session ? stopSession('急停按钮', true) : emergencyStop();
+
+document.querySelectorAll('button[data-send]').forEach((btn) =&gt; {
+    btn.onclick = () =&gt; send(btn.dataset.send + $(btn.dataset.from).value);
+});
+document.querySelectorAll('button[data-cmd]').forEach((btn) =&gt; {
+    btn.onclick = () =&gt; send(btn.dataset.cmd);
+});
+
+function checkedMask() {
+    let mask = 0;
+    document.querySelectorAll('.mk:checked').forEach((cb) =&gt; {
+        mask += parseInt(cb.value, 10);
+    });
+    return mask;
+}
+
+/*
+ * 勾选字段的瞬间就把上限算出来显示，不必等一次串口往返。
+ * 本地公式与固件 Telemetry.c 相同；固件 Q 回报到达后会覆盖为权威值。
+ */
+function renderRateLimit() {
+    const mask = checkedMask();
+    const hint = $('rateLimitHint');
+    if (mask === 0) {
+        hint.textContent = '至少勾选一个字段';
+        hint.style.color = 'var(--err)';
+        return;
+    }
+    const estimate = estimateMaxRateHz(mask);
+    const row = estimateRowBytes(mask);
+    hint.style.color = '';
+    hint.textContent = `行长 ${row} B · 上限 ${estimate} Hz`;
+
+    /* 当前输入值超限就标红，不用等固件拒绝。 */
+    const desired = parseInt($('gVal').value, 10);
+    $('gVal').classList.toggle('dirty',
+        Number.isFinite(desired) &amp;&amp; desired &gt; estimate);
+}
+
+$('btnMask').onclick = async () =&gt; {
+    const mask = checkedMask();
+    if (mask === 0) {
+        log('掩码不能为 0，固件会返回 ERR RANGE', 'err');
+        return;
+    }
+    await send('M' + mask);
+    /* 改掩码后主动问一次固件真实上限，网页不再自己猜。 */
+    const cap = await queryCapability();
+    if (cap) {
+        $('rateLimitHint').textContent =
+            `行长 ${estimateRowBytes(mask)} B · 固件上限 ${cap.max} Hz`;
+        $('gVal').value = Math.min(
+            parseInt($('gVal').value, 10) || cap.rate, cap.max);
+        renderRateLimit();
+    }
+};
+
+$('btnMaxRate').onclick = async () =&gt; {
+    const cap = await queryCapability();
+    const limit = cap ? cap.max : estimateMaxRateHz(checkedMask());
+    $('gVal').value = limit;
+    await send('G' + limit);
+    renderRateLimit();
+};
+
+document.querySelectorAll('.mk').forEach((cb) =&gt; {
+    cb.addEventListener('change', renderRateLimit);
+});
+$('gVal').addEventListener('input', renderRateLimit);
+
+/* ---------- 遥控采集事件 ---------- */
+
+$('btnDriveMode').onclick = () =&gt; setDriveEnabled(!driveEnabled);
+$('btnRecord').onclick = () =&gt; {
+    if (recording) {
+        stopRecording();
+    } else {
+        startRecording();
+    }
+};
+document.querySelectorAll('.drive-key').forEach((btn) =&gt; {
+    btn.onclick = () =&gt; {
+        flashDriveKey(btn.dataset.drive);
+        driveAction(btn.dataset.drive);
+    };
+});
+
+/*
+ * 键盘驾驶与标记。只在启用驾驶模式后接管 WASD，避免误触；
+ * 数字键标记则在录制中始终可用，因为打标记本身没有危险。
+ */
+document.addEventListener('keydown', (e) =&gt; {
+    /* 正在输入框里打字时不接管按键。 */
+    const typing = e.target &amp;&amp; (e.target.tagName === 'INPUT' ||
+        e.target.tagName === 'TEXTAREA' || e.target.isContentEditable);
+    if (typing) {</code></pre>
+  <ol class="line-notes">
+    <li><strong>第 1307～1318 行：</strong>绑定连接/C0；所有 data-send 与 data-cmd 共用通用处理，因此新增 Z2 按钮无需专用 JS，点击就发送字符串 <code>Z2</code>。</li>
+    <li><strong>第 1320～1328 行：</strong>汇总最多 10 个掩码 checkbox 并发送 M。</li>
+    <li><strong>第 1330～1341 行：</strong>绑定参数刷新/保存、左右轮映射、标定向导和调参会话按钮。</li>
+    <li><strong>第 1343～1363 行：</strong>舵机滑块按 100ms 发送最后 pending 值。</li>
+    <li><strong>第 1365～1387 行：</strong>处理原始命令、清屏、窗口重绘、暂停与清样本。</li>
+    <li><strong>第 1389～1398 行：</strong>实时导出复用 parser.toCsv 和 downloadText。</li>
+    <li><strong>第 1400～1407 行：</strong>初始化页面、参数映射和提示，结束脚本/页面。</li>
+  </ol>
+
+  <h4>4.11 <code>test_csv_parse.mjs</code>：测试网页中的真代码</h4>
+  <pre class="source-code"><code data-source="tests/test_csv_parse.mjs" data-lines="1-29">/*
+ * 遥测 CSV 解析器单元测试。
+ *
+ * car_debug.html 必须是单文件无外部依赖，所以解析器代码内联在页面里。
+ * 为了让测试跑的是真代码而不是副本（副本会随时间漂移），这里直接从
+ * car_debug.html 中抽取 PARSER_BEGIN/PARSER_END 标记之间的源码执行。
+ *
+ * 跑法：node tests/test_csv_parse.mjs
+ */
+import { readFileSync } from 'node:fs';
+import { fileURLToPath } from 'node:url';
+import { dirname, join } from 'node:path';
+
+const here = dirname(fileURLToPath(import.meta.url));
+/* 允许指定别的文件，便于用变异版本反证这些测试确实能失败。 */
+const htmlPath = process.env.CAR_DEBUG_HTML || join(here, '..', 'car_debug.html');
+
+const html = readFileSync(htmlPath, 'utf8');
+const begin = html.indexOf('/* ==PARSER_BEGIN== */');
+const end = html.indexOf('/* ==PARSER_END== */');
+if (begin &lt; 0 || end &lt; 0) {
+    throw new Error('car_debug.html 中找不到 PARSER_BEGIN/PARSER_END 标记');
+}
+const parserSource = html.slice(begin, end);
+
+/* 抽出来的源码里只有定义，末尾补一句把要测的东西交出来。 */
+const {
+    TelemetryParser, samplesToCsv, buildAiPack, estimateWheelBasePwm,
+    computeStepMetrics, computeTurnMetrics, analyzeRun, suggestFeedforward,</code></pre>
+  <ol class="line-notes">
+    <li><strong>第 1～9 行：</strong>说明目标、为什么不复制解析器，以及运行命令 <code>node tests/test_csv_parse.mjs</code>。</li>
+    <li><strong>第 10～12 行：</strong>只使用 Node 内置的文件、URL 和路径模块。</li>
+    <li><strong>第 14 行：</strong>ES module 没有 <code>__dirname</code>，所以由 <code>import.meta.url</code> 反推出测试目录。</li>
+    <li><strong>第 15～16 行：</strong>默认测试根目录 car_debug，也允许环境变量换成变异文件验证测试能失败。</li>
+    <li><strong>第 18～24 行：</strong>UTF-8 读取页面，寻找 PARSER_BEGIN/END；缺标记立即抛错，否则 slice 真实类源码。</li>
+    <li><strong>第 26～29 行：</strong><code>new Function</code> 现在同时取出 TelemetryParser、samplesToCsv、buildAiPack 和 estimateWheelBasePwm，测试解析、导出和左右轮调参辅助逻辑。</li>
+  </ol>
+  <pre class="source-code"><code data-source="tests/test_csv_parse.mjs" data-lines="42-61">let passed = 0;
+let failed = 0;
+
+function check(name, fn) {
+    try {
+        fn();
+        passed += 1;
+        console.log(`  PASS  ${name}`);
+    } catch (err) {
+        failed += 1;
+        console.log(`  FAIL  ${name}`);
+        console.log(`        ${err.message}`);
+    }
+}
+
+function eq(actual, expected, what) {
+    if (actual !== expected) {
+        throw new Error(`${what}: 期望 ${JSON.stringify(expected)}，实际 ${JSON.stringify(actual)}`);
+    }
+}</code></pre>
+  <ol class="line-notes">
+    <li><strong>第 31～32 行：</strong>累计通过和失败数。</li>
+    <li><strong>第 34～38 行：</strong>check 执行测试，正常完成便计数并打印 PASS。</li>
+    <li><strong>第 39～43 行：</strong>断言异常时打印 FAIL 与消息，但继续后续测试。</li>
+    <li><strong>第 46～50 行：</strong>eq 使用严格比较；失败消息同时显示期望和实际值。</li>
+  </ol>
+  <pre class="source-code"><code data-source="tests/test_csv_parse.mjs" data-lines="63-82">const FULL_HEADER = 'H,ms,yaw,gray,keys,LD,RD,LV,RV,mode,k230\r\n';
+const FULL_ROW = 'D,12340,-91.25,1F,0,1203.4,1198.7,0.0,0.0,IDLE,1:-123:-45\r\n';
+
+console.log('遥测 CSV 解析器测试\n');
+
+check('1. 正常表头+数据行，各列取值正确', () =&gt; {
+    const p = new TelemetryParser();
+    p.feed(FULL_HEADER);
+    p.feed(FULL_ROW);
+    eq(p.samples.length, 1, 'samples 条数');
+    const s = p.samples[0];
+    eq(s.ms, 12340, 'ms');
+    eq(s.yaw, -91.25, 'yaw');
+    eq(s.keys, 0, 'keys');
+    eq(s.LD, 1203.4, 'LD');
+    eq(s.RD, 1198.7, 'RD');
+    eq(s.LV, 0, 'LV');
+    eq(s.RV, 0, 'RV');
+    eq(s.mode, 'IDLE', 'mode');
+});</code></pre>
+  <ol class="line-notes">
+    <li><strong>第 52～53 行：</strong>完整 H/D 样例覆盖所有字段与 CRLF。</li>
+    <li><strong>第 55 行：</strong>打印标题。</li>
+    <li><strong>第 57～60 行：</strong>测试 1 分别喂表头和数据，模拟正常串口顺序。</li>
+    <li><strong>第 61～71 行：</strong>确认一个样本，并核对时间、航向、按键、路程、速度和 mode。</li>
+  </ol>
+  <pre class="source-code"><code data-source="tests/test_csv_parse.mjs" data-lines="84-121">check('2. 数据行列数少于表头 → 丢弃', () =&gt; {
+    const p = new TelemetryParser();
+    p.feed(FULL_HEADER);
+    p.feed('D,12340,-91.25,1F\r\n');
+    eq(p.samples.length, 0, 'samples 条数');
+});
+
+check('3. 数据行列数多于表头 → 丢弃', () =&gt; {
+    const p = new TelemetryParser();
+    p.feed(FULL_HEADER);
+    p.feed('D,12340,-91.25,1F,0,1203.4,1198.7,0.0,0.0,IDLE,1:-123:-45,999\r\n');
+    eq(p.samples.length, 0, 'samples 条数');
+});
+
+check('4. 中途收到新表头（掩码切换）→ 清空旧 samples 并按新表头解析', () =&gt; {
+    const p = new TelemetryParser();
+    p.feed(FULL_HEADER);
+    p.feed(FULL_ROW);
+    eq(p.samples.length, 1, '切换前 samples 条数');
+
+    p.feed('H,ms,yaw\r\n');
+    eq(p.samples.length, 0, '切换后应清空');
+
+    p.feed('D,500,12.50\r\n');
+    eq(p.samples.length, 1, '新表头下 samples 条数');
+    eq(p.samples[0].yaw, 12.5, '新表头下 yaw');
+    eq(p.samples[0].LD, undefined, '旧列不应残留');
+});
+
+check('5. OK/ERR 行不进 samples，只进文本行', () =&gt; {
+    const p = new TelemetryParser();
+    p.feed(FULL_HEADER);
+    const out = p.feed('OK G=20\r\nERR RANGE MAX=23\r\n');
+    eq(p.samples.length, 0, 'samples 条数');
+    eq(out.textLines.length, 2, '文本行条数');
+    eq(out.textLines[0], 'OK G=20', '第一条文本行');
+    eq(out.textLines[1], 'ERR RANGE MAX=23', '第二条文本行');
+});</code></pre>
+  <ol class="line-notes">
+    <li><strong>第 73～85 行：</strong>测试 2/3 锁住少列和多列行为：都必须整行丢弃。</li>
+    <li><strong>第 87～100 行：</strong>测试 4：新表头清旧 samples，并按新列解析，旧字段不残留。</li>
+    <li><strong>第 102～110 行：</strong>测试 5：OK/ERR 只进入 textLines，不进入 samples。</li>
+  </ol>
+  <pre class="source-code"><code data-source="tests/test_csv_parse.mjs" data-lines="123-168">check('6. 半截行先缓冲，拼接完整后才解析', () =&gt; {
+    const p = new TelemetryParser();
+    p.feed(FULL_HEADER);
+    p.feed('D,12340,-91.25,1F,0,1203.4,');
+    eq(p.samples.length, 0, '半截行不应产生 sample');
+    p.feed('1198.7,0.0,0.0,IDLE,1:-123:-45\r\n');
+    eq(p.samples.length, 1, '拼接后应产生 sample');
+    eq(p.samples[0].RD, 1198.7, '拼接后 RD');
+});
+
+check('7. \\r\\n 与 \\n 两种换行都能拆', () =&gt; {
+    const p = new TelemetryParser();
+    p.feed('H,ms,yaw\n');
+    p.feed('D,100,1.00\nD,200,2.00\r\n');
+    eq(p.samples.length, 2, 'samples 条数');
+    eq(p.samples[0].yaw, 1, '第一条 yaw');
+    eq(p.samples[1].yaw, 2, '第二条 yaw');
+});
+
+check('8. gray 列按十六进制解析（1F → 31，不是 1）', () =&gt; {
+    const p = new TelemetryParser();
+    p.feed(FULL_HEADER);
+    p.feed(FULL_ROW);
+    eq(p.samples[0].gray, 31, 'gray');
+});
+
+check('9. k230 列展开为三个虚拟列', () =&gt; {
+    const p = new TelemetryParser();
+    p.feed(FULL_HEADER);
+    p.feed(FULL_ROW);
+    const s = p.samples[0];
+    eq(s.k230_valid, 1, 'k230_valid');
+    eq(s.k230_x, -123, 'k230_x');
+    eq(s.k230_y, -45, 'k230_y');
+    eq(s.k230, undefined, '原始复合列不应保留');
+});
+
+check('10. k230 为 0:0:0 时也能正确展开', () =&gt; {
+    const p = new TelemetryParser();
+    p.feed(FULL_HEADER);
+    p.feed('D,1,0.00,00,0,0.0,0.0,0.0,0.0,IDLE,0:0:0\r\n');
+    const s = p.samples[0];
+    eq(s.k230_valid, 0, 'k230_valid');
+    eq(s.k230_x, 0, 'k230_x');
+    eq(s.k230_y, 0, 'k230_y');
+});</code></pre>
+  <ol class="line-notes">
+    <li><strong>第 112～120 行：</strong>测试 6 把一条 D 行拆成两次 feed，验证半行缓存与拼接。</li>
+    <li><strong>第 122～129 行：</strong>测试 7 同时支持 LF 和 CRLF。</li>
+    <li><strong>第 131～136 行：</strong>测试 8 验证 gray 的 1F 按十六进制得到 31。</li>
+    <li><strong>第 138～147 行：</strong>测试 9 验证 k230 展开且不保留原始复合键。</li>
+    <li><strong>第 149～157 行：</strong>测试 10 验证 <code>0:0:0</code> 占位。</li>
+  </ol>
+  <pre class="source-code"><code data-source="tests/test_csv_parse.mjs" data-lines="170-203">/* 以下两条不在需求清单里，但同属解析器最容易出错的地方，一并锁住。 */
+
+check('11. k230 分段数不为 3 的畸形行 → 整行丢弃', () =&gt; {
+    const p = new TelemetryParser();
+    p.feed(FULL_HEADER);
+    p.feed('D,12340,-91.25,1F,0,1203.4,1198.7,0.0,0.0,IDLE,1:-123\r\n');
+    eq(p.samples.length, 0, 'samples 条数');
+});
+
+check('12. 曲线选择器只列数值列：排除文本列 mode 和横轴列 ms', () =&gt; {
+    const p = new TelemetryParser();
+    p.feed(FULL_HEADER);
+    const numeric = p.numericColumns();
+    eq(numeric.includes('mode'), false, 'mode 是文本，不应可画图');
+    eq(numeric.includes('ms'), false, 'ms 是横轴，画出来只是单调直线');
+    eq(numeric.includes('k230'), false, '复合原始列不应可画图');
+    eq(numeric.includes('k230_x'), true, 'k230_x 应可画图');
+    eq(numeric.includes('yaw'), true, 'yaw 应可画图');
+    eq(numeric.includes('gray'), true, 'gray 应可画图');
+});
+
+check('13. gray 为非法十六进制 → 整行丢弃', () =&gt; {
+    const p = new TelemetryParser();
+    p.feed(FULL_HEADER);
+    p.feed('D,12340,-91.25,GG,0,1203.4,1198.7,0.0,0.0,IDLE,1:-123:-45\r\n');
+    eq(p.samples.length, 0, 'samples 条数');
+});
+
+check('14. 还没收到任何表头就来了数据行 → 整行丢弃', () =&gt; {
+    const p = new TelemetryParser();
+    const out = p.feed('D,12340,-91.25,1F\r\n');
+    eq(p.samples.length, 0, 'samples 条数');
+    eq(out.textLines.length, 0, '数据行不该混进终端文本');
+});</code></pre>
+  <ol class="line-notes">
+    <li><strong>第 159～166 行：</strong>额外测试 11：k230 段数不为 3 时整行拒绝。</li>
+    <li><strong>第 168～178 行：</strong>测试 12：曲线列排除 mode/ms/原始 k230，保留数值与展开列。</li>
+    <li><strong>第 180～185 行：</strong>测试 13：完全非法十六进制 GG 使整行无效。</li>
+    <li><strong>第 187～192 行：</strong>测试 14：无表头的 D 行既不进样本，也不混进终端文本。</li>
+  </ol>
+  <pre class="source-code"><code data-source="tests/test_csv_parse.mjs" data-lines="205-295">check('15. 导出 CSV 仍保留 ms 与 mode（只是不画图，不是不记录）', () =&gt; {
+    const p = new TelemetryParser();
+    p.feed(FULL_HEADER);
+    p.feed(FULL_ROW);
+    const csv = p.toCsv();
+    const head = csv.split('\n')[0].split(',');
+    eq(head.includes('ms'), true, '导出应含 ms');
+    eq(head.includes('mode'), true, '导出应含 mode');
+    eq(head.includes('k230_x'), true, '导出应含展开后的 k230_x');
+    eq(csv.split('\n')[1], '12340,-91.25,31,0,1203.4,1198.7,0,0,IDLE,1,-123,-45', '数据行内容');
+});
+
+/* ---- 遥测调参升级（分支 update-遥测）新增行为 ---- */
+
+check('16. 新调参列 TL/TR、PL/PR、navT/navE、lerr 正常解析', () =&gt; {
+    const p = new TelemetryParser();
+    p.feed('H,ms,LV,RV,mode,TL,TR,PL,PR,navT,navE,lerr\r\n');
+    p.feed('D,100,198.5,201.0,SPEED,200.0,200.0,412,-388,90.00,-1.25,-3.0\r\n');
+    eq(p.samples.length, 1, 'samples 条数');
+    const s = p.samples[0];
+    eq(s.TL, 200, 'TL');
+    eq(s.PR, -388, 'PR');
+    eq(s.navT, 90, 'navT');
+    eq(s.navE, -1.25, 'navE');
+    eq(s.lerr, -3, 'lerr');
+    eq(s.mode, 'SPEED', 'mode 支持新模式文本');
+});
+
+check('17. unitOf 量纲分组：目标与实测同组，未知列自成一组', () =&gt; {
+    eq(TelemetryParser.unitOf('LV'), 'mmps', 'LV');
+    eq(TelemetryParser.unitOf('TL'), 'mmps', 'TL 与 LV 同组才能同刻度对比');
+    eq(TelemetryParser.unitOf('PL'), 'pwm', 'PL');
+    eq(TelemetryParser.unitOf('yaw'), 'deg', 'yaw');
+    eq(TelemetryParser.unitOf('navT'), 'deg', 'navT 与 yaw 同组');
+    eq(TelemetryParser.unitOf('lerr'), 'lerr', '未知列自成一组');
+    eq(TelemetryParser.unitOf('k230_x'), 'k230_x', '复合虚拟列自成一组');
+});
+
+check('18. buildAiPack 包含参数、结构说明与完整 CSV 数据', () =&gt; {
+    const samples = [
+        { ms: 0, TL: 0, LV: 0 },
+        { ms: 20, TL: 300, LV: 12.5 },
+    ];
+    const pack = buildAiPack({
+        loop: '轮速 PI',
+        structure: 'PI+前馈',
+        params: 'wkp=1 wki=0',
+        excitation: 'W300',
+        rateHz: 30,
+        columnsNote: 'TL=目标 LV=实测',
+        expectation: '无振荡',
+    }, samples);
+    eq(pack.includes('轮速 PI'), true, '环路名');
+    eq(pack.includes('wkp=1 wki=0'), true, '参数快照');
+    eq(pack.includes('W300'), true, '激励');
+    eq(pack.includes('```csv'), true, 'CSV 代码块');
+    eq(pack.includes('ms,TL,LV'), true, 'CSV 表头');
+    eq(pack.includes('20,300,12.5'), true, 'CSV 数据行');
+});
+
+check('19. samplesToCsv 与 toCsv 输出一致', () =&gt; {
+    const p = new TelemetryParser();
+    p.feed(FULL_HEADER);
+    p.feed(FULL_ROW);
+    eq(p.toCsv(), samplesToCsv(p.samples), '两个入口共用一份实现');
+});
+
+check('20. 速度→基础PWM：正反转静摩擦符号正确', () =&gt; {
+    const forward = estimateWheelBasePwm(300, 2, 50);
+    const backward = estimateWheelBasePwm(-300, 2, 50);
+    eq(forward.raw, 650, '正转基础PWM');
+    eq(backward.raw, -650, '反转基础PWM');
+    eq(forward.saturated, false, '正转不应饱和');
+});
+
+check('21. 速度→基础PWM：零速不施加静摩擦', () =&gt; {
+    const stopped = estimateWheelBasePwm(0, 2, 50);
+    eq(stopped.raw, 0, '零速基础PWM');
+    eq(stopped.clamped, 0, '零速限幅值');
+});
+
+check('22. 速度→基础PWM：超过±1000时明确报告饱和', () =&gt; {
+    const result = estimateWheelBasePwm(800, 2, 0);
+    eq(result.raw, 1600, '限幅前PWM');
+    eq(result.clamped, 1000, '限幅后PWM');
+    eq(result.saturated, true, '必须标记饱和');
+    eq(estimateWheelBasePwm(500, 2, 0).saturated, true, '刚好触及1000也没有PI余量');
+});
+
+/* ---- 自动调参指标（网页二期）---- */</code></pre>
+  <ol class="line-notes">
+    <li><strong>第 194～206 行：</strong>测试 15 验证导出保留 ms/mode 并展开 k230。</li>
+    <li><strong>第 208～220 行：</strong>测试 16 验证新增 TL/TR、PL/PR、navT/navE、lerr 列。</li>
+    <li><strong>第 222～230 行：</strong>测试 17 锁住同量纲分组。</li>
+    <li><strong>第 232～252 行：</strong>测试 18 检查 AI 调参包的参数、结构说明和 CSV。</li>
+    <li><strong>第 254～259 行：</strong>测试 19 确认两个 CSV 入口共用实现。</li>
+    <li><strong>第 261～280 行：</strong>测试 20～22 检查左右轮基础 PWM 的正反静摩擦、零速和 ±1000 饱和。</li>
+    <li><strong>第 283～284 行：</strong>汇总 22 个测试并以 0/1 退出。</li>
+  </ol>
+  <div class="deep-dive">
+    <h4>抽取真代码测试</h4>
+    <p><strong>输入：</strong>网页 PARSER_BEGIN/PARSER_END 之间的类源码。</p>
+    <p><strong>过程：</strong>Node 读 HTML → 找标记 → 动态构造类 → 执行 15 个场景。</p>
+    <p><strong>输出：</strong>直接约束浏览器实际使用的解析器。</p>
+    <p><strong>边界条件：</strong>标记必须保留；当前用例重要但不穷尽所有字符串边界。</p>
+    <p><strong>设计原因：</strong>避免页面实现和测试副本长期漂移造成假通过。</p>
+  </div>
+
+  <h4>4.12 <code>flash.ps1</code>：从 Debug ELF 到芯片</h4>
+  <pre class="source-code"><code data-source="flash.ps1" data-lines="1-26"># flash.ps1 - Flash MSPM0G3507 via pyOCD (bypasses CCS/DSLite non-ASCII username bug)
+# Usage:
+#   .\flash.ps1              Flash Debug\ArcLineTest.out and reset to run
+#   .\flash.ps1 -Erase       Mass-erase MAIN then flash (does NOT touch NONMAIN, safe)
+#   .\flash.ps1 -List        Just list connected debug probes
+#   .\flash.ps1 -Reset       Just reset, no flashing
+#   .\flash.ps1 -Freq 500k   Override SWD clock (default 1M; lower = more stable on cheap probes)
+
+param(
+    [switch]$Erase,
+    [switch]$List,
+    [switch]$Reset,
+    [switch]$UnderReset,   # cheap DAPLink can&#39;t halt a running core; needs RST wired to MCU NRST
+    [string]$Freq = &quot;1M&quot;
+)
+
+$target = &quot;mspm0g3507&quot;
+$image  = Join-Path $PSScriptRoot &quot;Debug\ArcLineTest.out&quot;
+
+# --connect under-reset holds the core in reset so the running firmware never
+# interferes with flashing (mimics what the XDS110 pre-halt does).
+$connect = @()
+if ($UnderReset) { $connect = @(&quot;--connect&quot;, &quot;under-reset&quot;) }
+
+if ($List)  { pyocd list; return }
+if ($Reset) { pyocd reset -t $target -f $Freq; return }</code></pre>
+  <ol class="line-notes">
+    <li><strong>第 1～7 行：</strong>说明 pyOCD 用途、默认 ELF、擦除/列探针/仅复位/降频示例。</li>
+    <li><strong>第 9～15 行：</strong>四个开关参数和字符串频率，默认 1MHz。</li>
+    <li><strong>第 17～18 行：</strong>目标固定 mspm0g3507；用 <code>$PSScriptRoot</code> 拼出 <code>Debug\ArcLineTest.out</code>，不依赖当前目录。</li>
+    <li><strong>第 20～23 行：</strong>UnderReset 时准备参数数组；<code>@connect</code> 把数组展开为独立命令行参数。</li>
+    <li><strong>第 25～26 行：</strong>List/Reset 是提前返回的独立模式。</li>
+  </ol>
+  <pre class="source-code"><code data-source="flash.ps1" data-lines="28-47">if (-not (Test-Path $image)) {
+    Write-Host &quot;Image not found: $image  -- build it in CCS first&quot; -ForegroundColor Red
+    exit 1
+}
+
+if ($Erase) {
+    Write-Host &quot;Mass-erasing MAIN region (NONMAIN untouched)...&quot; -ForegroundColor Yellow
+    pyocd erase -t $target --chip -f $Freq @connect
+}
+
+Write-Host &quot;Flashing $image  (SWD $Freq) ...&quot; -ForegroundColor Cyan
+pyocd flash -t $target --format elf -f $Freq @connect $image
+if ($LASTEXITCODE -ne 0) {
+    Write-Host &quot;FLASH FAILED (exit $LASTEXITCODE).&quot; -ForegroundColor Red
+    Write-Host &quot;Tips: use the XDS110 probe (reliable), or retry with -Freq 500k / 100k.&quot; -ForegroundColor Yellow
+    exit $LASTEXITCODE
+}
+
+pyocd reset -t $target -f $Freq
+Write-Host &quot;Done. Chip reset and running new firmware.&quot; -ForegroundColor Green</code></pre>
+  <ol class="line-notes">
+    <li><strong>第 28～31 行：</strong>ELF 不存在就提示先 build，并以 1 退出。</li>
+    <li><strong>第 33～36 行：</strong>Erase 先擦主 Flash；当前未单独检查 erase 退出码，失败后仍会尝试 flash。</li>
+    <li><strong>第 38～39 行：</strong>以 ELF 格式、指定 SWD 频率和可选 under-reset 烧录。</li>
+    <li><strong>第 40～43 行：</strong>检查外部程序退出码；失败时给降频/换探针建议并原样退出。</li>
+    <li><strong>第 46～47 行：</strong>成功后复位并打印完成；最终 reset 退出码未再次检查。</li>
+  </ol>
+
+  <h4>4.13 <code>flash.bat</code>：双击包装器</h4>
+  <pre class="source-code"><code data-source="flash.bat" data-lines="1-12">@echo off
+chcp 65001 &gt;nul
+cd /d &quot;%~dp0&quot;
+echo ========================================
+echo   烧录 MSPM0G3507 (pyOCD)
+echo ========================================
+powershell -NoProfile -ExecutionPolicy Bypass -File &quot;%~dp0flash.ps1&quot; %*
+set &quot;FLASH_EXIT_CODE=%ERRORLEVEL%&quot;
+echo.
+echo ========================================
+pause
+exit /b %FLASH_EXIT_CODE%</code></pre>
+  <ol class="line-notes">
+    <li><strong>第 1～3 行：</strong>关闭回显、切 UTF-8、切到 bat 所在目录。</li>
+    <li><strong>第 4～7 行：</strong>打印标题并用 Bypass 执行同目录 PowerShell；<code>%*</code> 转发全部参数。</li>
+    <li><strong>第 8 行：</strong>立刻保存 PowerShell 退出码，避免被后续命令覆盖。</li>
+    <li><strong>第 9～11 行：</strong>pause 方便双击用户看结果，但不适合无人值守。</li>
+    <li><strong>第 12 行：</strong>把真实烧录退出码返回调用者。</li>
+  </ol>
+
+  <h4>4.14 <code>README.md</code>：总参考，不是运行时真相</h4>
+  <pre class="source-code"><code data-source="README.md" data-lines="1-7"># MSPM0G3507 天猛星小车工程索引
+
+&gt; **强制同步规则**
+&gt;
+&gt; 对项目进行任何修改时，只要涉及硬件连接、Pin 口、外设实例、时钟树、波特率、定时器、主循环调用关系或程序功能，就必须同时修改本文的 **Pin 口表、时钟表和对应程序说明**。禁止只修改代码而不更新本文档，否则后续检查无法判断接线、时钟和程序是否一致。
+&gt;
+&gt; `main.syscfg` 是引脚和外设配置的唯一源文件。`Debug/`、`Release/`、`ti_msp_dl_config.*`、`device.opt` 和 `device_linker.cmd` 均为生成内容，不手工维护；更改源码目录或 `main.syscfg` 后应执行 SysConfig，并在 CCS 中 Clean/Rebuild。</code></pre>
+  <ol class="line-notes">
+    <li><strong>第 1～5 行：</strong>README 是工程索引，并要求硬件/时钟/功能变化同步维护。</li>
+    <li><strong>第 7 行：</strong><code>main.syscfg</code> 是外设配置源；Debug/Release、ti_msp 配置、device.opt/linker.cmd 是生成结果。</li>
+  </ol>
+  <p>README 第 335～361 行是工程职责总表，列出 main/syscfg、网页、测试、CCS 元数据、各源码层和生成目录；它适合找入口，但其中“当前启用 25H”的描述已滞后。</p>
+  <pre class="source-code"><code data-source="README.md" data-lines="446-471">### 4.2 `car_debug.html` 调试网页
+
+**打开方式。** 双击 `car_debug.html` 即可，`file://` 下 Web Serial 可用（该协议属于安全上下文），不需要架本地服务器。只支持 **Chrome / Edge** 等 Chromium 内核浏览器，Firefox 与 Safari 没有实现 Web Serial API。点「连接串口」后在弹出的设备列表里选无线 DAPLink 对应的串口，波特率固定 115200 8N1。
+
+**与固件的约定。** 网页只依赖第 3.3 节那套 ASCII 命令和第 5.7 节的遥测 CSV，不假设任何固件内部实现。因此改动固件时只要保持这两个契约不变，网页无需同步修改；反过来，一旦新增命令或调整 CSV 字段，必须同步更新第 3.3 / 5.7 节，网页按表头列名解析，不硬编码列位置。
+
+页面分七块：连接与急停、运动控制（含 `W` 恒速与 `N` 巡线）、参数面板、标定向导、调参试验、遥测与曲线、原始终端。核心工作流是**调参试验**：
+
+1. 选择环路（轮速 W 阶跃 / 直线 F / 转向 T / 巡线 N），点「开始试验」；
+2. 网页自动 `G0` 静默 → 发预设字段掩码与安全高频 → **清空终端与曲线**（本次日志只含专属数据）→ 记录当前参数快照 → 发激励命令；
+3. 遥测 `mode` 列回到 `IDLE`/`DONE`（或定时/手动结束）后自动收尾成一条**试验记录**；
+4. 每条记录可导出 CSV，或一键复制 **AI 调参包**（Markdown：控制结构 + 本次参数 + 激励 + 列说明 + 完整数据），直接粘给 AI 要下一组参数建议；
+5. 在参数面板改 `K` 参数（写入立即生效），再跑下一次试验对比。
+
+参数面板连接后自动 `K?` 拉取全表，悬浮显示范围与上电默认值，支持存到浏览器 localStorage、下次上电一键回写（固件参数掉电不保存）。标定向导包装陀螺尺度 `E1`/`Y`/`E0` 流程和里程 `cpm` 换算写入。
+
+几个实现上的取舍：
+
+- **频率上限不在前端校验。** 上限随字段数动态变化（见第 3.3 节），网页直接把 `G` 发给固件，被拒时显示固件回报的 `ERR RANGE MAX=&lt;上限&gt;`，避免前端和固件各存一份阈值而失配；调参试验的预设频率按固件 20% 带宽公式预先算好，改固件常量后需同步 `SESSIONS` 表。
+- **舵机滑块节流 100 ms。** 拖动会逐像素触发事件，不节流会瞬间发出几十条命令占满串口，把遥测流挤垮。
+- **曲线按量纲分组共享刻度。** `LV/RV/TL/TR` 同为 mm/s、`PL/PR` 同为 PWM、`yaw/navT/navE` 同为度、`LD/RD` 同为 mm，各组内共用一套 min/max，目标与实测才能直接对比；不在分组表里的列仍各自独立归一化。
+- **`ms` 和 `mode` 不进曲线选择器。** 前者是横轴，画出来是单调直线；后者是文本。两者仍会写进导出的 CSV。
+- **重绘按帧合并。** 每收一行就重绘会卡死页面，所以只在有新数据时排一个渲染帧；暂停按钮只冻结画面，数据仍照常累积。
+- **列数与表头不符的行直接丢弃。** 掉电重连和掩码切换瞬间会出现半截行，宁可丢也不猜。
+
+**测试。** `node tests/test_csv_parse.mjs` 直接从 `car_debug.html` 抽取解析器源码运行，测的是页面里的真代码而非副本，避免两边漂移。</code></pre>
+  <ol class="line-notes">
+    <li><strong>第 446～450 行：</strong>记录 Web Serial 打开方式、115200 8N1 和网页依赖命令/CSV 契约。</li>
+    <li><strong>第 452～460 行：</strong>当前页面已扩成七块，并提供轮速、直线、转向、巡线调参会话、参数快照、AI 调参包和标定向导。</li>
+    <li><strong>第 462～469 行：</strong>说明动态频率、舵机节流、同量纲共享刻度、列过滤、暂停重绘和坏行丢弃。</li>
+    <li><strong>第 471 行：</strong>Node 测试仍直接抽取网页真代码。</li>
+  </ol>
+  <pre class="source-code"><code data-source="README.md" data-lines="723-737">### 5.6.4 `Accomplish/25H.h`
+
+```c
+const Mission_GraphDefinition_t *Accomplish25H_GetMissionGraph(void);
+```
+
+该函数返回 25H 静态只读状态图。当前 `main.c` 调用该接口；题目参数全部位于 `Accomplish/25H.h` 开头。
+
+### 5.6.5 `Accomplish/Test.h`
+
+```c
+const Mission_GraphDefinition_t *AccomplishTest_GetMissionGraph(void);
+```
+
+该函数返回独立的刹车测试状态图。测试时才在 `main.c` 临时加载；KEY2 会执行“定距直行 -&gt; 短暂刹车 -&gt; 等待”，不影响 25H 的正式流程。</code></pre>
+  <ol class="line-notes">
+    <li><strong>第 723～729 行：</strong>README 仍把 25H 写成当前 main 调用。</li>
+    <li><strong>第 731～737 行：</strong>仍把 Test 写成临时任务，与当前 main.c 相反。</li>
+  </ol>
+  <pre class="source-code"><code data-source="README.md" data-lines="1161-1168">### 6.7 `Accomplish/Test.h` 参数
+
+`Test.c/.h` 只用于上机观察短刹时的滑行量。它已包含在 CCS 工程中，但默认 `main.c` 仍加载 25H；测试时按头文件注释临时改为加载 `AccomplishTest_GetMissionGraph()`，完成后恢复 25H。
+
+| 宏 | 单位 | 当前值 | 作用 |
+|---|---:|---:|---|
+| `ACCOMPLISH_TEST_START_KEY_MASK` | 按键位图 | `0x02U` | KEY2 的 bit1 掩码；按下沿启动一次测试 |
+| `ACCOMPLISH_TEST_BRAKE_DISTANCE_MM` | mm | `300U` | 测试用定距直行距离 |</code></pre>
+  <ol class="line-notes">
+    <li><strong>第 1161～1163 行：</strong>再次写默认 25H，属于同一过期信息。</li>
+    <li><strong>第 1165～1168 行：</strong>表中刹车距离仍为 300mm，而当前 Test.h 是 500mm。</li>
+  </ol>
+  <p class="pitfall"><strong>判断顺序：</strong>实际任务看当前 <code>main.c</code>，硬件配置看 <code>main.syscfg</code>，编译产物看工程元数据；README 用于导航和审计，冲突时应更新文档。</p>
+
+  <h4>4.15 目标配置</h4>
+  <pre class="source-code"><code data-source="targetConfigs/readme.txt" data-lines="1-9">The &#39;targetConfigs&#39; folder contains target-configuration (.ccxml) files, automatically generated based
+on the device and connection settings specified in your project on the Properties &gt; General page.
+
+Please note that in automatic target-configuration management, changes to the project&#39;s device and/or
+connection settings will either modify an existing or generate a new target-configuration file. Thus,
+if you manually edit these auto-generated files, you may need to re-apply your changes. Alternatively,
+you may create your own target-configuration file for this project and manage it manually. You can
+always switch back to automatic target-configuration management by checking the &quot;Manage the project&#39;s
+target-configuration automatically&quot; checkbox on the project&#39;s Properties &gt; General page.</code></pre>
+  <ol class="line-notes">
+    <li><strong>第 1～2 行：</strong>ccxml 由项目 device/connection 属性自动生成。</li>
+    <li><strong>第 4～6 行：</strong>改变芯片或连接会覆盖手改。</li>
+    <li><strong>第 7～9 行：</strong>需要长期定制时可建手管配置，也可切回自动管理。</li>
+  </ol>
+  <pre class="source-code"><code data-source="targetConfigs/MSPM0G3507.ccxml" data-lines="1-23">&lt;?xml version=&quot;1.0&quot; encoding=&quot;UTF-8&quot; standalone=&quot;no&quot;?&gt;
+&lt;configurations XML_version=&quot;1.2&quot; id=&quot;configurations_0&quot;&gt;
+    &lt;configuration XML_version=&quot;1.2&quot; id=&quot;configuration_0&quot;&gt;
+        &lt;instance XML_version=&quot;1.2&quot; desc=&quot;Texas Instruments XDS110 USB Debug Probe&quot; href=&quot;connections/TIXDS110_Connection.xml&quot; id=&quot;Texas Instruments XDS110 USB Debug Probe&quot; xml=&quot;TIXDS110_Connection.xml&quot; xmlpath=&quot;connections&quot;/&gt;
+        &lt;connection XML_version=&quot;1.2&quot; id=&quot;Texas Instruments XDS110 USB Debug Probe&quot;&gt;
+            &lt;instance XML_version=&quot;1.2&quot; href=&quot;drivers/tixds510cs_dap.xml&quot; id=&quot;drivers&quot; xml=&quot;tixds510cs_dap.xml&quot; xmlpath=&quot;drivers&quot;/&gt;
+            &lt;instance XML_version=&quot;1.2&quot; href=&quot;drivers/tixds510cortexM0.xml&quot; id=&quot;drivers&quot; xml=&quot;tixds510cortexM0.xml&quot; xmlpath=&quot;drivers&quot;/&gt;
+            &lt;instance XML_version=&quot;1.2&quot; href=&quot;drivers/tixds510sec_ap.xml&quot; id=&quot;drivers&quot; xml=&quot;tixds510sec_ap.xml&quot; xmlpath=&quot;drivers&quot;/&gt;
+            &lt;property Type=&quot;choicelist&quot; Value=&quot;1&quot; id=&quot;The JTAG TCLK Frequency (MHz)&quot;&gt;
+                &lt;choice Name=&quot;Fixed with user specified value&quot; value=&quot;SPECIFIC&quot;&gt;
+                    &lt;property Type=&quot;stringfield&quot; Value=&quot;1MHz&quot; id=&quot;-- Enter a value from 100.0kHz to 2.5MHz&quot;/&gt;
+                &lt;/choice&gt;
+            &lt;/property&gt;
+            &lt;property Type=&quot;choicelist&quot; Value=&quot;2&quot; id=&quot;SWD Mode Settings&quot;&gt;
+                &lt;choice Name=&quot;SWD Mode - Aux COM port is target TDO pin&quot; value=&quot;nothing&quot;/&gt;
+            &lt;/property&gt;
+            &lt;property id=&quot;Debug Probe Selection&quot; Type=&quot;choicelist&quot; Value=&quot;0&quot;/&gt;
+            &lt;platform XML_version=&quot;1.2&quot; id=&quot;platform_0&quot;&gt;
+                &lt;instance XML_version=&quot;1.2&quot; desc=&quot;MSPM0G3507&quot; href=&quot;devices/MSPM0G3507.xml&quot; id=&quot;MSPM0G3507&quot; xml=&quot;MSPM0G3507.xml&quot; xmlpath=&quot;devices&quot;/&gt;
+            &lt;/platform&gt;
+        &lt;/connection&gt;
+    &lt;/configuration&gt;
+&lt;/configurations&gt;</code></pre>
+  <ol class="line-notes">
+    <li><strong>第 1～5 行：</strong>XML 配置选择 TI XDS110 USB Debug Probe。</li>
+    <li><strong>第 6～8 行：</strong>加载 DAP、Cortex-M0 和安全访问驱动描述。</li>
+    <li><strong>第 9～13 行：</strong>调试时钟固定 1MHz。</li>
+    <li><strong>第 14～17 行：</strong>SWD 模式与探针选择。</li>
+    <li><strong>第 18～23 行：</strong>平台明确 MSPM0G3507，并闭合配置。</li>
+  </ol>
+
+  <h4>4.16 <code>.project</code> 与 <code>.ccsproject</code></h4>
+  <pre class="source-code"><code data-source=".project" data-lines="1-20">&lt;?xml version=&quot;1.0&quot; encoding=&quot;UTF-8&quot;?&gt;
+&lt;projectDescription&gt;
+	&lt;name&gt;ArcLineTest&lt;/name&gt;
+	&lt;comment&gt;&lt;/comment&gt;
+	&lt;projects&gt;
+	&lt;/projects&gt;
+	&lt;buildSpec&gt;
+		&lt;buildCommand&gt;
+			&lt;name&gt;org.eclipse.cdt.managedbuilder.core.genmakebuilder&lt;/name&gt;
+			&lt;arguments&gt;
+			&lt;/arguments&gt;
+		&lt;/buildCommand&gt;
+	&lt;/buildSpec&gt;
+	&lt;natures&gt;
+		&lt;nature&gt;com.ti.ccstudio.core.ccsNature&lt;/nature&gt;
+		&lt;nature&gt;org.eclipse.cdt.core.cnature&lt;/nature&gt;
+		&lt;nature&gt;org.eclipse.cdt.managedbuilder.core.managedBuildNature&lt;/nature&gt;
+		&lt;nature&gt;org.eclipse.cdt.core.ccnature&lt;/nature&gt;
+	&lt;/natures&gt;
+&lt;/projectDescription&gt;</code></pre>
+  <ol class="line-notes">
+    <li><strong>第 1～3 行：</strong>Eclipse 项目名 ArcLineTest，决定默认产物名。</li>
+    <li><strong>第 4～13 行：</strong>无其他项目依赖，buildSpec 使用 CDT managed builder。</li>
+    <li><strong>第 14～19 行：</strong>声明 CCS、C、managed build 和 C++ natures。</li>
+    <li><strong>第 20 行：</strong>结束项目描述。</li>
+  </ol>
+  <pre class="source-code"><code data-source=".ccsproject" data-lines="1-18">&lt;?xml version=&quot;1.0&quot; encoding=&quot;UTF-8&quot; ?&gt;
+&lt;?ccsproject version=&quot;1.0&quot;?&gt;
+&lt;projectOptions&gt;
+	&lt;ccsVariant value=&quot;50:Theia-based&quot;/&gt;
+	&lt;ccsVersion value=&quot;71.0.0&quot;/&gt;
+	&lt;deviceFamily value=&quot;TMS470&quot;/&gt;
+	&lt;connection value=&quot;common/targetdb/connections/TIXDS110_Connection.xml&quot;/&gt;
+	&lt;executableActions value=&quot;&quot;/&gt;
+	&lt;createSlaveProjects value=&quot;&quot;/&gt;
+	&lt;ignoreDefaultDeviceSettings value=&quot;true&quot;/&gt;
+	&lt;ignoreDefaultCCSSettings value=&quot;true&quot;/&gt;
+	&lt;templateProperties value=&quot;id=empty_LP_MSPM0G3507_nortos_ticlang.projectspec.ArcLineTest,buildProfile=release,isHybrid=true&quot;/&gt;
+	&lt;activeTargetConfiguration value=&quot;targetConfigs/MSPM0G3507.ccxml&quot;/&gt;
+	&lt;isTargetConfigurationManual value=&quot;false&quot;/&gt;
+	&lt;sourceLookupPath value=&quot;${COM_TI_MSPM0_SDK_INSTALL_DIR}/source/ti/driverlib&quot;/&gt;
+	&lt;origin value=&quot;C:\TI\mspm0_sdk_2_10_00_04\examples\nortos\LP_MSPM0G3507\driverlib\empty\ticlang\empty_LP_MSPM0G3507_nortos_ticlang.projectspec&quot;/&gt;
+	&lt;filesToOpen value=&quot;README.md,main.c,main.syscfg&quot;/&gt;
+&lt;/projectOptions&gt;</code></pre>
+  <ol class="line-notes">
+    <li><strong>第 1～7 行：</strong>CCS Theia 项目、记录版本、TMS470 器件家族和 XDS110 连接。</li>
+    <li><strong>第 10～12 行：</strong>记录项目模板和 release buildProfile 来源。</li>
+    <li><strong>第 13～14 行：</strong>活动 ccxml；manual=false 表示自动管理。</li>
+    <li><strong>第 15～16 行：</strong>SDK 源码查找与模板来源；origin 不是当前 SDK 安装验证。</li>
+    <li><strong>第 17～18 行：</strong>默认打开 README/main/main.syscfg。</li>
+  </ol>
+
+  <h4>4.17 <code>.cproject</code>：编译与链接主配置</h4>
+  <pre class="source-code"><code data-source=".cproject" data-lines="1-18">&lt;?xml version=&quot;1.0&quot; encoding=&quot;UTF-8&quot; standalone=&quot;no&quot;?&gt;
+&lt;?fileVersion 4.0.0?&gt;&lt;cproject storage_type_id=&quot;org.eclipse.cdt.core.XmlProjectDescriptionStorage&quot;&gt;
+    &lt;storageModule moduleId=&quot;org.eclipse.cdt.core.settings&quot;&gt;
+        &lt;cconfiguration id=&quot;com.ti.ccstudio.buildDefinitions.TMS470.Debug.59478977&quot;&gt;
+            &lt;storageModule buildSystemId=&quot;org.eclipse.cdt.managedbuilder.core.configurationDataProvider&quot; id=&quot;com.ti.ccstudio.buildDefinitions.TMS470.Debug.59478977&quot; moduleId=&quot;org.eclipse.cdt.core.settings&quot; name=&quot;Debug&quot;&gt;
+                &lt;externalSettings/&gt;
+                &lt;extensions&gt;
+                    &lt;extension id=&quot;org.eclipse.cdt.core.GmakeErrorParser&quot; point=&quot;com.ti.ccs.project.ErrorParser&quot;/&gt;
+                    &lt;extension id=&quot;org.eclipse.cdt.core.GASErrorParser&quot; point=&quot;com.ti.ccs.project.ErrorParser&quot;/&gt;
+                    &lt;extension id=&quot;com.ti.ccs.errorparser.SysConfigErrorParser&quot; point=&quot;com.ti.ccs.project.ErrorParser&quot;/&gt;
+                    &lt;extension id=&quot;org.eclipse.cdt.core.GCCErrorParser&quot; point=&quot;com.ti.ccs.project.ErrorParser&quot;/&gt;
+                    &lt;extension id=&quot;com.ti.ccs.errorparser.CompilerErrorParser_TI&quot; point=&quot;com.ti.ccs.project.ErrorParser&quot;/&gt;
+                &lt;/extensions&gt;
+            &lt;/storageModule&gt;
+            &lt;storageModule moduleId=&quot;cdtBuildSystem&quot; version=&quot;4.0.0&quot;&gt;
+                &lt;configuration artifactExtension=&quot;out&quot; artifactName=&quot;${ProjName}&quot; buildProperties=&quot;&quot; cleanCommand=&quot;${CG_CLEAN_CMD}&quot; description=&quot;&quot; id=&quot;com.ti.ccstudio.buildDefinitions.TMS470.Debug.59478977&quot; name=&quot;Debug&quot; parent=&quot;com.ti.ccstudio.buildDefinitions.TMS470.Debug&quot;&gt;
+                    &lt;folderInfo id=&quot;com.ti.ccstudio.buildDefinitions.TMS470.Debug.59478977.&quot; name=&quot;/&quot; resourcePath=&quot;&quot;&gt;
+                        &lt;toolChain id=&quot;com.ti.ccstudio.buildDefinitions.TMS470_TICLANG_5.1.exe.DebugToolchain.418732242&quot; name=&quot;TI Build Tools&quot; secondaryOutputs=&quot;com.ti.ccstudio.buildDefinitions.TMS470_TICLANG_5.1.hex.outputType__BIN.1119565533&quot; superClass=&quot;com.ti.ccstudio.buildDefinitions.TMS470_TICLANG_5.1.exe.DebugToolchain&quot; targetTool=&quot;com.ti.ccstudio.buildDefinitions.TMS470_TICLANG_5.1.exe.linkerDebug.1063845466&quot;&gt;</code></pre>
+  <ol class="line-notes">
+    <li><strong>第 1～5 行：</strong>CDT XML 建立名为 Debug 的构建配置。</li>
+    <li><strong>第 6～13 行：</strong>注册 make、汇编、SysConfig、GCC 和 TI 编译错误解析器，IDE 才能定位日志。</li>
+    <li><strong>第 15～18 行：</strong>产物扩展名 out、名字取 Project Name，并选择 TI Clang Debug 工具链。</li>
+  </ol>
+  <pre class="source-code"><code data-source=".cproject" data-lines="19-32">                            &lt;option id=&quot;com.ti.ccstudio.buildDefinitions.core.OPT_TAGS.2053059&quot; superClass=&quot;com.ti.ccstudio.buildDefinitions.core.OPT_TAGS&quot; valueType=&quot;stringList&quot;&gt;
+                                &lt;listOptionValue value=&quot;DEVICE_CONFIGURATION_ID=Cortex M.MSPM0G3507&quot;/&gt;
+                                &lt;listOptionValue value=&quot;DEVICE_CORE_ID=&quot;/&gt;
+                                &lt;listOptionValue value=&quot;DEVICE_ENDIANNESS=little&quot;/&gt;
+                                &lt;listOptionValue value=&quot;OUTPUT_FORMAT=ELF&quot;/&gt;
+                                &lt;listOptionValue value=&quot;CCS_MBS_VERSION=70.0.0&quot;/&gt;
+                                &lt;listOptionValue value=&quot;RUNTIME_SUPPORT_LIBRARY=&quot;/&gt;
+                                &lt;listOptionValue value=&quot;OUTPUT_TYPE=executable&quot;/&gt;
+                                &lt;listOptionValue value=&quot;PRODUCTS=MSPM0-SDK:2.10.0.04;sysconfig:1.26.2;&quot;/&gt;
+                                &lt;listOptionValue value=&quot;PRODUCT_MACRO_IMPORTS={&amp;quot;MSPM0-SDK&amp;quot;:[&amp;quot;${COM_TI_MSPM0_SDK_INCLUDE_PATH}&amp;quot;,&amp;quot;${COM_TI_MSPM0_SDK_LIBRARY_PATH}&amp;quot;,&amp;quot;${COM_TI_MSPM0_SDK_LIBRARIES}&amp;quot;,&amp;quot;${COM_TI_MSPM0_SDK_SYMBOLS}&amp;quot;,&amp;quot;${COM_TI_MSPM0_SDK_SYSCONFIG_MANIFEST}&amp;quot;],&amp;quot;sysconfig&amp;quot;:[&amp;quot;${SYSCONFIG_TOOL_INCLUDE_PATH}&amp;quot;,&amp;quot;${SYSCONFIG_TOOL_LIBRARY_PATH}&amp;quot;,&amp;quot;${SYSCONFIG_TOOL_LIBRARIES}&amp;quot;,&amp;quot;${SYSCONFIG_TOOL_SYMBOLS}&amp;quot;,&amp;quot;${SYSCONFIG_TOOL_SYSCONFIG_MANIFEST}&amp;quot;]}&quot;/&gt;
+                            &lt;/option&gt;
+                            &lt;option id=&quot;com.ti.ccstudio.buildDefinitions.core.OPT_CODEGEN_VERSION.1309111822&quot; superClass=&quot;com.ti.ccstudio.buildDefinitions.core.OPT_CODEGEN_VERSION&quot; value=&quot;TICLANG_5.1.1.LTS&quot; valueType=&quot;string&quot;/&gt;
+                            &lt;targetPlatform id=&quot;com.ti.ccstudio.buildDefinitions.TMS470_TICLANG_5.1.exe.targetPlatformDebug.688364896&quot; name=&quot;Platform&quot; superClass=&quot;com.ti.ccstudio.buildDefinitions.TMS470_TICLANG_5.1.exe.targetPlatformDebug&quot;/&gt;
+                            &lt;builder buildPath=&quot;${BuildDirectory}&quot; id=&quot;com.ti.ccstudio.buildDefinitions.TMS470_TICLANG_5.1.exe.builderDebug.988053860&quot; keepEnvironmentInBuildfile=&quot;false&quot; name=&quot;GNU Make&quot; parallelBuildOn=&quot;true&quot; parallelizationNumber=&quot;optimal&quot; superClass=&quot;com.ti.ccstudio.buildDefinitions.TMS470_TICLANG_5.1.exe.builderDebug&quot;/&gt;</code></pre>
+  <ol class="line-notes">
+    <li><strong>第 19～28 行：</strong>记录 MSPM0G3507、小端 ELF 可执行文件、MSPM0 SDK 2.10.0.04 与 SysConfig 1.26.2 产品宏。</li>
+    <li><strong>第 30 行：</strong>TI Clang 版本为 5.1.1 LTS。</li>
+    <li><strong>第 31～32 行：</strong>目标平台节点，并启用 GNU Make 最优并行构建。</li>
+  </ol>
+  <pre class="source-code"><code data-source=".cproject" data-lines="36-57">                                &lt;option id=&quot;com.ti.ccstudio.buildDefinitions.TMS470_TICLANG_5.1.compilerID.INCLUDE_PATH.1815472694&quot; superClass=&quot;com.ti.ccstudio.buildDefinitions.TMS470_TICLANG_5.1.compilerID.INCLUDE_PATH&quot; valueType=&quot;includePath&quot;&gt;
+                                    &lt;listOptionValue value=&quot;${COM_TI_MSPM0_SDK_INCLUDE_PATH}&quot;/&gt;
+                                    &lt;listOptionValue value=&quot;${SYSCONFIG_TOOL_INCLUDE_PATH}&quot;/&gt;
+                                    &lt;listOptionValue value=&quot;${PROJECT_ROOT}&quot;/&gt;
+                                    &lt;listOptionValue value=&quot;${PROJECT_ROOT}/${ConfigName}&quot;/&gt;
+                                    &lt;listOptionValue value=&quot;${COM_TI_MSPM0_SDK_INSTALL_DIR}/source/third_party/CMSIS/Core/Include&quot;/&gt;
+                                    &lt;listOptionValue value=&quot;${COM_TI_MSPM0_SDK_INSTALL_DIR}/source&quot;/&gt;
+                                &lt;/option&gt;
+                                &lt;option id=&quot;com.ti.ccstudio.buildDefinitions.TMS470_TICLANG_5.1.compilerID.DEFINE.574932702&quot; superClass=&quot;com.ti.ccstudio.buildDefinitions.TMS470_TICLANG_5.1.compilerID.DEFINE&quot; valueType=&quot;definedSymbols&quot;&gt;
+                                    &lt;listOptionValue value=&quot;${COM_TI_MSPM0_SDK_SYMBOLS}&quot;/&gt;
+                                    &lt;listOptionValue value=&quot;${SYSCONFIG_TOOL_SYMBOLS}&quot;/&gt;
+                                &lt;/option&gt;
+                                &lt;option id=&quot;com.ti.ccstudio.buildDefinitions.TMS470_TICLANG_5.1.compilerID.OPT_LEVEL.733761462&quot; superClass=&quot;com.ti.ccstudio.buildDefinitions.TMS470_TICLANG_5.1.compilerID.OPT_LEVEL&quot; value=&quot;com.ti.ccstudio.buildDefinitions.TMS470_TICLANG_5.1.compilerID.OPT_LEVEL.2&quot; valueType=&quot;enumerated&quot;/&gt;
+                                &lt;option id=&quot;com.ti.ccstudio.buildDefinitions.TMS470_TICLANG_5.1.compilerID.CMD_FILE.622059810&quot; superClass=&quot;com.ti.ccstudio.buildDefinitions.TMS470_TICLANG_5.1.compilerID.CMD_FILE&quot; valueType=&quot;stringList&quot;&gt;
+                                    &lt;listOptionValue value=&quot;device.opt&quot;/&gt;
+                                &lt;/option&gt;
+                                &lt;option id=&quot;com.ti.ccstudio.buildDefinitions.TMS470_TICLANG_5.1.compilerID.MCPU.1663993575&quot; superClass=&quot;com.ti.ccstudio.buildDefinitions.TMS470_TICLANG_5.1.compilerID.MCPU&quot; value=&quot;com.ti.ccstudio.buildDefinitions.TMS470_TICLANG_5.1.compilerID.MCPU.cortex-m0plus&quot; valueType=&quot;enumerated&quot;/&gt;
+                                &lt;option id=&quot;com.ti.ccstudio.buildDefinitions.TMS470_TICLANG_5.1.compilerID.MARCH.2024528124&quot; superClass=&quot;com.ti.ccstudio.buildDefinitions.TMS470_TICLANG_5.1.compilerID.MARCH&quot; value=&quot;com.ti.ccstudio.buildDefinitions.TMS470_TICLANG_5.1.compilerID.MARCH.thumbv6m&quot; valueType=&quot;enumerated&quot;/&gt;
+                                &lt;option id=&quot;com.ti.ccstudio.buildDefinitions.TMS470_TICLANG_5.1.compilerID.MFLOAT_ABI.1096955702&quot; superClass=&quot;com.ti.ccstudio.buildDefinitions.TMS470_TICLANG_5.1.compilerID.MFLOAT_ABI&quot; value=&quot;com.ti.ccstudio.buildDefinitions.TMS470_TICLANG_5.1.compilerID.MFLOAT_ABI.soft&quot; valueType=&quot;enumerated&quot;/&gt;
+                                &lt;option id=&quot;com.ti.ccstudio.buildDefinitions.TMS470_TICLANG_5.1.compilerID.SELECT_PROCESSOR_MODE__ARM_THUMB.1613813744&quot; superClass=&quot;com.ti.ccstudio.buildDefinitions.TMS470_TICLANG_5.1.compilerID.SELECT_PROCESSOR_MODE__ARM_THUMB&quot; value=&quot;com.ti.ccstudio.buildDefinitions.TMS470_TICLANG_5.1.compilerID.SELECT_PROCESSOR_MODE__ARM_THUMB.MTHUMB&quot; valueType=&quot;enumerated&quot;/&gt;
+                                &lt;option id=&quot;com.ti.ccstudio.buildDefinitions.TMS470_TICLANG_5.1.compilerID.WALL.1603881543&quot; superClass=&quot;com.ti.ccstudio.buildDefinitions.TMS470_TICLANG_5.1.compilerID.WALL&quot; value=&quot;true&quot; valueType=&quot;boolean&quot;/&gt;
+                            &lt;/tool&gt;</code></pre>
+  <ol class="line-notes">
+    <li><strong>第 36～43 行：</strong>include 路径包含 SDK、SysConfig、项目根、当前 ConfigName 目录和 CMSIS；Debug 生成头文件因此可被找到。</li>
+    <li><strong>第 44～47 行：</strong>继承 SDK/SysConfig 预处理宏。</li>
+    <li><strong>第 48 行：</strong>优化等级为 2，Debug 名称并不代表完全无优化。</li>
+    <li><strong>第 49～51 行：</strong>编译器读取生成的 device.opt。</li>
+    <li><strong>第 52～56 行：</strong>Cortex-M0+、thumbv6m、软浮点、Thumb 和 Wall 警告。</li>
+  </ol>
+  <pre class="source-code"><code data-source=".cproject" data-lines="58-78">                            &lt;tool id=&quot;com.ti.ccstudio.buildDefinitions.TMS470_TICLANG_5.1.exe.linkerDebug.1063845466&quot; name=&quot;Arm Linker&quot; superClass=&quot;com.ti.ccstudio.buildDefinitions.TMS470_TICLANG_5.1.exe.linkerDebug&quot;&gt;
+                                &lt;option id=&quot;com.ti.ccstudio.buildDefinitions.TMS470_TICLANG_5.1.linkerID.OUTPUT_FILE.1146604956&quot; superClass=&quot;com.ti.ccstudio.buildDefinitions.TMS470_TICLANG_5.1.linkerID.OUTPUT_FILE&quot; value=&quot;${ProjName}.out&quot; valueType=&quot;string&quot;/&gt;
+                                &lt;option id=&quot;com.ti.ccstudio.buildDefinitions.TMS470_TICLANG_5.1.linkerID.MAP_FILE.2134834185&quot; superClass=&quot;com.ti.ccstudio.buildDefinitions.TMS470_TICLANG_5.1.linkerID.MAP_FILE&quot; value=&quot;${ProjName}.map&quot; valueType=&quot;string&quot;/&gt;
+                                &lt;option id=&quot;com.ti.ccstudio.buildDefinitions.TMS470_TICLANG_5.1.linkerID.XML_LINK_INFO.2139711168&quot; superClass=&quot;com.ti.ccstudio.buildDefinitions.TMS470_TICLANG_5.1.linkerID.XML_LINK_INFO&quot; value=&quot;${ProjName}_linkInfo.xml&quot; valueType=&quot;string&quot;/&gt;
+                                &lt;option id=&quot;com.ti.ccstudio.buildDefinitions.TMS470_TICLANG_5.1.linkerID.DISPLAY_ERROR_NUMBER.1618637266&quot; superClass=&quot;com.ti.ccstudio.buildDefinitions.TMS470_TICLANG_5.1.linkerID.DISPLAY_ERROR_NUMBER&quot; value=&quot;true&quot; valueType=&quot;boolean&quot;/&gt;
+                                &lt;option id=&quot;com.ti.ccstudio.buildDefinitions.TMS470_TICLANG_5.1.linkerID.DIAG_WRAP.923801805&quot; superClass=&quot;com.ti.ccstudio.buildDefinitions.TMS470_TICLANG_5.1.linkerID.DIAG_WRAP&quot; value=&quot;com.ti.ccstudio.buildDefinitions.TMS470_TICLANG_5.1.linkerID.DIAG_WRAP.off&quot; valueType=&quot;enumerated&quot;/&gt;
+                                &lt;option id=&quot;com.ti.ccstudio.buildDefinitions.TMS470_TICLANG_5.1.linkerID.REREAD_LIBS.548814650&quot; superClass=&quot;com.ti.ccstudio.buildDefinitions.TMS470_TICLANG_5.1.linkerID.REREAD_LIBS&quot; value=&quot;false&quot; valueType=&quot;boolean&quot;/&gt;
+                                &lt;option id=&quot;com.ti.ccstudio.buildDefinitions.TMS470_TICLANG_5.1.linkerID.SEARCH_PATH.368816072&quot; superClass=&quot;com.ti.ccstudio.buildDefinitions.TMS470_TICLANG_5.1.linkerID.SEARCH_PATH&quot; valueType=&quot;libPaths&quot;&gt;
+                                    &lt;listOptionValue value=&quot;${COM_TI_MSPM0_SDK_LIBRARY_PATH}&quot;/&gt;
+                                    &lt;listOptionValue value=&quot;${SYSCONFIG_TOOL_LIBRARY_PATH}&quot;/&gt;
+                                    &lt;listOptionValue value=&quot;${COM_TI_MSPM0_SDK_INSTALL_DIR}/source&quot;/&gt;
+                                    &lt;listOptionValue value=&quot;${PROJECT_ROOT}&quot;/&gt;
+                                    &lt;listOptionValue value=&quot;${PROJECT_BUILD_DIR}/syscfg&quot;/&gt;
+                                    &lt;listOptionValue value=&quot;${CG_TOOL_ROOT}/lib&quot;/&gt;
+                                &lt;/option&gt;
+                                &lt;option id=&quot;com.ti.ccstudio.buildDefinitions.TMS470_TICLANG_5.1.linkerID.LIBRARY.399171058&quot; superClass=&quot;com.ti.ccstudio.buildDefinitions.TMS470_TICLANG_5.1.linkerID.LIBRARY&quot; valueType=&quot;libs&quot;&gt;
+                                    &lt;listOptionValue value=&quot;${COM_TI_MSPM0_SDK_LIBRARIES}&quot;/&gt;
+                                    &lt;listOptionValue value=&quot;${SYSCONFIG_TOOL_LIBRARIES}&quot;/&gt;
+                                    &lt;listOptionValue value=&quot;device.cmd.genlibs&quot;/&gt;
+                                    &lt;listOptionValue value=&quot;libc.a&quot;/&gt;
+                                &lt;/option&gt;</code></pre>
+  <ol class="line-notes">
+    <li><strong>第 58～64 行：</strong>链接器生成 ProjName.out、map 和 linkInfo XML。</li>
+    <li><strong>第 65～72 行：</strong>库路径包含 SDK、SysConfig、项目、生成 syscfg 和编译器库。</li>
+    <li><strong>第 73～78 行：</strong>链接 SDK/SysConfig、device.cmd.genlibs 与 libc。</li>
+  </ol>
+  <pre class="source-code"><code data-source=".cproject" data-lines="86-104">                            &lt;tool id=&quot;com.ti.ccstudio.buildDefinitions.sysConfig.5099498&quot; name=&quot;SysConfig&quot; superClass=&quot;com.ti.ccstudio.buildDefinitions.sysConfig&quot;&gt;
+                                &lt;option id=&quot;com.ti.ccstudio.buildDefinitions.sysConfig.PRODUCTS.307460793&quot; superClass=&quot;com.ti.ccstudio.buildDefinitions.sysConfig.PRODUCTS&quot; valueType=&quot;stringList&quot;&gt;
+                                    &lt;listOptionValue value=&quot;${COM_TI_MSPM0_SDK_SYSCONFIG_MANIFEST}&quot;/&gt;
+                                    &lt;listOptionValue value=&quot;${SYSCONFIG_TOOL_SYSCONFIG_MANIFEST}&quot;/&gt;
+                                &lt;/option&gt;
+                                &lt;option id=&quot;com.ti.ccstudio.buildDefinitions.sysConfig.OUTPUT_DIR__MANUAL.625468941&quot; superClass=&quot;com.ti.ccstudio.buildDefinitions.sysConfig.OUTPUT_DIR__MANUAL&quot; value=&quot;.&quot; valueType=&quot;string&quot;/&gt;
+                                &lt;option id=&quot;com.ti.ccstudio.buildDefinitions.sysConfig.DIRECTORY_MODE.1923218292&quot; superClass=&quot;com.ti.ccstudio.buildDefinitions.sysConfig.DIRECTORY_MODE&quot; value=&quot;com.ti.ccstudio.buildDefinitions.sysConfig.DIRECTORY_MODE.manual&quot; valueType=&quot;enumerated&quot;/&gt;
+                            &lt;/tool&gt;
+                        &lt;/toolChain&gt;
+                    &lt;/folderInfo&gt;
+                &lt;/configuration&gt;
+            &lt;/storageModule&gt;
+            &lt;storageModule moduleId=&quot;org.eclipse.cdt.core.externalSettings&quot;/&gt;
+        &lt;/cconfiguration&gt;
+    &lt;/storageModule&gt;
+    &lt;storageModule moduleId=&quot;cdtBuildSystem&quot; version=&quot;4.0.0&quot;&gt;
+        &lt;project id=&quot;ArcLineTest.com.ti.ccstudio.buildDefinitions.TMS470.ProjectType.2011465861&quot; name=&quot;TMS470&quot; projectType=&quot;com.ti.ccstudio.buildDefinitions.TMS470.ProjectType&quot;/&gt;
+    &lt;/storageModule&gt;
+&lt;/cproject&gt;</code></pre>
+  <ol class="line-notes">
+    <li><strong>第 86～93 行：</strong>SysConfig 读取产品 manifest，使用手动输出目录模式。</li>
+    <li><strong>第 94～100 行：</strong>闭合工具链、配置和 settings。</li>
+    <li><strong>第 101～104 行：</strong>项目类型是 TI TMS470，项目 ID 含 ArcLineTest。</li>
+  </ol>
+  <p>这类 XML 应优先由 CCS Properties 修改。长 ID、父类和产品宏互相关联，手改容易让 IDE 加载失败；修改后应审查 diff，而不是重写整份文件。</p>
+
+  <h4>4.18 clangd 与 Theia 工作区</h4>
+  <pre class="source-code"><code data-source=".clangd" data-lines="1-7"># This is an auto-generated file - do not add it to source-control
+
+CompileFlags:
+   CompilationDatabase: Debug/.clangd
+
+Diagnostics:
+   Suppress: &#39;*&#39;
+</code></pre>
+  <ol class="line-notes">
+    <li><strong>第 1 行：</strong>文件自称自动生成，不适合作为长期手调入口。</li>
+    <li><strong>第 3～5 行：</strong>clangd 从 <code>Debug/.clangd</code> 取得编译数据库，知道真实 include/define。</li>
+    <li><strong>第 6～8 行：</strong>Suppress <code>*</code> 关闭编辑器 clangd 诊断，不等于 CCS 编译器不报错。</li>
+  </ol>
+  <pre class="source-code"><code data-source="25.theia-workspace" data-lines="1-8">{
+  &quot;folders&quot;: [
+    {
+      &quot;path&quot;: &quot;&quot;
+    }
+  ],
+  &quot;settings&quot;: {}
+}</code></pre>
+  <ol class="line-notes">
+    <li><strong>第 1～6 行：</strong>Theia 工作区只打开 path 为空的当前项目根。</li>
+    <li><strong>第 7～8 行：</strong>没有额外 settings，结束 JSON。</li>
+  </ol>
+
+  <h4>4.19 Git 与隐藏的 Eclipse/Theia 设置</h4>
+  <pre class="source-code"><code data-source=".gitignore" data-lines="1-21">/Debug/
+/Release/
+*.out
+*.hex
+*.map
+*.o
+*.d
+*.d_raw
+
+# 本机编辑器、Codex 配置和自动生成的代码索引。
+/.clangd
+/.codex/
+/.vscode/
+
+# 本地环境变量、SSH 文件和密钥材料不得提交。
+.env
+.env.*
+/.ssh/
+/.ssh_known_hosts
+*.key
+*.pem</code></pre>
+  <ol class="line-notes">
+    <li><strong>第 1～8 行：</strong>忽略 Debug/Release 和编译生成的 out、hex、map、目标文件与依赖文件；这些都能由源码重新生成。</li>
+    <li><strong>第 10～13 行：</strong>忽略本机编辑器/Codex 配置和自动索引，避免把个人环境写进团队仓库。</li>
+    <li><strong>第 15～21 行：</strong>阻止环境变量、SSH 文件和常见私钥后缀被误提交；这是安全边界，不只是“让目录干净”。</li>
+  </ol>
+  <pre class="source-code"><code data-source=".gitattributes" data-lines="1-5"># 统一行尾为 LF,避免每次编辑触发整文件 EOL diff,保证每步提交干净可回退
+* text=auto eol=lf
+*.png binary
+*.out binary
+*.hex binary</code></pre>
+  <ol class="line-notes">
+    <li><strong>第 1～2 行：</strong>文本文件在仓库中统一为 LF，减少 Windows/其他系统之间整文件行尾变化。</li>
+    <li><strong>第 3～5 行：</strong>PNG、out、hex 明确按二进制处理，Git 不对它们做行尾转换。</li>
+  </ol>
+  <pre class="source-code"><code data-source=".theia/launch.json" data-lines="1-16">{
+  // 使用 IntelliSense 了解相关属性。
+  // 悬停以查看现有属性的描述。
+  &quot;version&quot;: &quot;0.2.0&quot;,
+  &quot;configurations&quot;: [
+    {
+      &quot;name&quot;: &quot;ArcLineTest&quot;,
+      &quot;type&quot;: &quot;ccs-debug&quot;,
+      &quot;request&quot;: &quot;launch&quot;,
+      &quot;projectInfo&quot;: {
+        &quot;name&quot;: &quot;ArcLineTest&quot;,
+        &quot;resourceId&quot;: &quot;/ArcLineTest&quot;
+      }
+    }
+  ]
+}</code></pre>
+  <ol class="line-notes">
+    <li><strong>第 1～4 行：</strong>这是允许注释的编辑器启动配置，版本号指配置格式而非固件版本。</li>
+    <li><strong>第 5～13 行：</strong>登记一个名为 ArcLineTest 的 CCS 调试启动项；<code>ccs-debug</code> 表示由 Theia 的 CCS 扩展接管，projectInfo 必须与工程名一致。</li>
+    <li><strong>第 14～16 行：</strong>闭合配置数组和 JSON 对象。</li>
+  </ol>
+  <pre class="source-code"><code data-source=".settings/org.eclipse.cdt.codan.core.prefs" data-lines="1-3">eclipse.preferences.version=1
+inEditor=false
+onBuild=false</code></pre>
+  <ol class="line-notes">
+    <li><strong>第 1 行：</strong>Eclipse 偏好文件格式版本。</li>
+    <li><strong>第 2～3 行：</strong>关闭 Codan 在编辑器内和构建时的静态分析；真正的 TI 编译器错误/警告仍由 CCS 构建输出。</li>
+  </ol>
+  <pre class="source-code"><code data-source=".settings/org.eclipse.core.resources.prefs" data-lines="1-38">eclipse.preferences.version=1
+encoding//Debug/Accomplish/subdir_rules.mk=UTF-8
+encoding//Debug/Accomplish/subdir_vars.mk=UTF-8
+encoding//Debug/Application/Aim/subdir_rules.mk=UTF-8
+encoding//Debug/Application/Aim/subdir_vars.mk=UTF-8
+encoding//Debug/Application/Comms/subdir_rules.mk=UTF-8
+encoding//Debug/Application/Comms/subdir_vars.mk=UTF-8
+encoding//Debug/Application/Control/subdir_rules.mk=UTF-8
+encoding//Debug/Application/Control/subdir_vars.mk=UTF-8
+encoding//Debug/Application/Core/subdir_rules.mk=UTF-8
+encoding//Debug/Application/Core/subdir_vars.mk=UTF-8
+encoding//Debug/Application/Debug/subdir_rules.mk=UTF-8
+encoding//Debug/Application/Debug/subdir_vars.mk=UTF-8
+encoding//Debug/Application/Mission/subdir_rules.mk=UTF-8
+encoding//Debug/Application/Mission/subdir_vars.mk=UTF-8
+encoding//Debug/Application/Servo/subdir_rules.mk=UTF-8
+encoding//Debug/Application/Servo/subdir_vars.mk=UTF-8
+encoding//Debug/Application/State/subdir_rules.mk=UTF-8
+encoding//Debug/Application/State/subdir_vars.mk=UTF-8
+encoding//Debug/Hardware/Actuators/subdir_rules.mk=UTF-8
+encoding//Debug/Hardware/Actuators/subdir_vars.mk=UTF-8
+encoding//Debug/Hardware/Board/subdir_rules.mk=UTF-8
+encoding//Debug/Hardware/Board/subdir_vars.mk=UTF-8
+encoding//Debug/Hardware/Comms/subdir_rules.mk=UTF-8
+encoding//Debug/Hardware/Comms/subdir_vars.mk=UTF-8
+encoding//Debug/Hardware/Display/subdir_rules.mk=UTF-8
+encoding//Debug/Hardware/Display/subdir_vars.mk=UTF-8
+encoding//Debug/Hardware/Motor/subdir_rules.mk=UTF-8
+encoding//Debug/Hardware/Motor/subdir_vars.mk=UTF-8
+encoding//Debug/Hardware/Sensors/subdir_rules.mk=UTF-8
+encoding//Debug/Hardware/Sensors/subdir_vars.mk=UTF-8
+encoding//Debug/System/subdir_rules.mk=UTF-8
+encoding//Debug/System/subdir_vars.mk=UTF-8
+encoding//Debug/makefile=UTF-8
+encoding//Debug/objects.mk=UTF-8
+encoding//Debug/sources.mk=UTF-8
+encoding//Debug/subdir_rules.mk=UTF-8
+encoding//Debug/subdir_vars.mk=UTF-8</code></pre>
+  <ol class="line-notes">
+    <li><strong>第 1 行：</strong>Eclipse 资源偏好格式版本。</li>
+    <li><strong>第 2～38 行：</strong>把 Debug 下自动生成的 makefile 片段统一标成 UTF-8，避免中文路径/注释显示异常。列表中的 <code>Application/Aim</code> 和 <code>Hardware/Actuators</code> 已不在当前源码树中，说明这份 IDE 元数据保留了旧目录痕迹；它不等于当前仍有这些模块，判断项目结构应以实际目录为准。</li>
+  </ol>
+
+  <h3>5. 难点函数拆解</h3>
+  <div class="deep-dive">
+    <h4>从 CCS Build 到烧录</h4>
+    <p><strong>输入：</strong>C 源码、main.syscfg 和 CCS 工具链/SDK/链接设置。</p>
+    <p><strong>过程：</strong>SysConfig 生成外设配置 → TI Clang 编译 → linker 生成 Debug/ArcLineTest.out → flash.ps1 检查路径 → pyOCD 经 SWD 写入 → reset。</p>
+    <p><strong>输出：</strong>芯片运行新固件，map/linkInfo 辅助分析。</p>
+    <p><strong>边界条件：</strong>只构建 Release、工程改名、pyOCD 不在 PATH 或探针接线失败都会中断链路。</p>
+    <p><strong>设计原因：</strong>CCS 管复杂构建，短脚本提供稳定、可重复的外部烧录入口。</p>
+  </div>
+  <div class="deep-dive">
+    <h4>动态表头为什么可靠</h4>
+    <p><strong>输入：</strong>固件掩码变化后发出的 H 行与 D 行。</p>
+    <p><strong>过程：</strong>H 建 columns 并清旧样本；D 校验列数，再按列名选择文本、十六进制、十进制或复合解析。</p>
+    <p><strong>输出：</strong>任意合法字段组合都得到带名字的 sample，UI 自动重建曲线项。</p>
+    <p><strong>边界条件：</strong>切换瞬间残行被丢弃；新增特殊列需同步类型分类与测试。</p>
+    <p><strong>设计原因：</strong>协议以名称描述列，避免固件和网页依赖固定位置。</p>
+  </div>
+
+  <h3>6. 放回总体调用链</h3>
+  <div class="relation-chain">
+    <p><strong>遥测：</strong>MCU State/Motion/K230 → Telemetry → UART1 → Web Serial → TextDecoder → TelemetryParser → samples → Canvas/CSV</p>
+    <p><strong>命令：</strong>按钮/滑块 → send() → CRLF ASCII → UART1 → BluetoothDebug → Motion/Mission/Servo/K230</p>
+    <p><strong>测试：</strong>Node → 读取 car_debug → 抽取 parser → 15 个场景 → 退出码 0/1</p>
+    <p><strong>交付：</strong>源码 + main.syscfg + CCS 元数据 → SysConfig/Compiler/Linker → Debug/ArcLineTest.out → flash.bat/ps1 → pyOCD → SWD → MSPM0G3507</p>
+  </div>
+
+  <h3>7. 常见误解与调试提示</h3>
+  <div class="pitfall">
+    <ul>
+      <li><strong>“一次 read 就是一行”：</strong>错，串口任意分包，必须缓存半截尾巴。</li>
+      <li><strong>“close 前不用管 reader”：</strong>错，reader 锁未释放时 close 会失败。</li>
+      <li><strong>“Z1 和 Z2 都只是清零角度”：</strong>错。Z1 只改当前航向基准；Z2 会阻塞重采陀螺仪零漂并归零，约 0.8 秒必须保持车辆静止。</li>
+      <li><strong>“曲线 x 轴按 ms”：</strong>错，当前按样本索引均匀排布，ms 保留在导出数据。</li>
+      <li><strong>“Debug 生成配置可直接改”：</strong>错，应改 main.syscfg/CCS 属性后重建。</li>
+      <li><strong>“README 说 25H 就一定运行 25H”：</strong>错，当前 main.c 加载 Test。</li>
+      <li><strong>“测试通过代表所有边界完美”：</strong>错，测试只锁住已有场景。</li>
+    </ul>
+  </div>
+  <div class="ripple-effect">
+    <h4>修改联动</h4>
+    <ul>
+      <li>新增命令：同步固件解析、网页控件/事件、README，必要时补测试。</li>
+      <li>新增遥测字段：同步固件掩码/表头/数据/带宽、网页类型分类和测试样例。</li>
+      <li>修改工程名或构建配置：同步 flash.ps1 的 Debug ELF 路径。</li>
+      <li>修改芯片/探针：优先在 CCS 属性调整，并同步 pyOCD target。</li>
+      <li>修改 main.syscfg：重新生成并 Clean/Rebuild，不改 Debug 结果文件。</li>
+      <li>升级 SDK/SysConfig/TI Clang：检查 .cproject 版本、生成差异和实机行为。</li>
+    </ul>
+  </div>
+
+  <h3>8. 学完自测</h3>
+  <details class="quiz"><summary>1. 为什么断开时要 cancel reader 再 close？</summary><p>getReader 锁住 readable；cancel 唤醒读循环，finally releaseLock 后端口才能关闭。</p></details>
+  <details class="quiz"><summary>2. 新 H 表头为什么清空旧 samples？</summary><p>新掩码改变字段，旧样本与新样本列定义不同，混合会错位。</p></details>
+  <details class="quiz"><summary>3. 测试为什么不复制 TelemetryParser？</summary><p>副本可能漂移；抽取网页真代码才能避免假通过。</p></details>
+  <details class="quiz"><summary>4. Build 与 flash.ps1 的文件契约是什么？</summary><p>Debug 配置必须生成 <code>Debug/ArcLineTest.out</code> ELF。</p></details>
+  <details class="quiz"><summary>5. README、main.c、main.syscfg 冲突时怎么判断？</summary><p>运行任务看 main.c，硬件源配置看 main.syscfg，README 用作索引并应修正。</p></details>
+
+  <h3>9. 覆盖清单</h3>
+  <ul class="coverage-list">
+    <li><code>car_debug.html</code>：第 1～1407 行按 HTML/CSS/JS 分层覆盖；同步讲解 Z2 静止重采样、扩展遥测字段、同量纲曲线、解析器调参辅助函数、Web Serial 与事件绑定，重复样式和参数面板模板不机械复述。</li>
+    <li><code>tests/test_csv_parse.mjs</code>：第 1～284 行覆盖真代码抽取、框架、22 个解析/量纲/AI 包/左右轮 PWM 估算用例与退出码。</li>
+    <li><code>flash.ps1</code>：第 1～47 行完整覆盖参数、路径、擦除、under-reset、烧录和复位。</li>
+    <li><code>flash.bat</code>：第 1～12 行完整覆盖 UTF-8、参数转发、退出码和 pause。</li>
+    <li><code>README.md</code>：第 1～1172 行按总索引处理；重点展示第 1～7、446～471、723～737、1161～1168 行，其余硬件/接口/左右轮参数表作为查阅资料，并指出 25H/Test/距离信息仍滞后。</li>
+    <li><code>targetConfigs/readme.txt</code>：第 1～9 行完整覆盖自动管理与覆盖风险。</li>
+    <li><code>targetConfigs/MSPM0G3507.ccxml</code>：第 1～23 行完整覆盖 XDS110、1MHz SWD 和目标芯片。</li>
+    <li><code>.project</code>：第 1～20 行完整覆盖工程名、builder 与 natures。</li>
+    <li><code>.cproject</code>：第 1～104 行按关键字段覆盖；展示构建、产品版本、include/CPU/优化、链接和 SysConfig，省略未启用 Hex/Objcopy 辅助节点。</li>
+    <li><code>.ccsproject</code>：第 1～18 行完整覆盖 Theia CCS、连接、自动 target 和模板来源。</li>
+    <li><code>.clangd</code>：第 1～8 行完整覆盖编译数据库和诊断抑制。</li>
+    <li><code>25.theia-workspace</code>：第 1～8 行完整覆盖根工作区。</li>
+    <li><code>.theia/launch.json</code>：第 1～16 行完整覆盖 ArcLineTest 的 CCS 调试启动项。</li>
+    <li><code>.settings/org.eclipse.cdt.codan.core.prefs</code>：第 1～3 行完整覆盖 Codan 静态分析开关。</li>
+    <li><code>.settings/org.eclipse.core.resources.prefs</code>：第 1～38 行完整覆盖生成文件 UTF-8 设置，并指出已删除目录留下的元数据痕迹。</li>
+    <li><code>.gitignore</code>：第 1～21 行完整覆盖构建产物、本机配置和敏感文件排除规则。</li>
+    <li><code>.gitattributes</code>：第 1～5 行完整覆盖 LF 行尾和二进制文件策略。</li>
+  </ul>
+</section>

@@ -1,0 +1,578 @@
+<!DOCTYPE html>
+<html lang="zh-CN" data-theme="light">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="description" content="MSPM0G3507 智能小车完整项目中文源码教程，面向 C 语言和嵌入式初学者。">
+<title>MSPM0G3507 智能小车 · 从零读懂完整项目</title>
+<style>
+:root {
+    color-scheme: light;
+    --bg: #f4f1ea;
+    --paper: #fffdf8;
+    --paper-2: #f8f5ee;
+    --ink: #17201d;
+    --muted: #65706b;
+    --line: #d9d3c7;
+    --accent: #006c62;
+    --accent-soft: #dcefeb;
+    --warm: #c9512c;
+    --warm-soft: #f8e3da;
+    --code: #172321;
+    --code-ink: #dff7ef;
+    --code-line: #76968c;
+    --ok: #2e7d4f;
+    --shadow: 0 14px 40px rgba(34, 43, 39, .09);
+    --sidebar: 310px;
+}
+[data-theme="dark"] {
+    color-scheme: dark;
+    --bg: #111816;
+    --paper: #17211e;
+    --paper-2: #1b2824;
+    --ink: #e7f0ec;
+    --muted: #a2b1ab;
+    --line: #33443e;
+    --accent: #60d3c2;
+    --accent-soft: #183b35;
+    --warm: #ff9874;
+    --warm-soft: #4a2b22;
+    --code: #0c1210;
+    --code-ink: #dff7ef;
+    --code-line: #638078;
+    --ok: #77d59a;
+    --shadow: 0 16px 50px rgba(0, 0, 0, .25);
+}
+* { box-sizing: border-box; }
+html { scroll-behavior: auto; scroll-padding-top: 18px; }
+body {
+    margin: 0;
+    background:
+        radial-gradient(circle at 82% -10%, rgba(0,108,98,.12), transparent 30rem),
+        var(--bg);
+    color: var(--ink);
+    font: 16px/1.78 "Microsoft YaHei", "PingFang SC", system-ui, sans-serif;
+}
+button, input { font: inherit; }
+button { color: inherit; }
+a { color: var(--accent); }
+code { font-family: "Cascadia Code", Consolas, monospace; }
+p, li, dd, td, th { overflow-wrap: anywhere; }
+table {
+    display: block; width: 100%; max-width: 100%; overflow-x: auto;
+    margin: 16px 0; border-collapse: collapse; border: 1px solid var(--line);
+}
+th, td { padding: 9px 11px; border: 1px solid var(--line); text-align: left; vertical-align: top; }
+th { background: var(--paper-2); color: var(--accent); }
+.app-shell { display: grid; grid-template-columns: var(--sidebar) minmax(0, 1fr); min-height: 100vh; }
+.sidebar {
+    position: sticky;
+    top: 0;
+    height: 100vh;
+    overflow: auto;
+    padding: 24px 18px;
+    border-right: 1px solid var(--line);
+    background: var(--paper);
+    z-index: 10;
+}
+.brand { display: flex; gap: 12px; align-items: center; margin-bottom: 18px; }
+.brand-mark {
+    width: 46px; height: 46px; display: grid; place-items: center;
+    border-radius: 14px; color: white; font-weight: 800; letter-spacing: -.05em;
+    background: linear-gradient(145deg, var(--accent), #12453f);
+    box-shadow: var(--shadow);
+}
+.brand strong { display: block; line-height: 1.25; }
+.brand small { color: var(--muted); }
+.search-wrap { position: relative; margin: 14px 0 10px; }
+.search-wrap input {
+    width: 100%; padding: 10px 34px 10px 12px;
+    color: var(--ink); background: var(--paper-2);
+    border: 1px solid var(--line); border-radius: 10px; outline: none;
+}
+.search-wrap input:focus { border-color: var(--accent); box-shadow: 0 0 0 3px var(--accent-soft); }
+.search-wrap button {
+    position: absolute; right: 5px; top: 5px; border: 0; background: transparent;
+    width: 30px; height: 30px; cursor: pointer; color: var(--muted);
+}
+.search-result { min-height: 24px; color: var(--muted); font-size: 12px; }
+.progress-box { padding: 12px; border: 1px solid var(--line); background: var(--paper-2); border-radius: 12px; }
+.progress-head { display: flex; justify-content: space-between; gap: 10px; font-size: 13px; }
+.progress-track { height: 7px; margin-top: 9px; border-radius: 99px; background: var(--line); overflow: hidden; }
+#progress-bar { width: 0; height: 100%; background: linear-gradient(90deg, var(--accent), #59b85d); transition: width .25s; }
+.side-actions { display: grid; grid-template-columns: 1fr 1fr; gap: 7px; margin: 10px 0 14px; }
+.mini-button {
+    padding: 7px 8px; border: 1px solid var(--line); border-radius: 9px;
+    background: var(--paper-2); cursor: pointer; font-size: 12px;
+}
+.mini-button:hover { border-color: var(--accent); }
+#module-nav { display: grid; gap: 3px; margin: 0; padding: 0; list-style: none; }
+#module-nav a {
+    display: grid; grid-template-columns: 26px 1fr; gap: 7px;
+    padding: 8px 9px; border-radius: 9px; color: var(--muted);
+    text-decoration: none; font-size: 13px; line-height: 1.35;
+}
+#module-nav a:hover, #module-nav a.active { color: var(--ink); background: var(--accent-soft); }
+#module-nav .nav-num { color: var(--accent); font-family: Consolas, monospace; }
+#module-nav li.search-hidden { display: none; }
+.side-foot { margin-top: 18px; padding-top: 12px; border-top: 1px solid var(--line); color: var(--muted); font-size: 11px; }
+.content { min-width: 0; }
+.hero {
+    padding: 58px clamp(24px, 6vw, 90px) 42px;
+    border-bottom: 1px solid var(--line);
+    background: linear-gradient(135deg, color-mix(in srgb, var(--paper) 92%, transparent), transparent);
+}
+.eyebrow { margin: 0 0 9px; color: var(--accent); font-weight: 800; letter-spacing: .08em; font-size: 12px; }
+.hero h1 { max-width: 980px; margin: 0; font-size: clamp(34px, 6vw, 68px); line-height: 1.08; letter-spacing: -.045em; }
+.hero .lead { max-width: 860px; margin: 22px 0; color: var(--muted); font-size: clamp(17px, 2vw, 21px); }
+.hero-meta { display: flex; gap: 10px; flex-wrap: wrap; }
+.chip { padding: 6px 10px; border: 1px solid var(--line); background: var(--paper); border-radius: 99px; font-size: 12px; }
+.chapter {
+    width: min(1180px, calc(100% - 40px));
+    margin: 28px auto;
+}
+.start-here {
+    padding: clamp(22px, 4vw, 42px);
+    border: 1px solid var(--line); border-radius: 22px; background: var(--paper);
+    box-shadow: var(--shadow);
+}
+.start-here h2 { margin-top: 0; font-size: clamp(24px, 4vw, 38px); }
+.notice-grid { display: grid; grid-template-columns: repeat(3, 1fr); gap: 12px; }
+.notice {
+    padding: 16px; border-radius: 15px; border: 1px solid var(--line); background: var(--paper-2);
+}
+.notice strong { display: block; margin-bottom: 5px; color: var(--accent); }
+.architecture {
+    display: grid; grid-template-columns: repeat(5, minmax(120px, 1fr));
+    gap: 22px; align-items: stretch; margin: 26px 0 8px;
+}
+.arch-node {
+    position: relative; min-height: 118px; padding: 15px;
+    border: 1px solid var(--line); border-radius: 14px; background: var(--paper-2);
+}
+.arch-node:not(:last-child)::after {
+    content: "→"; position: absolute; right: -20px; top: 40%;
+    color: var(--warm); font-size: 24px; font-weight: 800;
+}
+.arch-node b { color: var(--accent); }
+.arch-node small { display: block; margin-top: 6px; color: var(--muted); line-height: 1.5; }
+.branch-note { color: var(--muted); font-size: 14px; }
+.lesson-section {
+    width: min(1180px, calc(100% - 40px));
+    margin: 30px auto;
+    padding: clamp(22px, 4vw, 44px);
+    border: 1px solid var(--line); border-radius: 22px; background: var(--paper);
+    box-shadow: var(--shadow);
+    content-visibility: auto;
+    contain-intrinsic-size: auto 1800px;
+}
+.lesson-section.search-hidden { display: none; }
+.lesson-section > h2 {
+    display: flex; align-items: flex-start; gap: 12px;
+    margin: 0 0 24px; font-size: clamp(25px, 4vw, 40px); line-height: 1.25;
+}
+.complete-check { width: 22px; height: 22px; margin-top: 8px; accent-color: var(--accent); flex: 0 0 auto; }
+.lesson-section h3 { margin: 36px 0 13px; padding-top: 9px; border-top: 1px solid var(--line); font-size: 22px; }
+.lesson-section h4 { margin: 26px 0 10px; font-size: 18px; color: var(--accent); }
+.module-map {
+    display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 10px;
+    padding: 16px; border-radius: 16px; background: var(--accent-soft); border: 1px solid color-mix(in srgb, var(--accent) 26%, var(--line));
+}
+.module-map > * { margin: 0; }
+.module-map strong { color: var(--accent); }
+.relation-chain {
+    overflow-x: auto; padding: 14px 16px; border-left: 4px solid var(--accent);
+    background: var(--paper-2); font-family: "Cascadia Code", Consolas, monospace;
+}
+.deep-dive, .pitfall, .ripple-effect {
+    margin: 18px 0; padding: 16px 18px; border-radius: 14px; border: 1px solid var(--line);
+}
+.deep-dive { background: var(--accent-soft); }
+.pitfall { background: var(--warm-soft); border-color: color-mix(in srgb, var(--warm) 38%, var(--line)); }
+.pitfall::before { content: "容易误解"; display: block; color: var(--warm); font-weight: 800; }
+.ripple-effect { background: var(--paper-2); }
+.ripple-effect::before { content: "修改会影响哪里"; display: block; color: var(--accent); font-weight: 800; }
+dfn {
+    color: var(--accent); font-style: normal; font-weight: 750;
+    border-bottom: 1px dashed currentColor; cursor: help;
+}
+.source-wrap { margin: 18px 0 23px; border: 1px solid #2a3a35; border-radius: 14px; overflow: hidden; background: var(--code); }
+.source-toolbar {
+    display: flex; align-items: center; gap: 8px; min-height: 42px; padding: 7px 10px;
+    border-bottom: 1px solid #2a3a35; color: #a8c5bc; background: #111b18;
+    font: 12px/1.4 "Cascadia Code", Consolas, monospace;
+}
+.source-toolbar .source-name { flex: 1; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; }
+.source-toolbar button { border: 1px solid #375047; border-radius: 7px; background: #1b2b26; color: #dff7ef; cursor: pointer; padding: 4px 8px; }
+.source-code {
+    max-height: 580px; margin: 0; padding: 12px 0; overflow: auto;
+    background: var(--code); color: var(--code-ink); font: 13px/1.65 "Cascadia Code", Consolas, monospace;
+    tab-size: 4;
+}
+.source-code.is-collapsed { display: none; }
+.source-code code { display: block; min-width: max-content; }
+.code-line { display: block; padding: 0 16px 0 0; white-space: pre; }
+.code-line::before {
+    content: attr(data-line); display: inline-block; width: 58px; margin-right: 14px; padding-right: 12px;
+    color: var(--code-line); border-right: 1px solid #2a3a35; text-align: right; user-select: none;
+}
+.line-notes { padding-left: 28px; }
+.line-notes li { margin: 8px 0; padding-left: 6px; }
+.line-notes code { color: var(--accent); background: var(--accent-soft); padding: 1px 5px; border-radius: 5px; }
+.quiz { margin: 10px 0; padding: 10px 14px; border: 1px solid var(--line); border-radius: 11px; background: var(--paper-2); }
+.quiz summary { cursor: pointer; font-weight: 700; }
+.coverage-list { padding: 14px 18px 14px 38px; border: 1px dashed var(--line); border-radius: 12px; color: var(--muted); }
+.coverage-list code { color: var(--ink); }
+.glossary {
+    width: min(1180px, calc(100% - 40px)); margin: 30px auto 50px; padding: clamp(22px, 4vw, 40px);
+    background: var(--paper); border: 1px solid var(--line); border-radius: 22px;
+}
+.glossary h2 { margin-top: 0; }
+#glossary-panel { display: flex; flex-wrap: wrap; gap: 8px; }
+.term-button { border: 1px solid var(--line); border-radius: 99px; background: var(--paper-2); padding: 6px 10px; cursor: pointer; }
+.term-button:hover { border-color: var(--accent); color: var(--accent); }
+.empty-state { padding: 34px; text-align: center; color: var(--muted); }
+.footer { padding: 24px 30px 40px; color: var(--muted); text-align: center; font-size: 12px; }
+body.all-code-collapsed .source-code { display: none; }
+@media (max-width: 1040px) {
+    .app-shell { grid-template-columns: 1fr; }
+    .sidebar { position: relative; height: auto; border-right: 0; border-bottom: 1px solid var(--line); }
+    #module-nav { grid-template-columns: repeat(2, 1fr); }
+    .architecture { grid-template-columns: 1fr 1fr; }
+    .arch-node::after { display: none; }
+}
+@media (max-width: 700px) {
+    body { font-size: 15px; }
+    .sidebar { padding: 16px; }
+    #module-nav, .notice-grid, .module-map, .architecture { grid-template-columns: 1fr; }
+    .hero { padding: 34px 20px 28px; }
+    .chapter, .lesson-section, .glossary { width: calc(100% - 20px); }
+    .lesson-section { padding: 20px 16px; }
+    .source-code { font-size: 12px; }
+}
+@media print {
+    .sidebar, .source-toolbar button { display: none !important; }
+    .app-shell { display: block; }
+    .lesson-section, .start-here { box-shadow: none; break-inside: avoid-page; content-visibility: visible; contain-intrinsic-size: auto; }
+    .source-code { max-height: none; }
+}
+</style>
+</head>
+<body>
+<div class="app-shell">
+<aside class="sidebar">
+    <div class="brand">
+        <div class="brand-mark">M0</div>
+        <div><strong>智能小车源码课</strong><small>从电平到任务状态机</small></div>
+    </div>
+    <div class="search-wrap">
+        <input id="tutorial-search" type="search" placeholder="搜索函数、术语或文件…" autocomplete="off">
+        <button id="clear-search" title="清空搜索">×</button>
+    </div>
+    <div id="search-result" class="search-result">可搜索全部讲解与源码</div>
+    <div class="progress-box">
+        <div class="progress-head"><span>学习进度</span><strong id="progress-text">0 / 10</strong></div>
+        <div class="progress-track"><div id="progress-bar"></div></div>
+    </div>
+    <div class="side-actions">
+        <button class="mini-button" id="toggle-theme">深色模式</button>
+        <button class="mini-button" id="toggle-all-code">折叠源码</button>
+    </div>
+    <ol id="module-nav"></ol>
+    <div class="side-foot"><!-- BUILD_INFO --><br>进度只保存在当前浏览器。</div>
+</aside>
+
+<main class="content">
+    <header class="hero">
+        <p class="eyebrow">MSPM0G3507 · C 语言 · 嵌入式控制</p>
+        <h1>不是“看过代码”，而是真正看懂这辆小车怎样运行</h1>
+        <p class="lead">这份教程从程序入口开始，沿着真实调用链逐层走到 GPIO、电机、传感器、控制算法、通信协议和比赛任务。每个模块都解释代码本身，也解释它为什么存在、由谁调用、改动后会牵动哪里。</p>
+        <div class="hero-meta">
+            <span class="chip">10 个学习模块</span>
+            <span class="chip">逐行源码注释</span>
+            <span class="chip">术语与生活化类比</span>
+            <span class="chip">完全离线可打开</span>
+            <span class="chip" id="reading-time">约 <!-- READING_MINUTES --> 分钟精读</span>
+        </div>
+    </header>
+
+    <section class="chapter start-here" id="start-here">
+        <p class="eyebrow">先建立全局地图</p>
+        <h2>读任何一行前，先知道数据和命令往哪走</h2>
+        <div class="notice-grid">
+            <div class="notice"><strong>源码才是当前事实</strong>README 是重要参考，但可能滞后。当前 <code>main.c</code> 实际加载的是 <code>AccomplishTest_GetMissionGraph()</code>。</div>
+            <div class="notice"><strong>100 Hz 是项目心跳</strong>SysTick 每 10 ms 产生一次节拍。传感、控制、任务和显示都围绕这个时间基准协作。</div>
+            <div class="notice"><strong>分层不是文件夹装饰</strong>Application 决定“做什么”，Hardware 负责“怎么碰硬件”，System 提供时间与中断基础。</div>
+        </div>
+        <h3>命令与所有权链：谁有权让谁做事</h3>
+        <div class="architecture" aria-label="命令与所有权链">
+            <div class="arch-node"><b>main</b><small>初始化后永远循环；只负责把 App 与 Mission 接起来。</small></div>
+            <div class="arch-node"><b>App</b><small>等待节拍、更新传感状态、通信、运动控制和调试输出。</small></div>
+            <div class="arch-node"><b>Mission</b><small>根据按键/串口事件和动作完成状态，决定下一项任务。</small></div>
+            <div class="arch-node"><b>MotionManager</b><small>统一选择直行、巡线、转向或制动，避免抢占电机。</small></div>
+            <div class="arch-node"><b>Hardware</b><small>最终读 GPIO/编码器/MPU6050，写 PWM/OLED/串口。</small></div>
+        </div>
+        <p class="branch-note">同时还有两条观察支线：<code>State → Telemetry → car_debug.html</code> 把运行数据送到电脑；<code>State → DebugDisplay → OLED</code> 把关键状态显示在车上。</p>
+        <p class="relation-chain"><strong>每个有效节拍的实际执行顺序：</strong><code>main → App_Update</code>（Heading → Odometry → 通信 → MotionManager → 遥测/OLED）<code>→ Mission_Update</code>。Mission 在本拍末尾决定下一动作；新命令会在随后节拍由 MotionManager 持续执行。因此上图表达“谁向谁下命令”，不是函数在一拍内的先后顺序。</p>
+        <p class="relation-chain">推荐顺序：01 运行骨架 → 02 板级 I/O → 03 状态感知 → 04 轮速闭环 → 05 运动行为 → 06 通信 → 07 可观测性 → 08 状态机引擎 → 09 具体任务 → 10 工具链</p>
+    </section>
+
+    <div id="no-results" class="chapter empty-state" hidden>没有模块包含这个关键词。试试文件名、函数名、PID、状态机或串口。</div>
+
+    <!-- MODULE_CONTENT -->
+
+    <section class="glossary" id="glossary">
+        <p class="eyebrow">随手复习</p>
+        <h2>专业术语索引</h2>
+        <p>点击术语会跳到它第一次出现的位置；再结合前后段落理解它在本项目中的具体含义。</p>
+        <div id="glossary-panel"></div>
+    </section>
+    <footer class="footer">教程基于工作区当前源码生成。修改固件后，请重新核对对应模块的行号、接口和调用关系。</footer>
+</main>
+</div>
+
+<script>
+(function () {
+    "use strict";
+    var sections = Array.from(document.querySelectorAll(".lesson-section"));
+    var nav = document.getElementById("module-nav");
+    var progressText = document.getElementById("progress-text");
+    var progressBar = document.getElementById("progress-bar");
+    var storageKey = "car-tutorial-completed-v1";
+
+    function readCompleted() {
+        try { return JSON.parse(localStorage.getItem(storageKey) || "[]"); }
+        catch (error) { return []; }
+    }
+
+    function saveCompleted(values) {
+        try { localStorage.setItem(storageKey, JSON.stringify(values)); }
+        catch (error) { /* file:// 隐私模式可能禁用存储，不影响阅读。 */ }
+    }
+
+    function updateProgress() {
+        var completed = sections.filter(function (section) {
+            var box = section.querySelector(".complete-check");
+            return box && box.checked;
+        }).map(function (section) { return section.id; });
+        progressText.textContent = completed.length + " / " + sections.length;
+        progressBar.style.width = (completed.length / Math.max(sections.length, 1) * 100) + "%";
+        saveCompleted(completed);
+    }
+
+    function buildNavigation() {
+        var completed = readCompleted();
+        sections.forEach(function (section, index) {
+            var title = section.dataset.title || section.querySelector("h2").textContent.trim();
+            var li = document.createElement("li");
+            var link = document.createElement("a");
+            link.href = "#" + section.id;
+            link.innerHTML = '<span class="nav-num">' + String(index + 1).padStart(2, "0") + '</span><span>' + title + '</span>';
+            li.dataset.target = section.id;
+            li.appendChild(link);
+            nav.appendChild(li);
+
+            var heading = section.querySelector("h2");
+            var checkbox = document.createElement("input");
+            checkbox.type = "checkbox";
+            checkbox.className = "complete-check";
+            checkbox.title = "标记本模块已学完";
+            checkbox.checked = completed.includes(section.id);
+            checkbox.addEventListener("change", updateProgress);
+            heading.prepend(checkbox);
+        });
+        updateProgress();
+    }
+
+    function decorateSourceBlock(code) {
+        if (code.dataset.decorated === "1") return;
+        code.dataset.decorated = "1";
+
+        var raw = code.textContent.replace(/^\n/, "").replace(/\n\s*$/, "");
+        var range = (code.dataset.lines || "1").split("-");
+        var start = Number(range[0]) || 1;
+        var fragment = document.createDocumentFragment();
+        raw.split("\n").forEach(function (line, index) {
+            var span = document.createElement("span");
+            span.className = "code-line";
+            span.dataset.line = String(start + index);
+            span.textContent = line || " ";
+            fragment.appendChild(span);
+        });
+        code.textContent = "";
+        code.appendChild(fragment);
+
+        var pre = code.parentElement;
+        var wrap = document.createElement("div");
+        wrap.className = "source-wrap";
+        pre.parentNode.insertBefore(wrap, pre);
+        wrap.appendChild(pre);
+
+        var toolbar = document.createElement("div");
+        toolbar.className = "source-toolbar";
+        var sourceName = document.createElement("span");
+        sourceName.className = "source-name";
+        sourceName.textContent = (code.dataset.source || "源码") + " · " + (code.dataset.lines || "");
+        var copy = document.createElement("button");
+        copy.type = "button";
+        copy.textContent = "复制";
+        copy.addEventListener("click", function () {
+            navigator.clipboard.writeText(raw).then(function () {
+                copy.textContent = "已复制";
+                window.setTimeout(function () { copy.textContent = "复制"; }, 1000);
+            }).catch(function () { copy.textContent = "复制失败"; });
+        });
+        var toggle = document.createElement("button");
+        toggle.type = "button";
+        toggle.textContent = "折叠";
+        toggle.addEventListener("click", function () {
+            pre.classList.toggle("is-collapsed");
+            toggle.textContent = pre.classList.contains("is-collapsed") ? "展开" : "折叠";
+        });
+        toolbar.appendChild(sourceName);
+        toolbar.appendChild(copy);
+        toolbar.appendChild(toggle);
+        wrap.insertBefore(toolbar, pre);
+    }
+
+    function decorateSourceBlocks() {
+        var codeSections = sections.filter(function (section) {
+            return section.querySelector("pre.source-code > code") !== null;
+        });
+        function decorateSection(section) {
+            section.querySelectorAll("pre.source-code > code").forEach(decorateSourceBlock);
+        }
+        if (!("IntersectionObserver" in window)) {
+            codeSections.forEach(decorateSection);
+            return;
+        }
+        var sectionObserver = new IntersectionObserver(function (entries) {
+            entries.forEach(function (entry) {
+                if (!entry.isIntersecting) return;
+                sectionObserver.unobserve(entry.target);
+                decorateSection(entry.target);
+            });
+        }, { rootMargin: "350px 0px" });
+        codeSections.forEach(function (section) { sectionObserver.observe(section); });
+    }
+
+    function setupSearch() {
+        var input = document.getElementById("tutorial-search");
+        var result = document.getElementById("search-result");
+        var empty = document.getElementById("no-results");
+        var searchTimer = 0;
+        var searchCache = new Map();
+        function searchableText(section) {
+            if (!searchCache.has(section)) {
+                searchCache.set(section, section.textContent.toLocaleLowerCase("zh-CN"));
+            }
+            return searchCache.get(section);
+        }
+        function applySearch() {
+            var term = input.value.trim().toLocaleLowerCase("zh-CN");
+            var visible = 0;
+            sections.forEach(function (section) {
+                var match = !term || searchableText(section).includes(term);
+                section.classList.toggle("search-hidden", !match);
+                var item = nav.querySelector('[data-target="' + section.id + '"]');
+                if (item) item.classList.toggle("search-hidden", !match);
+                if (match) visible += 1;
+            });
+            empty.hidden = visible !== 0;
+            result.textContent = term ? "找到 " + visible + " 个相关模块" : "可搜索全部讲解与源码";
+        }
+        input.addEventListener("input", function () {
+            window.clearTimeout(searchTimer);
+            searchTimer = window.setTimeout(applySearch, 140);
+        });
+        document.getElementById("clear-search").addEventListener("click", function () {
+            input.value = "";
+            input.focus();
+            applySearch();
+        });
+    }
+
+    function setupGlossary() {
+        var panel = document.getElementById("glossary-panel");
+        var terms = new Map();
+        document.querySelectorAll("dfn[data-term]").forEach(function (node) {
+            var key = node.dataset.term.trim();
+            if (key && !terms.has(key)) terms.set(key, node);
+        });
+        Array.from(terms.keys()).sort(function (a, b) {
+            return a.localeCompare(b, "zh-CN");
+        }).forEach(function (term) {
+            var button = document.createElement("button");
+            button.type = "button";
+            button.className = "term-button";
+            button.textContent = term;
+            button.addEventListener("click", function () {
+                var target = terms.get(term);
+                target.scrollIntoView({ behavior: "auto", block: "center" });
+                target.animate([
+                    { backgroundColor: "transparent" },
+                    { backgroundColor: "var(--warm-soft)" },
+                    { backgroundColor: "transparent" }
+                ], { duration: 1300 });
+            });
+            panel.appendChild(button);
+        });
+    }
+
+    function setupLazyGlossary() {
+        var glossary = document.getElementById("glossary");
+        if (!("IntersectionObserver" in window)) {
+            window.setTimeout(setupGlossary, 200);
+            return;
+        }
+        var observer = new IntersectionObserver(function (entries) {
+            if (!entries.some(function (entry) { return entry.isIntersecting; })) return;
+            observer.disconnect();
+            setupGlossary();
+        }, { rootMargin: "800px 0px" });
+        observer.observe(glossary);
+    }
+
+    function setupActiveSection() {
+        if (!("IntersectionObserver" in window)) return;
+        var observer = new IntersectionObserver(function (entries) {
+            entries.forEach(function (entry) {
+                if (!entry.isIntersecting) return;
+                nav.querySelectorAll("a").forEach(function (link) {
+                    link.classList.toggle("active", link.getAttribute("href") === "#" + entry.target.id);
+                });
+            });
+        }, { rootMargin: "-20% 0px -70% 0px" });
+        sections.forEach(function (section) { observer.observe(section); });
+    }
+
+    function setupGlobalControls() {
+        var themeButton = document.getElementById("toggle-theme");
+        var codeButton = document.getElementById("toggle-all-code");
+        var savedTheme = "";
+        try { savedTheme = localStorage.getItem("car-tutorial-theme") || ""; } catch (error) {}
+        if (savedTheme === "dark") document.documentElement.dataset.theme = "dark";
+        themeButton.textContent = document.documentElement.dataset.theme === "dark" ? "浅色模式" : "深色模式";
+        themeButton.addEventListener("click", function () {
+            var dark = document.documentElement.dataset.theme !== "dark";
+            document.documentElement.dataset.theme = dark ? "dark" : "light";
+            themeButton.textContent = dark ? "浅色模式" : "深色模式";
+            try { localStorage.setItem("car-tutorial-theme", dark ? "dark" : "light"); } catch (error) {}
+        });
+        codeButton.addEventListener("click", function () {
+            document.body.classList.toggle("all-code-collapsed");
+            var collapsed = document.body.classList.contains("all-code-collapsed");
+            codeButton.textContent = collapsed ? "展开源码" : "折叠源码";
+        });
+    }
+
+    buildNavigation();
+    decorateSourceBlocks();
+    setupSearch();
+    setupLazyGlossary();
+    setupActiveSection();
+    setupGlobalControls();
+}());
+</script>
+</body>
+</html>

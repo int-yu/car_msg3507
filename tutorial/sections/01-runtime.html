@@ -1,0 +1,589 @@
+<section class="lesson-section" id="module-01" data-title="从 main 到 100Hz 主循环：启动、节拍与 App 总调度" data-group="运行骨架">
+  <h2>模块 01：从 main 到 100Hz 主循环——启动、节拍与 App 总调度</h2>
+  <p class="lesson-lead">这一节先不钻进巡线、转向或通信协议内部，而是回答最关键的问题：程序从哪里开始，为什么大约每 10 ms 工作一次，所有子系统按什么顺序协作，以及数据怎样从 <code>App</code> 交给 <code>Mission</code>。</p>
+
+  <div class="module-map">
+    <h3>1. 先看它在整车中的位置</h3>
+    <dl>
+      <dt>一句话职责</dt>
+      <dd>建立整车运行环境，收集 100Hz 系统节拍，把传感、通信、运动、提示和显示串成一次完整更新，再把本周期事件交给任务状态机。</dd>
+      <dt>上游输入</dt>
+      <dd>SysTick 中断产生的节拍、GPIO 按键状态、UART/K230 数据、陀螺仪和编码器数据、运动模块错误。</dd>
+      <dt>下游输出</dt>
+      <dd><code>App_UpdateContext_t</code> 时间/事件快照、运动更新、急停、蜂鸣、遥测、OLED 刷新，以及对 <code>Mission_Update()</code> 的调用许可。</dd>
+      <dt>依赖模块</dt>
+      <dd>SysConfig、Tick、Interrupt、板级驱动、通信、状态估计、MotionManager、调试显示和遥测。</dd>
+      <dt>调用者</dt>
+      <dd><code>main()</code> 调用 <code>App_Init()</code> 和 <code>App_Update()</code>；硬件在固定时刻调用 <code>SysTick_Handler()</code>。</dd>
+      <dt>总体位置</dt>
+      <dd><code>main → App → Mission → MotionManager → Hardware</code> 是<strong>命令与所有权关系</strong>：Mission 通过 MotionManager 请求动作。单个有效节拍的真实执行顺序是 <code>App_Update()</code> 先更新状态、通信和 MotionManager，返回后 main 才调用 <code>Mission_Update()</code> 决定下一动作。App 同时向通信、蜂鸣、遥测和显示支线分发时间。</dd>
+    </dl>
+  </div>
+
+  <h3>2. 初学者需要先知道</h3>
+  <ul>
+    <li><dfn data-term="#include">包含</dfn>：让当前源文件先看见另一个头文件里的类型、宏和函数声明，像在写正文前拿到“名词表”。它不会自动调用任何函数。</li>
+    <li><dfn data-term="entry point">程序入口</dfn>：单片机完成更底层的复位启动后进入 <code>main()</code>，这里是本项目 C 代码的总入口。</li>
+    <li><dfn data-term="IRQ / interrupt">中断</dfn>：硬件事件到来时暂时打断主程序，先执行一个很短的处理函数，再回到原位置。SysTick 每 10 ms 触发一次中断。</li>
+    <li><dfn data-term="ISR">中断服务函数</dfn>：专门响应中断的函数；本模块的 <code>SysTick_Handler()</code> 只负责累计节拍，不在中断里运行复杂业务。</li>
+    <li><dfn data-term="struct">结构体</dfn>：把多种相关数据装进一个有名字的“表格”。<code>App_UpdateContext_t</code> 就是一张交给 Mission 的本周期快照。</li>
+    <li><dfn data-term="pointer">指针</dfn>：保存内存地址的变量。<code>&amp;updateContext</code> 取得结构体地址，让 <code>App_Update()</code> 能直接填写 main 中的那一份结构体。</li>
+    <li><dfn data-term="NULL">空指针</dfn>：表示“没有指向有效对象”。函数先检查它，避免通过无效地址写内存。</li>
+    <li><dfn data-term="static">静态/文件私有</dfn>：在文件作用域使用时，名字只对本 <code>.c</code> 文件可见，同时变量在整个运行期间一直存在。</li>
+    <li><dfn data-term="volatile">易变对象</dfn>：提醒编译器该变量可能被中断异步修改，每次都要真正读写内存；它不等于线程安全，也不能代替关中断保护。</li>
+    <li><dfn data-term="bit mask">位掩码</dfn>：用一个整数的不同二进制位表示多个开关。本项目用 bit0～bit3 表示四个按键。</li>
+    <li><dfn data-term="edge">边沿</dfn>：状态从“未按”变化到“按下”的那一瞬间；与一直保持为 1 的“电平状态”不同。</li>
+    <li><dfn data-term="dt / delta time">时间增量</dfn>：两次有效更新之间实际过去的秒数，控制和积分算法不能假定主循环永远只漏过 0 个节拍。</li>
+    <li><code>100U</code> 的 <code>U</code> 表示无符号整数，<code>0.01f</code> 的 <code>f</code> 表示单精度浮点数；这些后缀让常量类型与变量/接口更一致。</li>
+  </ul>
+
+  <h3>3. 文件导读</h3>
+  <table>
+    <thead><tr><th>文件</th><th>为什么存在</th><th>公开与私有分工</th></tr></thead>
+    <tbody>
+      <tr><td><code>main.c</code></td><td>规定启动顺序和永不退出的顶层循环。</td><td>只做最高层编排，不实现具体驱动。</td></tr>
+      <tr><td><code>System/Tick.h/.c</code></td><td>把硬件 SysTick 中断变成主循环可取走的“累计节拍数”。</td><td>头文件公开频率、时间步长和查询函数；源文件隐藏计数器并实现 ISR。</td></tr>
+      <tr><td><code>System/Interrupt.h/.c</code></td><td>把全局开/关中断包装成语义清楚的项目接口。</td><td>公开两个操作；实现调用 ARM 内核指令。</td></tr>
+      <tr><td><code>System/Delay.h/.c</code></td><td>提供微秒、毫秒、秒级阻塞等待。</td><td>它是工具模块，不负责 100Hz 主循环调度。</td></tr>
+      <tr><td><code>Application/Core/App.h/.c</code></td><td>初始化所有基础模块，并在每次有效节拍中按固定顺序调度它们。</td><td>头文件公开上下文结构和两个入口；源文件保存“上一拍”状态与具体流水线。</td></tr>
+    </tbody>
+  </table>
+  <p class="pitfall"><strong>先纠正文档差异：</strong>README 的旧说明仍写着默认装载 <code>Accomplish25H_GetMissionGraph()</code>，甚至说 Test 只应临时启用；但当前真正参与编译的 <code>main.c</code> 第 1 行包含 <code>Accomplish/Test.h</code>，第 11 行调用 <code>AccomplishTest_GetMissionGraph()</code>。因此当前固件实际运行的是刹车测试任务图，而不是 README 描述的 25H。判断“现在烧进去什么程序”时，应以当前源码和构建配置为准。</p>
+
+  <h3>4. 逐行讲解</h3>
+  <h4>4.1 <code>main.c</code>：启动顺序和永久循环</h4>
+  <pre class="source-code"><code data-source="main.c" data-lines="1-12">#include "Accomplish/Test.h"
+#include "Application/Core/App.h"
+#include "Application/Mission/Mission.h"
+#include "System/Interrupt.h"
+
+int main(void)
+{
+    App_UpdateContext_t updateContext;
+
+    App_Init();
+    Mission_Init(AccomplishTest_GetMissionGraph());
+    Interrupt_Enable();</code></pre>
+  <ol class="line-notes">
+    <li><strong>第 1 行：</strong>取得刹车测试任务图的函数声明。这一行已经是“当前加载 Test”的第一份直接证据。</li>
+    <li><strong>第 2～4 行：</strong>分别取得 App 总调度、Mission 状态机和全局中断接口。main 只依赖公开头文件，不需要知道它们的内部变量。</li>
+    <li><strong>第 6～7 行：</strong><code>int main(void)</code> 表示函数不接收参数、返回整数；在单片机中正常情况下不会走到返回。花括号圈出函数体。</li>
+    <li><strong>第 8 行：</strong>在 main 的栈空间创建一份上下文结构体。此时字段还没有有效业务含义，稍后由 <code>App_Update()</code> 填写。</li>
+    <li><strong>第 10 行：</strong>先初始化硬件、状态估计、通信、运动管理和显示等基础设施。</li>
+    <li><strong>第 11 行：</strong>先调用 <code>AccomplishTest_GetMissionGraph()</code> 取得测试任务图地址，再把它交给 Mission 初始化。这里不是 25H。</li>
+    <li><strong>第 12 行：</strong>最后统一打开全局硬件中断。这样能避免初始化到一半时，串口、编码器或 SysTick 的 ISR 就开始使用尚未准备好的状态。</li>
+  </ol>
+
+  <pre class="source-code"><code data-source="main.c" data-lines="14-21">    for (;;)
+    {
+        if (App_Update(&amp;updateContext) != 0U)
+        {
+            Mission_Update(&amp;updateContext);
+        }
+    }
+}</code></pre>
+  <ol class="line-notes">
+    <li><strong>第 14～15 行：</strong><code>for (;;)</code> 省略初始化、条件和步进，因此条件永远不会变成假；这是单片机常见的无限循环，固件会一直值守。</li>
+    <li><strong>第 16 行：</strong><code>&amp;</code> 取得 <code>updateContext</code> 地址。App 若完成一次有效节拍更新便返回非零；若无节拍或参数无效则返回 0。</li>
+    <li><strong>第 17～19 行：</strong>只有 App 已经更新好时间、按键和通信事件后，Mission 才读取同一份上下文。这样 Mission 不会在没有新时间片时空转。</li>
+    <li><strong>第 20～21 行：</strong>闭合循环和 main。源码没有 <code>return</code>，因为设计目标就是永久运行。</li>
+  </ol>
+
+  <h4>4.2 <code>System/Tick.h</code>：100Hz 时间契约</h4>
+  <pre class="source-code"><code data-source="System/Tick.h" data-lines="1-13">#ifndef TICK_H
+#define TICK_H
+
+#include &lt;stdint.h&gt;
+
+#define TICK_HZ 100U
+#define TICK_DT 0.01f
+
+void Tick_Init(void);
+uint8_t Tick_Poll(void);
+uint8_t Tick_PollCount(void);
+
+#endif</code></pre>
+  <ol class="line-notes">
+    <li><strong>第 1～2、13 行：</strong>这是头文件保护。第一次包含时定义 <code>TICK_H</code>，以后再次包含便跳过正文，避免重复声明。</li>
+    <li><strong>第 4 行：</strong>引入固定宽度整数类型；<code>uint8_t</code> 是 8 位无符号整数，范围 0～255。</li>
+    <li><strong>第 6 行：</strong>声明系统节拍频率为每秒 100 次。对应周期是 <code>1 / 100 = 0.01</code> 秒，即 10 ms。</li>
+    <li><strong>第 7 行：</strong>直接给出一个节拍对应的秒数，供浮点时间算法使用。<code>TICK_HZ</code> 与 <code>TICK_DT</code> 必须保持互为倒数。</li>
+    <li><strong>第 9 行：</strong>声明计数器和 SysTick 当前值的复位函数。</li>
+    <li><strong>第 10 行：</strong>声明布尔式查询：只回答“有没有至少一拍”，会舍弃具体累计数量。</li>
+    <li><strong>第 11 行：</strong>声明计数式查询：原子取出从上次查询以来累计的节拍数；当前 App 使用的是它。</li>
+  </ol>
+  <p>硬件配置还必须与这两个宏一致。当前 <code>main.syscfg</code> 把 SysTick 周期设为 320000；CPU 为 32MHz，因此 <code>32,000,000 / 320,000 = 100Hz</code>。宏只是软件约定，真正的中断速度来自硬件配置。</p>
+
+  <h4>4.3 <code>System/Tick.c</code>：中断累计与安全取走</h4>
+  <pre class="source-code"><code data-source="System/Tick.c" data-lines="1-14">#include "System/Tick.h"
+#include "ti_msp_dl_config.h"
+
+static volatile uint8_t s_tickCount;
+
+void Tick_Init(void)
+{
+    uint32_t primask = __get_PRIMASK();
+    __disable_irq();
+    s_tickCount = 0U;
+    SysTick-&gt;VAL = 0U;
+    SCB-&gt;ICSR = SCB_ICSR_PENDSTCLR_Msk;
+    __set_PRIMASK(primask);
+}</code></pre>
+  <ol class="line-notes">
+    <li><strong>第 1～2 行：</strong>先取得本模块接口，再取得 TI 生成的芯片寄存器、时钟宏和 ARM 内核函数声明。</li>
+    <li><strong>第 4 行：</strong><code>s_tickCount</code> 是文件私有、全程存在的 8 位计数器；<code>volatile</code> 是因为主循环和中断都会访问它。前缀 <code>s_</code> 是项目对静态变量的命名习惯。</li>
+    <li><strong>第 6～7 行：</strong>开始节拍复位函数。</li>
+    <li><strong>第 8 行：</strong>读取 <dfn data-term="PRIMASK">全局中断屏蔽状态</dfn>。它记录调用本函数前中断本来是开还是关。</li>
+    <li><strong>第 9 行：</strong>临时屏蔽普通硬件中断，进入很短的<dfn data-term="critical section">临界区</dfn>，避免复位进行一半时 SysTick ISR 插入。</li>
+    <li><strong>第 10 行：</strong>清空软件累计值。</li>
+    <li><strong>第 11 行：</strong>向 SysTick 当前计数值寄存器写 0，让硬件计时从一个干净起点重新装载。</li>
+    <li><strong>第 12 行：</strong>向系统控制块的中断状态寄存器写“清除 SysTick 挂起位”掩码，丢掉复位前已经等待处理的一次 SysTick。</li>
+    <li><strong>第 13～14 行：</strong>恢复进入函数前的 PRIMASK，而不是无条件开中断。因此 App 初始化期间调用 <code>Tick_Init()</code> 后，中断仍能保持关闭。</li>
+  </ol>
+
+  <pre class="source-code"><code data-source="System/Tick.c" data-lines="16-27">uint8_t Tick_PollCount(void)
+{
+    uint8_t count;
+    uint32_t primask = __get_PRIMASK();
+    __disable_irq();
+    count = s_tickCount;
+    s_tickCount = 0U;
+    __set_PRIMASK(primask);
+    return count;
+}
+
+uint8_t Tick_Poll(void) { return (Tick_PollCount() != 0U) ? 1U : 0U; }</code></pre>
+  <ol class="line-notes">
+    <li><strong>第 16～18 行：</strong>函数返回累计拍数，并准备局部变量 <code>count</code> 保存快照。</li>
+    <li><strong>第 19～20 行：</strong>保存原中断状态后进入临界区。</li>
+    <li><strong>第 21～22 行：</strong>先复制、再清零，语义像“取走邮箱中的全部节拍”。这两行必须不可被 SysTick ISR 插入；否则 ISR 在复制和清零之间加的一拍会被错误清掉。</li>
+    <li><strong>第 23～25 行：</strong>恢复原中断状态并返回快照。临界区只包含必要操作，尽量减少中断延迟。</li>
+    <li><strong>第 27 行：</strong>三目运算符 <code>条件 ? 值1 : 值2</code> 把累计数转换成 1 或 0。它内部也会清空计数；当前 App 不用该接口，因为 App 需要知道漏过了几拍。</li>
+  </ol>
+
+  <pre class="source-code"><code data-source="System/Tick.c" data-lines="29-32">void SysTick_Handler(void)
+{
+    if (s_tickCount &lt; 255U) s_tickCount++;
+}</code></pre>
+  <ol class="line-notes">
+    <li><strong>第 29～30 行：</strong>函数名由芯片启动文件/中断向量表约定；SysTick 到期时硬件自动跳到这里。</li>
+    <li><strong>第 31 行：</strong>若没到 255 就加 1；到 255 后保持不变，称为<dfn data-term="saturation">饱和计数</dfn>。这样不会从 255 溢出回 0，把“积压很多拍”误报成“没有拍”。</li>
+    <li><strong>第 32 行：</strong>ISR 到此立即结束。中断只记账，复杂更新留给主循环，降低中断占用时间。</li>
+  </ol>
+
+  <h4>4.4 <code>System/Interrupt.h/.c</code>：统一开关全局中断</h4>
+  <pre class="source-code"><code data-source="System/Interrupt.h" data-lines="1-8">#ifndef SYSTEM_INTERRUPT_H
+#define SYSTEM_INTERRUPT_H
+
+/* 所有驱动和 Mission 初始化完成后，统一开启全局硬件中断。 */
+void Interrupt_Enable(void);
+void Interrupt_Disable(void);
+
+#endif</code></pre>
+  <ol class="line-notes">
+    <li><strong>第 1～2、8 行：</strong>头文件保护。</li>
+    <li><strong>第 4 行：</strong>把项目级规则写在公开接口旁：初始化完成前不允许全局中断介入。</li>
+    <li><strong>第 5～6 行：</strong>分别公开开、关中断函数。它们控制的是 CPU 全局接收，而不是删除某个外设的配置。</li>
+  </ol>
+  <pre class="source-code"><code data-source="System/Interrupt.c" data-lines="1-12">#include "System/Interrupt.h"
+#include "ti_msp_dl_config.h"
+
+void Interrupt_Enable(void)
+{
+    __enable_irq();
+}
+
+void Interrupt_Disable(void)
+{
+    __disable_irq();
+}</code></pre>
+  <ol class="line-notes">
+    <li><strong>第 1～2 行：</strong>取得项目声明和 ARM/TI 内核指令声明。</li>
+    <li><strong>第 4～7 行：</strong><code>Interrupt_Enable()</code> 用 <code>__enable_irq()</code> 清除全局屏蔽，使已配置且获准的外设中断能够响应。</li>
+    <li><strong>第 9～12 行：</strong><code>Interrupt_Disable()</code> 设置全局屏蔽。已经挂起的中断通常不会因此被删除，重新开启后仍可能立刻响应。</li>
+  </ol>
+
+  <h4>4.5 <code>System/Delay.h/.c</code>：阻塞延时不是调度节拍</h4>
+  <pre class="source-code"><code data-source="System/Delay.h" data-lines="1-10">#ifndef DELAY_H
+#define DELAY_H
+
+#include &lt;stdint.h&gt;
+
+void Delay_us(uint32_t us);
+void Delay_ms(uint32_t ms);
+void Delay_s(uint32_t s);
+
+#endif</code></pre>
+  <ol class="line-notes">
+    <li><strong>第 1～4、10 行：</strong>头文件保护并引入 <code>uint32_t</code>。</li>
+    <li><strong>第 6～8 行：</strong>公开微秒、毫秒、秒三个等待接口；参数是 32 位无符号数，不能表达负时间。</li>
+  </ol>
+  <pre class="source-code"><code data-source="System/Delay.c" data-lines="1-18">#include "System/Delay.h"
+#include "ti_msp_dl_config.h"
+
+void Delay_us(uint32_t us)
+{
+    const uint32_t cyclesPerUs = CPUCLK_FREQ / 1000000U;
+    while (us-- &gt; 0U) delay_cycles(cyclesPerUs);
+}
+
+void Delay_ms(uint32_t ms)
+{
+    while (ms-- &gt; 0U) Delay_us(1000U);
+}
+
+void Delay_s(uint32_t s)
+{
+    while (s-- &gt; 0U) Delay_ms(1000U);
+}</code></pre>
+  <ol class="line-notes">
+    <li><strong>第 1～2 行：</strong>取得函数声明，以及生成配置中的 <code>CPUCLK_FREQ</code> 与 <code>delay_cycles()</code>。</li>
+    <li><strong>第 4～6 行：</strong>进入微秒延时，并计算 1 微秒含多少 CPU 周期；当前 32MHz 下为 32 个周期。<code>const</code> 表示此局部值计算后不再修改。</li>
+    <li><strong>第 7 行：</strong><code>us--</code> 是先用旧值比较、再减 1；每个微秒执行一次忙等。传 0 时循环体不执行。CPU 在等待期间不能去做 App/Mission，所以它是<dfn data-term="blocking delay">阻塞延时</dfn>。</li>
+    <li><strong>第 10～13 行：</strong>毫秒函数把 1ms 拆成 1000 次 1μs 延时，并重复 <code>ms</code> 次。</li>
+    <li><strong>第 15～18 行：</strong>秒函数再把 1s 拆成 1000 次 1ms 延时。层层复用简单，但长延时会长期占住主循环。</li>
+  </ol>
+  <p class="pitfall"><strong>不要用 <code>Delay_ms(10)</code> 代替 100Hz 调度。</strong>Delay 是“站在原地等”，Tick 是“硬件定时打铃并累计迟到次数”。主循环若因串口或算法忙了 30ms，Tick 能报告约 3 拍；固定 Delay 无法补偿真实耗时。</p>
+
+  <h4>4.6 <code>Application/Core/App.h</code>：交给 Mission 的快照</h4>
+  <pre class="source-code"><code data-source="Application/Core/App.h" data-lines="1-20">#ifndef APPLICATION_CORE_APP_H
+#define APPLICATION_CORE_APP_H
+
+#include &lt;stdint.h&gt;
+
+/* 每次有效系统更新提供给 Mission 的只读事件和时间数据。 */
+typedef struct
+{
+    uint8_t elapsedTicks;
+    float dt;
+    uint8_t pressedKeys;
+    uint8_t pressedEdges;
+    uint8_t hasBluetoothSignal;
+    uint8_t bluetoothSignal;
+} App_UpdateContext_t;
+
+void App_Init(void);
+uint8_t App_Update(App_UpdateContext_t *context);
+
+#endif</code></pre>
+  <ol class="line-notes">
+    <li><strong>第 1～4、20 行：</strong>头文件保护并引入固定宽度整数。</li>
+    <li><strong>第 6 行：</strong>“只读”是使用约定：App 填写，Mission 接收 <code>const App_UpdateContext_t *</code> 后只读取。</li>
+    <li><strong>第 7～8、15 行：</strong><code>typedef struct { ... } App_UpdateContext_t</code> 定义一个匿名结构体，再给它取类型别名。以后可直接写 <code>App_UpdateContext_t x;</code>。</li>
+    <li><strong>第 9 行：</strong>从上次成功查询后累计了几拍，1 通常表示 10ms，3 表示约 30ms。</li>
+    <li><strong>第 10 行：</strong>同一时间用秒表示，计算式为 <code>elapsedTicks × 0.01f</code>。</li>
+    <li><strong>第 11 行：</strong>当前仍处于按下状态的按键位图，适合“按住期间持续生效”。</li>
+    <li><strong>第 12 行：</strong>本次新按下的按键位图，适合“一次按下只触发一次任务”。</li>
+    <li><strong>第 13～14 行：</strong>前者说明本拍是否弹出了一条 UART1 任务信号，后者才是信号值。分成两个字段后，合法的信号 0 不会与“没有信号”混淆。</li>
+    <li><strong>第 17 行：</strong>公开一次性初始化入口。</li>
+    <li><strong>第 18 行：</strong>参数是可写结构体指针；返回 8 位值作为成功/无更新标志。</li>
+  </ol>
+
+  <h4>4.7 <code>Application/Core/App.c</code>：依赖与私有历史状态</h4>
+  <pre class="source-code"><code data-source="Application/Core/App.c" data-lines="1-21">#include "Application/Core/App.h"
+#include "Application/Comms/BluetoothDebug.h"
+#include "Application/Comms/K230Link.h"
+#include "Application/Control/MotionManager.h"
+#include "Application/Debug/DebugDisplay.h"
+#include "Application/Debug/Capture.h"
+#include "Application/Debug/Telemetry.h"
+#include "Application/Servo/Servo.h"
+#include "Application/State/Heading.h"
+#include "Application/State/Odometry.h"
+#include "Hardware/Board/Beep.h"
+#include "Hardware/Board/Key.h"
+#include "Hardware/Board/LED.h"
+#include "Hardware/Comms/Serial.h"
+#include "Hardware/Motor/Motor.h"
+#include "Hardware/Sensors/Graydetect.h"
+#include "System/Tick.h"
+#include "ti_msp_dl_config.h"
+#include &lt;stddef.h&gt;
+
+static uint8_t s_previousKeyMask;</code></pre>
+  <ol class="line-notes">
+    <li><strong>第 1 行：</strong>让实现与自己的公开声明保持一致。</li>
+    <li><strong>第 2～3 行：</strong>引入 UART1 调试命令和 K230 UART2 链路；名称 <code>BluetoothDebug</code> 是历史命名，当前 README 说明其物理链路为无线 DAPLink 串口。</li>
+    <li><strong>第 4～9 行：</strong>引入运动总管、OLED 调试页、遥测、舵机、航向和里程；这些是应用层子系统。</li>
+    <li><strong>第 10～15 行：</strong>引入蜂鸣、按键、LED、串口、电机和灰度检测等硬件层接口。</li>
+    <li><strong>第 16～18 行：</strong>取得 Tick、TI 生成配置和标准 <code>NULL</code> 定义。</li>
+    <li><strong>第 20 行：</strong>保存上一拍按键位图，只有同时知道“上次”和“这次”才能计算边沿。</li>
+    <li><strong>第 21 行：</strong><code>MotionManager_Error_t</code> 是运动模块定义的<dfn data-term="enum">枚举类型</dfn>；这里保存上一次错误，用于只在错误变化时报警。</li>
+  </ol>
+
+  <pre class="source-code"><code data-source="Application/Core/App.c" data-lines="24-34">static void App_ReportMotionError(void)
+{
+    MotionManager_Error_t error = MotionManager_GetError();
+
+    if ((error != MOTION_MANAGER_ERROR_NONE) &amp;&amp;
+        (error != s_previousMotionError))
+    {
+        Beep_Long();
+    }
+    s_previousMotionError = error;
+}</code></pre>
+  <ol class="line-notes">
+    <li><strong>第 23～24 行：</strong>文件私有辅助函数，不允许其他模块直接调用；返回 <code>void</code>，即不返回值。</li>
+    <li><strong>第 25 行：</strong>读取运动总管当前错误并保存到局部变量，保证本次判断使用同一份快照。</li>
+    <li><strong>第 27～28 行：</strong><code>&amp;&amp;</code> 表示两个条件同时成立：确实有错，而且不是上一拍已经报过的同一个错。</li>
+    <li><strong>第 29～31 行：</strong>新错误出现时触发一次长鸣；不会在每个 10ms 周期连续重触发。</li>
+    <li><strong>第 32～33 行：</strong>无论有错、恢复还是换错，都更新“上次错误”，为下一拍比较做准备。</li>
+  </ol>
+
+  <h4>4.8 <code>App_Init()</code>：先关闭中断，再从底到顶搭系统</h4>
+  <pre class="source-code"><code data-source="Application/Core/App.c" data-lines="36-72">void App_Init(void)
+{
+    __disable_irq();
+
+    SYSCFG_DL_init();
+    Tick_Init();
+
+    LED_Init();
+    Beep_Init();
+    Key_Init();
+    Graydetect_Init();
+    Motor_Init();
+    Servo_Init();
+    Serial1_Init();
+    K230Link_Init();
+    Odometry_Init();
+
+    DebugDisplay_Init();
+    Heading_Init();
+    DebugDisplay_ShowHeadingCalibration(Heading_IsReady());
+    Heading_Calibrate();
+
+    /* 标定期间全局中断保持关闭，从正式流程的零时刻重新开始计数。 */
+    Tick_Init();
+    Odometry_Reset();
+
+    BluetoothDebug_Init();
+    Telemetry_Init();
+    Capture_Init();
+    if (MotionManager_Init() != MOTION_MANAGER_RESULT_OK)
+    {
+        Beep_Long();
+    }
+
+    s_previousKeyMask = Key_GetPressedMask();
+    s_previousMotionError = MotionManager_GetError();
+    DebugDisplay_Update(DEBUG_DISPLAY_REFRESH_TICKS);</code></pre>
+  <ol class="line-notes">
+    <li><strong>第 35～37 行：</strong>初始化一开始直接关闭全局中断。即使复位默认状态或别处设置变化，也明确建立安全前提。</li>
+    <li><strong>第 39 行：</strong>执行 SysConfig 生成的总初始化，配置时钟、GPIO、UART、PWM、SysTick 等底层外设。</li>
+    <li><strong>第 40 行：</strong>清零软件 Tick、SysTick 当前值和挂起状态。它会恢复进入前“中断关闭”的状态，不会偷偷开中断。</li>
+    <li><strong>第 42～50 行：</strong>按顺序准备板级输出、输入、传感器、电机、舵机、串口/K230 和编码器里程。原则是先有底层硬件，再让高层逻辑使用它。</li>
+    <li><strong>第 52 行：</strong>初始化 OLED 调试显示。</li>
+    <li><strong>第 53 行：</strong>初始化 MPU6050 航向模块。</li>
+    <li><strong>第 54 行：</strong>先查询传感器是否就绪，再在屏幕上显示标定状态，让人知道接下来要保持小车静止。</li>
+    <li><strong>第 55 行：</strong>阻塞执行陀螺仪零偏标定；根据 Heading 头文件，当前采集 400 个样本。标定阶段还没有正式运行 Mission。</li>
+    <li><strong>第 57～59 行：</strong>标定结束后再次把节拍和里程归零，使“正式流程第 0 秒”不包含初始化/标定耗时。</li>
+    <li><strong>第 61～62 行：</strong>初始化 UART1 调试命令解析器和 CSV 遥测。</li>
+    <li><strong>第 63～66 行：</strong>初始化统一运动调度层；返回值不是 OK 时长鸣报警，但初始化函数仍继续完成，错误状态之后还会被 App/Mission 检查。</li>
+    <li><strong>第 68 行：</strong>用当前真实按键状态初始化“上一拍”。若上电时按键已经按住，它不会被误算成刚按下边沿。</li>
+    <li><strong>第 69 行：</strong>同步初始运动错误，避免第一次更新把初始化期已有状态误当成“刚出现的新变化”。</li>
+    <li><strong>第 70～71 行：</strong>传入一个完整刷新周期，主动生成第一屏内容，然后结束 App 初始化。全局中断仍关闭，稍后由 main 第 12 行统一开启。</li>
+  </ol>
+
+  <h4>4.9 <code>App_Update()</code> 前半：只有拿到 Tick 才生成有效上下文</h4>
+  <pre class="source-code"><code data-source="Application/Core/App.c" data-lines="75-99">uint8_t App_Update(App_UpdateContext_t *context)
+{
+    uint8_t index;
+    uint8_t elapsedTicks;
+    uint8_t keyMask;
+
+    if (context == NULL)
+    {
+        return 0U;
+    }
+
+    elapsedTicks = Tick_PollCount();
+    if (elapsedTicks == 0U)
+    {
+        __WFI();
+        return 0U;
+    }
+
+    context-&gt;elapsedTicks = elapsedTicks;
+    context-&gt;dt = (float)elapsedTicks * TICK_DT;
+    context-&gt;hasBluetoothSignal = 0U;
+    context-&gt;bluetoothSignal = 0U;
+
+    Heading_Update(context-&gt;dt);
+    Odometry_Update(elapsedTicks);</code></pre>
+  <ol class="line-notes">
+    <li><strong>第 73～77 行：</strong>函数接收可写上下文地址，并准备循环下标、累计拍数、当前按键位图三个局部变量。</li>
+    <li><strong>第 79～82 行：</strong>若调用者传入空指针，立即返回 0，绝不执行 <code>context-&gt;字段</code>。箭头运算符表示“通过结构体指针访问成员”。</li>
+    <li><strong>第 84 行：</strong>原子取走 ISR 累计的全部节拍并清空邮箱。</li>
+    <li><strong>第 85～89 行：</strong>没有新拍时执行 <dfn data-term="WFI / Wait For Interrupt">等待中断</dfn>，让 CPU 暂停忙转并等待下一次中断唤醒，然后返回 0，main 也就不会调用 Mission。<code>__WFI()</code> 不是固定延时。</li>
+    <li><strong>第 91 行：</strong>记录实际累计拍数。</li>
+    <li><strong>第 92 行：</strong>先把整数拍数转换为 <code>float</code>，再乘 0.01 秒。例如 3 拍得到 <code>dt = 0.03s</code>，航向积分和运动控制能够补上真实经过时间。</li>
+    <li><strong>第 93～94 行：</strong>每个有效周期先把通信事件恢复为“无”。若本拍没有新信号，Mission 不会误读上一次残留值。</li>
+    <li><strong>第 96 行：</strong>用秒数更新陀螺仪航向积分。</li>
+    <li><strong>第 97 行：</strong>用拍数更新编码器里程和速度；该模块内部同样能换算出累计时间。</li>
+  </ol>
+
+  <h4>4.10 <code>App_Update()</code> 中段：按键边沿、通信与全局 C0 急停</h4>
+  <pre class="source-code"><code data-source="Application/Core/App.c" data-lines="101-123">    keyMask = Key_GetPressedMask();
+    context-&gt;pressedKeys = keyMask;
+    context-&gt;pressedEdges =
+        (uint8_t)(keyMask &amp; (uint8_t)~s_previousKeyMask);
+    s_previousKeyMask = keyMask;
+
+    K230Link_Update(elapsedTicks);
+
+    BluetoothDebug_Update(
+        elapsedTicks, (MotionManager_IsBusy() == 0U) ? 1U : 0U);
+    context-&gt;hasBluetoothSignal =
+        BluetoothDebug_PopSignal(&amp;context-&gt;bluetoothSignal);
+
+    /* C0 是不受 Mission 可打断属性限制的全局停车信号。 */
+    if ((context-&gt;hasBluetoothSignal != 0U) &amp;&amp;
+        (context-&gt;bluetoothSignal == 0U))
+    {
+        MotionManager_Stop();
+        Motor_StopAll();
+    }
+
+    MotionManager_Update(context-&gt;dt);
+    App_ReportMotionError();</code></pre>
+  <ol class="line-notes">
+    <li><strong>第 99～100 行：</strong>读取四个按键当前电平组成的位图，并把“当前按住哪些键”写入上下文。</li>
+    <li><strong>第 101～102 行：</strong>新按下位 = <code>当前为 1 AND 上次为 0</code>。<code>~</code> 按位取反旧位图，<code>&amp;</code> 只保留当前为 1 的位；两次转为 <code>uint8_t</code> 是为了把运算结果明确限制在 8 位。</li>
+    <li><strong>第 103 行：</strong>当前状态变成下一周期的“上一拍”。如果忘了这行，同一个按住状态会在每拍都被误判成新边沿。</li>
+    <li><strong>第 105 行：</strong>把真实累计拍数交给 K230 链路，用于重试、超时和协议推进。</li>
+    <li><strong>第 107～108 行：</strong>更新 UART1 调试解析；第二个参数由三目运算生成：MotionManager 不忙时为 1，允许手动电机命令，否则为 0，避免手动输出抢走自动运动控制权。</li>
+    <li><strong>第 109～110 行：</strong>把 <code>bluetoothSignal</code> 成员地址交给 Pop 函数写值；函数返回是否真的弹出事件。注意信号值 0 是合法的 C0，因此必须另有 <code>hasBluetoothSignal</code>。</li>
+    <li><strong>第 112～114 行：</strong>只有“本拍确有信号”且值为 0 才进入全局停车。它位于 Mission 之前，所以不受任务状态的 <code>interruptible</code> 设置限制。</li>
+    <li><strong>第 116 行：</strong>通知高层 MotionManager 结束当前模式并清理其内部状态。</li>
+    <li><strong>第 117 行：</strong>再直接关闭两侧电机输出，形成高层状态和底层执行器的双保险。</li>
+    <li><strong>第 120 行：</strong>用本次真实 <code>dt</code> 推进统一运动调度。App 先更新航向/里程再更新控制，使控制器读到本周期较新的反馈。</li>
+    <li><strong>第 121 行：</strong>检查运动错误是否刚刚变化，必要时长鸣。</li>
+  </ol>
+  <div class="deep-dive">
+    <h4>按键边沿公式拆解</h4>
+    <p><strong>输入：</strong>本拍 <code>keyMask</code> 与上一拍 <code>s_previousKeyMask</code>。</p>
+    <p><strong>过程：</strong>假设上一拍为 <code>0001</code>（KEY1 已按住），本拍为 <code>0011</code>（KEY2 刚按下）。取反上一拍得到末四位 <code>1110</code>，再与本拍 <code>0011</code> 相与，结果 <code>0010</code>，只留下 KEY2 的新按下事件。</p>
+    <p><strong>输出：</strong><code>pressedKeys=0011</code> 表示 KEY1、KEY2 都按着；<code>pressedEdges=0010</code> 表示本拍只有 KEY2 是刚按下。</p>
+    <p><strong>边界条件：</strong>上电时 App 先读取一次当前按键作为 previous，避免“上电就按住”被误认成新按下。当前代码未实现软件消抖，机械抖动仍可能造成额外边沿。</p>
+    <p><strong>设计原因：</strong>Mission 常需要“一次按下只启动一次”，不能每 10ms 重复启动；同时调试显示仍需要知道按键是否持续按住，所以保留 level 与 edge 两份信息。</p>
+  </div>
+
+  <h4>4.11 <code>App_Update()</code> 后半：回执、遥测、补拍与显示</h4>
+  <pre class="source-code"><code data-source="Application/Core/App.c" data-lines="125-157">    {
+        uint8_t captureOk;
+        uint16_t captureIndex;
+
+        if (K230Link_PopCaptureAck(&amp;captureOk, &amp;captureIndex) != 0U)
+        {
+            if (captureOk != 0U)
+            {
+                Serial1_Printf("OK CAP %u\r\n", (unsigned)captureIndex);
+            }
+            else
+            {
+                Serial1_SendString("ERR CAP FAIL\r\n");
+            }
+        }
+    }
+
+    /* 必须在 MotionManager_Update() 之后：目标速度和输出 PWM 都是本拍算出的，
+     * 提前采会记录到上一拍的值，阶跃起点会整体偏移一个控制周期。 */
+    Capture_Update((uint32_t)elapsedTicks * 10U);
+
+    Telemetry_Update(elapsedTicks, context-&gt;pressedKeys);
+    /* dump 与实时流互斥：捕获输出期间车已停稳，让它独占串口。 */
+    Capture_DumpNext();
+
+    for (index = 0U; index &lt; elapsedTicks; index++)
+    {
+        Beep_Tick();
+    }
+
+    DebugDisplay_Update(elapsedTicks);
+    return 1U;
+}</code></pre>
+  <ol class="line-notes">
+    <li><strong>第 125～127 行：</strong>额外花括号制造一个更小的局部作用域；拍照结果和编号只在处理回执的这段代码中存在。<code>uint16_t</code> 可保存 0～65535。</li>
+    <li><strong>第 129 行：</strong>把两个变量地址交给 K230 接口；返回非零表示确实取到一条拍照回执，两个输出变量此时才有效。</li>
+    <li><strong>第 131～134 行：</strong>回执成功时通过 UART1 输出 <code>OK CAP 编号</code>。<code>%u</code> 是无符号整数占位符，显式转成 <code>unsigned</code> 与可变参数格式匹配；<code>\r\n</code> 是回车加换行。</li>
+    <li><strong>第 135～138 行：</strong>回执存在但拍照失败时发送固定错误文本。</li>
+    <li><strong>第 139～140 行：</strong>关闭判断和局部作用域。</li>
+    <li><strong>第 142～144 行：</strong>板载捕获采样。<strong>位置至关重要</strong>：必须排在 <code>MotionManager_Update()</code> 之后，因为目标速度和输出 PWM 都是本拍刚算出来的；提前采会记录到上一拍的值，整条阶跃曲线会向后偏移一个控制周期（10ms），调 P 增益时会把上升时间算长。参数是本次流逝的毫秒数：<code>elapsedTicks</code> 拍 × 每拍 10ms。</li>
+    <li><strong>第 146 行：</strong>把累计拍数和当前按键电平交给遥测模块，决定是否到达输出周期并组织 CSV。这是<strong>通道 A（实时流）</strong>，频率受串口带宽限制，用于监视。</li>
+    <li><strong>第 147～148 行：</strong>捕获数据的分批输出。<strong>通道 B（板载捕获）</strong>在记录期间一个字节都不发串口，等动作结束、车停稳后才在这里逐批吐出，因此能以 100Hz 无损采样而不打乱控制周期。每拍只吐固定几行，避免单次阻塞过长。</li>
+    <li><strong>第 150～153 行：</strong>蜂鸣器是按“每一拍推进一次”的小状态机，因此积压 <code>elapsedTicks</code> 拍时循环补调用同样次数。例如取到 3 拍，就连续推进 3 个逻辑步，避免蜂鸣节奏变慢。</li>
+    <li><strong>第 155 行：</strong>显示模块接收累计拍数，自行累计到刷新门槛；当前门槛 10 拍，即约 10Hz 刷屏。</li>
+    <li><strong>第 156 行：</strong>返回 1 告诉 main：本次上下文有效，可以紧接着运行一次 Mission，然后结束函数。</li>
+  </ol>
+
+  <h3>5. 难点函数拆解</h3>
+  <div class="deep-dive">
+    <h4><code>Tick_PollCount()</code> 为什么要关中断</h4>
+    <p><strong>输入：</strong>无显式参数；隐含输入是 ISR 正在累计的 <code>s_tickCount</code>。</p>
+    <p><strong>过程：</strong>保存 PRIMASK → 关中断 → 复制计数 → 清零计数 → 恢复原 PRIMASK。</p>
+    <p><strong>输出：</strong>返回一个 0～255 的累计节拍快照。</p>
+    <p><strong>边界条件：</strong>积压达到 255 后饱和；100Hz 下表示最多明确记录约 2.55 秒。更久的阻塞仍只返回 255。<code>volatile</code> 只保证实际访存，不能阻止 ISR 插在“读”和“清零”之间，所以仍需临界区。</p>
+    <p><strong>设计原因：</strong>读取并清空必须看成一个不可拆开的整体，同时临界区只有几条指令，不会明显妨碍实时性。</p>
+  </div>
+  <div class="deep-dive">
+    <h4><code>App_Update()</code> 为什么返回 0/1</h4>
+    <p><strong>输入：</strong>一块可写的 <code>App_UpdateContext_t</code> 内存。</p>
+    <p><strong>过程：</strong>检查地址 → 取 Tick → 无 Tick 则休眠 → 有 Tick 才刷新状态、事件、通信、运动、提示和显示。</p>
+    <p><strong>输出：</strong>0 表示没有新上下文，1 表示上下文已完整生成。</p>
+    <p><strong>边界条件：</strong>空指针直接返回；累计多拍时并非机械地把整个 App 重跑多次，而是把总拍数或总 <code>dt</code> 传给多数子系统，只有 Beep 明确逐拍补推进。</p>
+    <p><strong>设计原因：</strong>main 可以非常简单地保证 Mission 只消费完整快照；App 是唯一的系统节拍“总分发站”。</p>
+  </div>
+
+  <h3>6. 放回总体调用链</h3>
+  <div class="relation-chain">
+    <p><strong>启动链：</strong>复位启动代码 → <code>main()</code> → <code>App_Init()</code> → SysConfig/驱动/状态/通信/运动初始化 → <code>Mission_Init(AccomplishTest_GetMissionGraph())</code> → <code>Interrupt_Enable()</code></p>
+    <p><strong>时间链：</strong>32MHz 时钟 → SysTick 每 320000 周期到期 → <code>SysTick_Handler()</code> 累加 → <code>Tick_PollCount()</code> 原子取走 → <code>elapsedTicks</code> → <code>dt</code></p>
+    <p><strong>每次有效更新：</strong>Heading → Odometry → 按键 level/edge → K230Link → UART1 调试信号 → C0 全局停车 → MotionManager → 错误蜂鸣 → K230 回执 → Telemetry → Beep → DebugDisplay → <code>Mission_Update()</code></p>
+    <p><strong>运动主链：</strong><code>main → App → Mission → MotionManager → 具体运动算法 → Motor/Encoder/传感器</code></p>
+  </div>
+  <p>顺序不是随便排列的：先更新航向和里程，运动控制才拿到新反馈；先处理 C0，Mission 的不可打断状态也挡不住急停；App 完成所有公共更新后，Mission 才根据同一拍事件决定任务状态是否转换。</p>
+
+  <h3>7. 常见误解与调试提示</h3>
+  <div class="pitfall">
+    <ul>
+      <li><strong>“README 说什么就运行什么”：</strong>错。当前 main 明确加载 <code>AccomplishTest</code>；README 的 25H 描述已经落后。</li>
+      <li><strong>“无限循环会让 CPU 永远满速空转”：</strong>不完全。无 Tick 时 App 执行 <code>__WFI()</code> 等中断，降低无意义忙等。</li>
+      <li><strong>“100Hz 表示 App 每次一定只收到 1 拍”：</strong>错。主循环若被较慢操作拖住，ISR 会累计多拍，App 可能收到 2、3……255。</li>
+      <li><strong>“volatile 已经保证安全”：</strong>错。读后清零是两个操作，仍必须用关中断临界区防止丢拍。</li>
+      <li><strong>“pressedKeys 与 pressedEdges 一样”：</strong>错。前者按住多久就保持多久，后者只在 0→1 的那一拍出现。</li>
+      <li><strong>“关中断就是关掉外设”：</strong>错。它只是暂时不让 CPU 响应普通 IRQ；外设配置和挂起状态可能仍在。</li>
+      <li><strong>“Delay 很适合主循环定时”：</strong>错。它阻塞业务，且实际时间会叠加函数开销和中断影响。</li>
+    </ul>
+  </div>
+  <div class="ripple-effect">
+    <h4>修改这些参数会牵动什么</h4>
+    <ul>
+      <li>修改 100Hz 时，必须同步修改 <code>main.syscfg</code> 的 SysTick period、<code>TICK_HZ</code>、<code>TICK_DT</code>，并复查 K230 重试/超时、蓝牙空闲判帧、遥测频率、OLED 刷新、蜂鸣状态机、里程速度计算和 Mission 中所有“多少拍”的超时。</li>
+      <li>改变 <code>App_Update()</code> 顺序时，要检查数据依赖：MotionManager 是否仍在状态估计之后，C0 是否仍在 Mission 之前，显示/遥测看到的是更新前还是更新后数据。</li>
+      <li>在有效更新中加入阻塞串口、长 Delay 或重计算，会增加 <code>elapsedTicks</code>；超过 255 拍后时间信息饱和丢失，控制响应也会明显变差。</li>
+      <li>提前调用 <code>Interrupt_Enable()</code> 会让 ISR 访问半初始化对象；延后太久则可能丢失本应采集的输入。当前边界是 App 和 Mission 都准备完成之后。</li>
+    </ul>
+  </div>
+
+  <h3>8. 学完自测</h3>
+  <details class="quiz"><summary>1. 当前固件实际加载 25H 还是 AccomplishTest？证据在哪两行？</summary><p>加载 <code>AccomplishTest</code>。证据是 <code>main.c</code> 第 1 行包含 <code>Accomplish/Test.h</code>，第 11 行把 <code>AccomplishTest_GetMissionGraph()</code> 交给 <code>Mission_Init()</code>。</p></details>
+  <details class="quiz"><summary>2. 为什么 Tick 计数器既写 volatile，又要在读取清零时关中断？</summary><p><code>volatile</code> 防止编译器缓存读写；关中断则保证“复制并清零”不会被 ISR 插入，从而避免刚增加的一拍被清掉。两者解决的问题不同。</p></details>
+  <details class="quiz"><summary>3. elapsedTicks 为 3 时，dt 是多少？为什么不能永远写死 0.01？</summary><p><code>dt = 3 × 0.01 = 0.03s</code>。主循环可能因其他工作漏过多个节拍，使用实际累计时间才能让积分、速度和控制更接近真实时间。</p></details>
+  <details class="quiz"><summary>4. 上一拍按键位图 0001、本拍 0011，pressedEdges 是多少？</summary><p>是 <code>0010</code>。KEY1 只是继续按住，KEY2 才是本拍从 0 变为 1。</p></details>
+  <details class="quiz"><summary>5. 为什么 main 只在 App_Update 返回非零时调用 Mission_Update？</summary><p>非零表示 App 已经收到 Tick 并完整更新上下文；返回 0 时没有新的时间片或参数无效，Mission 不应重复消费旧事件和旧时间。</p></details>
+
+  <h3>9. 覆盖清单</h3>
+  <ul class="coverage-list">
+    <li><code>main.c</code>：第 1～21 行，完整覆盖包含关系、入口、当前 Test 任务图、开中断顺序、无限循环与 App/Mission 门控。</li>
+    <li><code>System/Tick.h</code>：第 1～13 行，完整覆盖头文件保护、100Hz/0.01s 契约和三个接口。</li>
+    <li><code>System/Tick.c</code>：第 1～32 行，完整覆盖 static/volatile 计数器、PRIMASK 临界区、寄存器清零、累计查询、布尔查询、ISR 与 255 饱和。</li>
+    <li><code>System/Interrupt.h</code>：第 1～8 行，完整覆盖统一开启规则和公开接口。</li>
+    <li><code>System/Interrupt.c</code>：第 1～12 行，完整覆盖 ARM 全局中断开关封装。</li>
+    <li><code>System/Delay.h</code>：第 1～10 行，完整覆盖三种阻塞延时声明。</li>
+    <li><code>System/Delay.c</code>：第 1～18 行，完整覆盖 CPU 周期换算、后缀自减循环和 us/ms/s 分层实现。</li>
+    <li><code>Application/Core/App.h</code>：第 1～20 行，完整覆盖上下文结构体六个字段、指针参数和更新返回值。</li>
+    <li><code>Application/Core/App.c</code>：第 1～149 行，完整覆盖全部依赖、私有历史状态、错误边沿报警、初始化顺序、NULL、WFI、Tick/dt、按键边沿、通信、C0、运动、K230 回执、遥测、蜂鸣补拍和显示。</li>
+    <li><code>main.syscfg</code> 第 184～187 行与 <code>README.md</code> 第 62～100、1057～1059 行仅作为交叉核对证据：前者确认硬件 SysTick 为 100Hz，后者用于指出旧文档与当前 <code>main.c</code> 的任务图不一致；它们不属于本模块要求逐行讲解的源码文件。</li>
+  </ul>
+</section>

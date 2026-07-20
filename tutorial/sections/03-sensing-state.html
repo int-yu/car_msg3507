@@ -1,0 +1,1106 @@
+<section class="lesson-section" id="module-03" data-title="从传感器原始电平到可用状态" data-group="感知与状态">
+  <h2>03　从传感器原始电平到可用状态：灰度、MPU6050、编码器、航向与里程计</h2>
+
+  <div class="module-map">
+    <h3>先看它在整车中的位置</h3>
+    <dl>
+      <dt>一句话职责</dt>
+      <dd>把 GPIO 上的 0/1、电机轴上的脉冲和陀螺仪寄存器里的原始整数，整理成“黑线在哪、车头转了多少度、左右轮走了多少毫米、当前速度多少”等上层可以直接使用的状态。</dd>
+      <dt>上游输入</dt>
+      <dd>五路灰度 GPIO 电平、MPU6050 的 Z 轴陀螺仪原始值、左右轮 A/B 相编码器边沿、100 Hz 系统节拍。</dd>
+      <dt>下游输出</dt>
+      <dd>五位灰度位图与巡线误差、连续偏航角、左右轮累计距离与瞬时速度、传感器在线状态。</dd>
+      <dt>依赖模块</dt>
+      <dd>芯片 GPIO/NVIC 驱动、<code>System/Delay</code>、<code>System/Tick</code>，以及硬件配置文件提供的引脚宏。</dd>
+      <dt>主要调用者</dt>
+      <dd><code>App</code> 负责初始化和周期更新；<code>MotionLine</code>、<code>MotionStraight</code>、<code>MotionWheel</code>、<code>Nav</code> 消费状态；Mission 用它判断地标和建立航向目标；OLED 与 Telemetry 用它做调试观察。</dd>
+      <dt>总体位置</dt>
+      <dd><code>main → App → 先更新 Heading/Odometry → 再更新 MotionManager → Mission/Debug 读取同一份本周期状态</code>。</dd>
+    </dl>
+    <p>把这一层想成小车的“翻译员”：硬件只会说电平、寄存器和脉冲；控制算法需要的是位置、角度、距离与速度。</p>
+  </div>
+
+  <h3>初学者需要先知道</h3>
+  <div class="concept-grid">
+    <p><dfn data-term="GPIO">通用输入输出引脚</dfn>：单片机与外界连接的“电开关”。作为输入时，它读取高电平或低电平；作为输出时，它主动拉高或拉低。</p>
+    <p><dfn data-term="active level / polarity">有效电平 / 极性</dfn>：高电平或低电平本身只是一种电气状态，必须由软件约定它代表什么。本项目灰度接口明确约定“检测到黑线为 1”；若实车模块输出逻辑相反，应在驱动层统一反相，不能让 Motion 和 Mission 各自猜测。</p>
+    <p><dfn data-term="bitmap">位图</dfn>：把多路开关状态塞进一个整数的不同二进制位。五个传感器不必用五个变量，可以用一个字节的 bit0～bit4 表示。</p>
+    <p><dfn data-term="mask">掩码</dfn>：像一张只开了几个洞的纸，用按位与 <code>&amp;</code> 留下关心的位、遮住其余位。例如 <code>0x07</code> 只保留 bit0～bit2。</p>
+    <p><dfn data-term="software I2C">软件 I2C</dfn>：不用芯片内部 I2C 外设，而是由程序按协议顺序控制 SCL、SDA 两根 GPIO，俗称“模拟 I2C”或“bit-banging”。</p>
+    <p><dfn data-term="open-drain">开漏/释放总线</dfn>：设备只主动把线拉低；要表示高电平时停止驱动，让上拉电阻把线拉高。这样多个设备共用总线时不会发生一方拉高、另一方拉低的硬冲突。</p>
+    <p><dfn data-term="ACK/NACK">应答/非应答</dfn>：I2C 每传完 8 位，接收方再用第 9 个时钟回答。ACK 是低电平，表示“收到”；NACK 是高电平，常用于告诉从机“最后一个字节读完了”。</p>
+    <p><dfn data-term="pointer output parameter">指针输出参数</dfn>：函数收到变量的地址，便能把结果写回调用者的变量。传入 <code>NULL</code> 表示这项数据不需要。</p>
+    <p><dfn data-term="raw value / LSB">原始值 / LSB</dfn>：传感器寄存器给出的整数刻度，不是直接的“度每秒”。这里 32.8 个原始计数约等于 1°/s。</p>
+    <p><dfn data-term="bias">零偏</dfn>：传感器静止时仍然出现的固定偏差，好比没有放东西的秤仍显示 3 克。先测出平均零偏，之后每次读数都减掉它。</p>
+    <p><dfn data-term="integration">积分</dfn>：把每小段时间内的“速度 × 时间”不断累加。角速度乘以秒得到角度，轮子每周期位移不断累加得到里程。</p>
+    <p><dfn data-term="sensor fusion / resampling">传感器融合 / 重新采样</dfn>：融合是把陀螺仪、加速度计、磁力计等多种测量组合起来；重新采样是重新收集一批原始样本估计参数。当前 Heading 只积分 Z 轴陀螺仪，并没有做多传感器融合；调试命令 Z2 所说的“重新采样”是重新静止采 400 次来估计零偏。</p>
+    <p><dfn data-term="quadrature encoder">正交编码器</dfn>：A、B 两路方波错开四分之一周期。比较“旧 AB 状态”和“新 AB 状态”，既能计数，也能判断转动方向。</p>
+    <p><dfn data-term="ISR">中断服务函数</dfn>：硬件边沿到来时，CPU 暂停主循环，先执行一小段紧急代码。编码器脉冲快，必须在 ISR 中及时累计。</p>
+    <p><dfn data-term="volatile">volatile</dfn>：告诉编译器“这个变量可能在当前代码看不见的地方变化，请每次真的去内存读”。它不等于线程安全，也不保证“读取后清零”这组操作不可被打断。</p>
+    <p><dfn data-term="critical section">临界区</dfn>：暂时禁止中断，使一组共享数据操作不可被 ISR 插入。这里用于保证“复制计数并清零”是一个整体。</p>
+    <p><dfn data-term="dt / ticks">时间步长 / 节拍数</dfn>：<code>ticks</code> 是经过了几个 10 ms 节拍，<code>dt</code> 是同一段时间换成秒；本项目中 <code>dt = ticks × 0.01</code>。</p>
+  </div>
+
+  <h3>文件导读</h3>
+  <table>
+    <thead><tr><th>文件</th><th>层次</th><th>它解决的问题</th></tr></thead>
+    <tbody>
+      <tr><td><code>Hardware/Sensors/Graydetect.h/.c</code></td><td>硬件驱动 + 极薄的数据整理</td><td>配置五个输入、读成位图、按区域过滤，并计算简单的加权横向误差。</td></tr>
+      <tr><td><code>Hardware/Sensors/MPU6050.h/.c</code></td><td>硬件驱动</td><td>用软件 I2C 操作 MPU6050 寄存器，向上只提供原始六轴数据与 Z 轴角速度。</td></tr>
+      <tr><td><code>Hardware/Motor/Encoder.h/.c</code></td><td>硬件驱动</td><td>在 GPIO 中断中解码左右正交编码器，保存“自上次读取以来”的增量计数。</td></tr>
+      <tr><td><code>Application/State/Heading.h/.c</code></td><td>应用状态层</td><td>把 Z 轴原始角速度做零偏校准、单位换算与时间积分，形成连续航向角。</td></tr>
+      <tr><td><code>Application/State/Odometry.h/.c</code></td><td>应用状态层</td><td>消费编码器增量，按实车标定系数换成毫米和毫米每秒。</td></tr>
+    </tbody>
+  </table>
+  <p>头文件 <code>.h</code> 是模块对外的“菜单”，告诉别的文件能调用什么；源文件 <code>.c</code> 是厨房，<code>static</code> 函数和变量只在本文件内部使用，避免上层绕过接口直接改内部状态。</p>
+
+  <h3>逐行讲解</h3>
+
+  <h4>Hardware/Sensors/Graydetect.h：先规定五路灰度的共同语言</h4>
+  <pre class="source-code"><code data-source="Hardware/Sensors/Graydetect.h" data-lines="1-26">#ifndef __GRAYDETECT_H
+#define __GRAYDETECT_H
+
+/* 五路灰度传感器驱动和基础巡线偏差计算。 */
+
+#include &lt;stdint.h&gt;
+
+/* 五路灰度用于巡线和黑线到点判断。
+ * 位序约定：bit0 为最左侧，bit4 为最右侧，检测到黑线时对应位为 1。
+ * 左右半区可分别用于交叉点判断，中心通道由两侧共享。
+ */
+#define GRAY_SIDE_ALL    0
+#define GRAY_SIDE_LEFT   1
+#define GRAY_SIDE_RIGHT  2
+
+void    Graydetect_Init(void);
+uint8_t Graydetect_GetState(void);            /* 返回五路状态位图，黑线对应位为 1 */
+uint8_t Graydetect_GetBit(uint8_t index);     /* 返回第 index 路状态，index 范围为 0~4 */
+
+/* 加权位置误差：中心为 0，线偏左为负，偏右为正。
+ * 左半区使用 bit0~bit2，右半区使用 bit2~bit4，中心 bit2 由两侧共享。
+ * side 选择全部、左半区或右半区参与加权。 */
+float   Graydetect_GetError(uint8_t side);
+uint8_t Graydetect_OnLine(uint8_t side);      /* 所选区域任一路检测到黑线时返回 1 */
+
+#endif</code></pre>
+  <ol class="line-notes">
+    <li><strong>第 1～2 行：</strong>头文件保护。第一次包含时定义 <code>__GRAYDETECT_H</code>；以后再包含就跳过正文，防止声明被重复展开。</li>
+    <li><strong>第 4 行：</strong>一句话限定模块边界：既负责 GPIO 驱动，也提供最基础的巡线误差，不负责电机控制。</li>
+    <li><strong>第 6 行：</strong>引入固定宽度整数类型，确保 <code>uint8_t</code> 在本平台上恰好是 8 位无符号数。</li>
+    <li><strong>第 8～11 行：</strong>定义最关键的数据契约：最左传感器永远放 bit0，最右放 bit4；上层只依赖这个逻辑位序，不必知道实际 GPIO 号。</li>
+    <li><strong>第 12～14 行：</strong>三个区域选择值。它们不是 GPIO 位图本身，而是传给函数的“选择参数”：全区、左半区、右半区。</li>
+    <li><strong>第 16 行：</strong>公开初始化接口，无参数、无返回值，开机时由 <code>App</code> 调用。</li>
+    <li><strong>第 17 行：</strong>公开整幅五位状态；返回类型虽有 8 位，但只有低 5 位有效。</li>
+    <li><strong>第 18 行：</strong>公开单路读取；<code>index</code> 是 0～4 的逻辑编号，不是物理引脚号。</li>
+    <li><strong>第 20～22 行：</strong>解释加权误差的正负方向和区域规则。中心 bit2 同时属于左右半区，避免两侧判断中间出现空洞。</li>
+    <li><strong>第 23 行：</strong>返回浮点误差，因为多路同时压线时会取权重平均，结果可能是 <code>-0.5</code> 这类小数。</li>
+    <li><strong>第 24 行：</strong>只回答“区域里有没有线”，返回 0/1，适合 Mission 的到点条件判断。</li>
+    <li><strong>第 26 行：</strong>结束第 1 行开启的头文件保护。</li>
+  </ol>
+
+<h4>Hardware/Sensors/Graydetect.c：把五个 GPIO 拼成一个可计算的位图</h4>
+  <pre class="source-code"><code data-source="Hardware/Sensors/Graydetect.c" data-lines="1-64">#include "Hardware/Sensors/Graydetect.h"
+#include "ti_msp_dl_config.h"
+
+#define GRAY_MASK_ALL   0x1FU
+#define GRAY_MASK_LEFT  0x07U
+#define GRAY_MASK_RIGHT 0x1CU
+
+static const float s_weight[5] = {-2.0f, -1.0f, 0.0f, 1.0f, 2.0f};
+
+static uint8_t Graydetect_GetMask(uint8_t side)
+{
+    if (side == GRAY_SIDE_LEFT) return GRAY_MASK_LEFT;
+    if (side == GRAY_SIDE_RIGHT) return GRAY_MASK_RIGHT;
+    return GRAY_MASK_ALL;
+}
+
+void Graydetect_Init(void)
+{
+    /* 上拉输入(原 STM32 版为 GPIO_Mode_IPU)：灰度板开漏输出/线未接时防浮空误读 */
+    DL_GPIO_initDigitalInputFeatures(GRAY_INPUTS_CH0_IOMUX, DL_GPIO_INVERSION_DISABLE,
+        DL_GPIO_RESISTOR_PULL_UP, DL_GPIO_HYSTERESIS_DISABLE, DL_GPIO_WAKEUP_DISABLE);
+    DL_GPIO_initDigitalInputFeatures(GRAY_INPUTS_CH1_IOMUX, DL_GPIO_INVERSION_DISABLE,
+        DL_GPIO_RESISTOR_PULL_UP, DL_GPIO_HYSTERESIS_DISABLE, DL_GPIO_WAKEUP_DISABLE);
+    DL_GPIO_initDigitalInputFeatures(GRAY_INPUTS_CH2_IOMUX, DL_GPIO_INVERSION_DISABLE,
+        DL_GPIO_RESISTOR_PULL_UP, DL_GPIO_HYSTERESIS_DISABLE, DL_GPIO_WAKEUP_DISABLE);
+    DL_GPIO_initDigitalInputFeatures(GRAY_INPUTS_CH3_IOMUX, DL_GPIO_INVERSION_DISABLE,
+        DL_GPIO_RESISTOR_PULL_UP, DL_GPIO_HYSTERESIS_DISABLE, DL_GPIO_WAKEUP_DISABLE);
+    DL_GPIO_initDigitalInputFeatures(GRAY_INPUTS_CH4_IOMUX, DL_GPIO_INVERSION_DISABLE,
+        DL_GPIO_RESISTOR_PULL_UP, DL_GPIO_HYSTERESIS_DISABLE, DL_GPIO_WAKEUP_DISABLE);
+}
+
+uint8_t Graydetect_GetState(void)
+{
+    uint8_t state = 0U;
+    if (DL_GPIO_readPins(GRAY_INPUTS_CH0_PORT, GRAY_INPUTS_CH0_PIN) != 0U) state |= 0x01U;
+    if (DL_GPIO_readPins(GRAY_INPUTS_CH1_PORT, GRAY_INPUTS_CH1_PIN) != 0U) state |= 0x02U;
+    if (DL_GPIO_readPins(GRAY_INPUTS_CH2_PORT, GRAY_INPUTS_CH2_PIN) != 0U) state |= 0x04U;
+    if (DL_GPIO_readPins(GRAY_INPUTS_CH3_PORT, GRAY_INPUTS_CH3_PIN) != 0U) state |= 0x08U;
+    if (DL_GPIO_readPins(GRAY_INPUTS_CH4_PORT, GRAY_INPUTS_CH4_PIN) != 0U) state |= 0x10U;
+    return state;
+}
+
+uint8_t Graydetect_GetBit(uint8_t index)
+{
+    return (index &lt; 5U) ? (uint8_t)((Graydetect_GetState() &gt;&gt; index) &amp; 1U) : 0U;
+}
+
+float Graydetect_GetError(uint8_t side)
+{
+    uint8_t state = Graydetect_GetState() &amp; Graydetect_GetMask(side);
+    float sum = 0.0f;
+    float count = 0.0f;
+    uint8_t i;
+    for (i = 0U; i &lt; 5U; i++)
+    {
+        if ((state &amp; (1U &lt;&lt; i)) != 0U) { sum += s_weight[i]; count += 1.0f; }
+    }
+    return (count &gt; 0.5f) ? (sum / count) : 0.0f;
+}
+
+uint8_t Graydetect_OnLine(uint8_t side)
+{
+    return ((Graydetect_GetState() &amp; Graydetect_GetMask(side)) != 0U) ? 1U : 0U;
+}</code></pre>
+  <ol class="line-notes">
+    <li><strong>第 1～2 行：</strong>第一个头文件给出本模块声明；第二个是工程生成的硬件配置，提供 <code>GRAY_INPUTS_CH0_PIN</code> 等具体端口/引脚宏和 TI GPIO 函数。</li>
+    <li><strong>第 4～6 行：</strong><code>0x1F = 0b11111</code> 保留五路；<code>0x07 = 0b00111</code> 保留左、中三路；<code>0x1C = 0b11100</code> 保留中、右三路。末尾 <code>U</code> 表示无符号常量。</li>
+    <li><strong>第 8 行：</strong><code>static</code> 让权重表只在本文件可见，<code>const</code> 表示运行中不能修改。数组下标与 bit 编号一一对应。</li>
+    <li><strong>第 10～11 行：</strong>声明并开始一个私有辅助函数；输入是区域编号，输出是实际用于按位与的掩码。</li>
+    <li><strong>第 12～14 行：</strong>左、右选择分别映射到相应掩码；包括 <code>GRAY_SIDE_ALL</code> 在内的其他值都回退为全区，这是一种宽松的默认策略。</li>
+    <li><strong>第 15 行：</strong>结束 <code>Graydetect_GetMask</code>。</li>
+    <li><strong>第 17～19 行：</strong>开始初始化；注释说明为何选择内部上拉：避免输入悬空时随机跳变，并适配开漏形式的传感器输出。</li>
+    <li><strong>第 20～21 行：</strong>配置第 0 路为“不反相、上拉、无迟滞、无唤醒”的数字输入。函数调用跨两行，只是一条完整 C 语句。</li>
+    <li><strong>第 22～23 行：</strong>用相同参数配置第 1 路；只有 IOMUX 宏不同。</li>
+    <li><strong>第 24～25 行：</strong>配置中心的第 2 路。</li>
+    <li><strong>第 26～27 行：</strong>配置第 3 路。</li>
+    <li><strong>第 28～29 行：</strong>配置最右的第 4 路。</li>
+    <li><strong>第 30 行：</strong>五路输入初始化完成。</li>
+    <li><strong>第 32～34 行：</strong>开始读取整幅状态，并先把结果字节清零；后面只把检测到的位“置 1”。</li>
+    <li><strong>第 35 行：</strong>读取 CH0；非零就用 <code>|= 0x01</code> 设置 bit0，不会破坏其他位。</li>
+    <li><strong>第 36 行：</strong>CH1 对应 <code>0x02 = 0b00010</code>，设置 bit1。</li>
+    <li><strong>第 37 行：</strong>CH2 对应 <code>0x04 = 0b00100</code>，设置中心 bit2。</li>
+    <li><strong>第 38 行：</strong>CH3 对应 <code>0x08 = 0b01000</code>。</li>
+    <li><strong>第 39 行：</strong>CH4 对应 <code>0x10 = 0b10000</code>。</li>
+    <li><strong>第 40～41 行：</strong>返回拼好的低五位位图并结束函数。上层从此不再接触物理 GPIO。</li>
+    <li><strong>第 43～45 行：</strong>单路读取先检查 <code>index &lt; 5</code>；合法时把目标位右移到 bit0，再与 1 只留这一位；非法下标返回 0，避免移位越界。</li>
+    <li><strong>第 46 行：</strong>结束单路读取函数。</li>
+    <li><strong>第 48～50 行：</strong>读取一次完整位图，再与区域掩码相与。未被选择的传感器位会变成 0。</li>
+    <li><strong>第 51～53 行：</strong><code>sum</code> 保存触发通道的权重和，<code>count</code> 保存触发数，<code>i</code> 是 0～4 的循环下标。</li>
+    <li><strong>第 54～55 行：</strong>逐个检查五个逻辑位置。</li>
+    <li><strong>第 56 行：</strong><code>1U &lt;&lt; i</code> 生成“只含第 i 位”的掩码；若该位为 1，就累加对应权重并把数量加 1。</li>
+    <li><strong>第 57～58 行：</strong>循环结束后，有触发就返回平均权重；没有触发时 <code>count</code> 为 0，返回 0 避免除零。阈值 <code>0.5</code> 等价于判断计数是否至少为 1。</li>
+    <li><strong>第 59 行：</strong>结束误差计算。</li>
+    <li><strong>第 61～63 行：</strong>同样先按区域过滤，只要结果非零就返回 1；这里不关心触发的是哪一路，也不计算偏差。</li>
+    <li><strong>第 64 行：</strong>结束文件最后一个函数。</li>
+  </ol>
+
+  <h4>Hardware/Sensors/MPU6050.h：对外隐藏 I2C 细节</h4>
+  <pre class="source-code"><code data-source="Hardware/Sensors/MPU6050.h" data-lines="1-15">#ifndef MPU6050_H
+#define MPU6050_H
+
+/* MPU6050 软件 I2C 驱动：PA10 为 SCL，PA11 为 SDA。 */
+
+#include &lt;stdint.h&gt;
+
+void MPU6050_Init(void);
+uint8_t MPU6050_IsReady(void);
+uint8_t MPU6050_GetID(void);
+void MPU6050_GetData(int16_t *ax, int16_t *ay, int16_t *az,
+                     int16_t *gx, int16_t *gy, int16_t *gz);
+int16_t MPU6050_GetGyroZ(void);
+
+#endif</code></pre>
+  <ol class="line-notes">
+    <li><strong>第 1～2 行：</strong>头文件保护开始。</li>
+    <li><strong>第 4 行：</strong>明确这是软件 I2C，并记录两根线的物理连接，方便查接线与示波器波形。</li>
+    <li><strong>第 6 行：</strong>提供 <code>uint8_t</code> 和 <code>int16_t</code>。陀螺仪原始值有正负，因此使用 16 位有符号数。</li>
+    <li><strong>第 8 行：</strong>初始化传感器寄存器并检查身份。</li>
+    <li><strong>第 9 行：</strong>查询驱动保存的在线标志；它是软件状态，不是每次都重新扫描总线。</li>
+    <li><strong>第 10 行：</strong>单独读取 WHO_AM_I 身份寄存器，常用于调试接线。</li>
+    <li><strong>第 11～12 行：</strong>六个指针分别接收三轴加速度和三轴角速度；声明换行不改变它仍是一个函数。</li>
+    <li><strong>第 13 行：</strong>提供只读 Z 轴的快捷接口，因为航向模块不需要其余五轴。</li>
+    <li><strong>第 15 行：</strong>头文件保护结束。</li>
+  </ol>
+
+  <h4>Hardware/Sensors/MPU6050.c：用 GPIO 手工走完 I2C 时序</h4>
+  <pre class="source-code"><code data-source="Hardware/Sensors/MPU6050.c" data-lines="1-169">#include "Hardware/Sensors/MPU6050.h"
+#include "System/Delay.h"
+#include "ti_msp_dl_config.h"
+
+#define MPU_ADDRESS       0x68U
+#define MPU_SMPLRT_DIV    0x19U
+#define MPU_CONFIG        0x1AU
+#define MPU_GYRO_CONFIG   0x1BU
+#define MPU_ACCEL_CONFIG  0x1CU
+#define MPU_ACCEL_XOUT_H  0x3BU
+#define MPU_GYRO_XOUT_H   0x43U
+#define MPU_GYRO_ZOUT_H   0x47U
+#define MPU_PWR_MGMT_1    0x6BU
+#define MPU_WHO_AM_I      0x75U
+
+static uint8_t s_ready;
+
+static void MPU_DriveLow(uint32_t pin)
+{
+    DL_GPIO_clearPins(MPU_GPIO_PORT, pin);
+    DL_GPIO_enableOutput(MPU_GPIO_PORT, pin);
+    Delay_us(2U);
+}
+
+static void MPU_Release(uint32_t pin)
+{
+    DL_GPIO_disableOutput(MPU_GPIO_PORT, pin);
+    Delay_us(2U);
+}
+
+static void MPU_WriteSCL(uint8_t high)
+{
+    if (high != 0U) MPU_Release(MPU_GPIO_SCL_PIN);
+    else MPU_DriveLow(MPU_GPIO_SCL_PIN);
+}
+
+static void MPU_WriteSDA(uint8_t high)
+{
+    if (high != 0U) MPU_Release(MPU_GPIO_SDA_PIN);
+    else MPU_DriveLow(MPU_GPIO_SDA_PIN);
+}
+
+static uint8_t MPU_ReadSDA(void)
+{
+    MPU_Release(MPU_GPIO_SDA_PIN);
+    return (DL_GPIO_readPins(MPU_GPIO_PORT, MPU_GPIO_SDA_PIN) != 0U) ? 1U : 0U;
+}
+
+static void MPU_Start(void)
+{
+    MPU_WriteSDA(1U); MPU_WriteSCL(1U); MPU_WriteSDA(0U); MPU_WriteSCL(0U);
+}
+
+static void MPU_Stop(void)
+{
+    MPU_WriteSDA(0U); MPU_WriteSCL(1U); MPU_WriteSDA(1U);
+}
+
+static uint8_t MPU_SendByte(uint8_t value)
+{
+    uint8_t i;
+    uint8_t ack;
+    for (i = 0U; i &lt; 8U; i++)
+    {
+        MPU_WriteSDA((value &amp; 0x80U) != 0U);
+        MPU_WriteSCL(1U);
+        MPU_WriteSCL(0U);
+        value &lt;&lt;= 1;
+    }
+    MPU_WriteSDA(1U);
+    MPU_WriteSCL(1U);
+    ack = (uint8_t)!MPU_ReadSDA();
+    MPU_WriteSCL(0U);
+    return ack;
+}
+
+static uint8_t MPU_ReceiveByte(uint8_t nack)
+{
+    uint8_t i;
+    uint8_t value = 0U;
+    MPU_WriteSDA(1U);
+    for (i = 0U; i &lt; 8U; i++)
+    {
+        value &lt;&lt;= 1;
+        MPU_WriteSCL(1U);
+        if (MPU_ReadSDA() != 0U) value |= 1U;
+        MPU_WriteSCL(0U);
+    }
+    MPU_WriteSDA(nack);
+    MPU_WriteSCL(1U);
+    MPU_WriteSCL(0U);
+    MPU_WriteSDA(1U);
+    return value;
+}
+
+static uint8_t MPU_WriteReg(uint8_t reg, uint8_t value)
+{
+    uint8_t ok;
+    MPU_Start();
+    ok = MPU_SendByte((uint8_t)(MPU_ADDRESS &lt;&lt; 1));
+    ok = (uint8_t)(ok &amp;&amp; MPU_SendByte(reg));
+    ok = (uint8_t)(ok &amp;&amp; MPU_SendByte(value));
+    MPU_Stop();
+    return ok;
+}
+
+static uint8_t MPU_ReadReg(uint8_t reg, uint8_t *value)
+{
+    uint8_t ok;
+    if (value == NULL) return 0U;
+    MPU_Start();
+    ok = MPU_SendByte((uint8_t)(MPU_ADDRESS &lt;&lt; 1));
+    ok = (uint8_t)(ok &amp;&amp; MPU_SendByte(reg));
+    if (ok != 0U)
+    {
+        MPU_Start();
+        ok = MPU_SendByte((uint8_t)((MPU_ADDRESS &lt;&lt; 1) | 1U));
+        if (ok != 0U) *value = MPU_ReceiveByte(1U);
+    }
+    MPU_Stop();
+    return ok;
+}
+
+void MPU6050_Init(void)
+{
+    uint8_t id = 0U;
+    MPU_Release(MPU_GPIO_SCL_PIN | MPU_GPIO_SDA_PIN);
+    Delay_ms(20U);
+    s_ready = MPU_WriteReg(MPU_PWR_MGMT_1, 0x01U);
+    s_ready = (uint8_t)(s_ready &amp;&amp; MPU_WriteReg(MPU_SMPLRT_DIV, 0x09U));
+    s_ready = (uint8_t)(s_ready &amp;&amp; MPU_WriteReg(MPU_CONFIG, 0x06U));
+    s_ready = (uint8_t)(s_ready &amp;&amp; MPU_WriteReg(MPU_GYRO_CONFIG, 0x10U));
+    s_ready = (uint8_t)(s_ready &amp;&amp; MPU_WriteReg(MPU_ACCEL_CONFIG, 0x18U));
+    s_ready = (uint8_t)(s_ready &amp;&amp; MPU_ReadReg(MPU_WHO_AM_I, &amp;id) &amp;&amp; (id == 0x68U));
+}
+
+uint8_t MPU6050_IsReady(void) { return s_ready; }
+
+uint8_t MPU6050_GetID(void)
+{
+    uint8_t id = 0U;
+    if (MPU_ReadReg(MPU_WHO_AM_I, &amp;id) == 0U) s_ready = 0U;
+    return id;
+}
+
+static int16_t MPU_ReadWord(uint8_t reg)
+{
+    uint8_t high = 0U;
+    uint8_t low = 0U;
+    if ((MPU_ReadReg(reg, &amp;high) == 0U) || (MPU_ReadReg((uint8_t)(reg + 1U), &amp;low) == 0U))
+    {
+        s_ready = 0U;
+        return 0;
+    }
+    return (int16_t)(((uint16_t)high &lt;&lt; 8) | low);
+}
+
+void MPU6050_GetData(int16_t *ax, int16_t *ay, int16_t *az,
+                     int16_t *gx, int16_t *gy, int16_t *gz)
+{
+    if (ax != NULL) *ax = MPU_ReadWord(MPU_ACCEL_XOUT_H);
+    if (ay != NULL) *ay = MPU_ReadWord(MPU_ACCEL_XOUT_H + 2U);
+    if (az != NULL) *az = MPU_ReadWord(MPU_ACCEL_XOUT_H + 4U);
+    if (gx != NULL) *gx = MPU_ReadWord(MPU_GYRO_XOUT_H);
+    if (gy != NULL) *gy = MPU_ReadWord(MPU_GYRO_XOUT_H + 2U);
+    if (gz != NULL) *gz = MPU_ReadWord(MPU_GYRO_XOUT_H + 4U);
+}
+
+int16_t MPU6050_GetGyroZ(void) { return MPU_ReadWord(MPU_GYRO_ZOUT_H); }</code></pre>
+  <ol class="line-notes">
+    <li><strong>第 1～3 行：</strong>依次引入公开接口、微秒/毫秒延时、GPIO 与引脚配置。软件 I2C 的电平变化和等待都依赖后两者。</li>
+    <li><strong>第 5～8 行：</strong><code>0x68</code> 是 7 位从机地址；<code>0x19</code>～<code>0x1B</code> 是采样分频、滤波配置、陀螺仪量程寄存器地址。</li>
+    <li><strong>第 9～12 行：</strong>继续定义加速度量程与六轴数据起始地址；Z 轴陀螺仪高字节固定在 <code>0x47</code>。</li>
+    <li><strong>第 13～14 行：</strong>电源管理寄存器用于唤醒/选时钟，WHO_AM_I 用于确认线上设备确实是地址为 <code>0x68</code> 的 MPU6050。</li>
+    <li><strong>第 16 行：</strong>私有在线标志。静态存储期变量开机默认清零；初始化成功后才置为 1。</li>
+    <li><strong>第 18～19 行：</strong>私有函数接收一个或多个引脚的位掩码，目标是模拟开漏的“主动拉低”。</li>
+    <li><strong>第 20～22 行：</strong>先把输出寄存器准备为低，再开启输出驱动，最后等待 2 µs 让电平稳定。这个顺序可避免刚切成输出时短暂输出高电平。</li>
+    <li><strong>第 23 行：</strong>结束拉低动作。</li>
+    <li><strong>第 25～28 行：</strong>“释放”不是主动输出高电平，而是关闭 GPIO 输出，让上拉电阻决定高电平；同样等待 2 µs。</li>
+    <li><strong>第 29 行：</strong>结束释放动作。</li>
+    <li><strong>第 31～34 行：</strong>把“写 SCL 高/低”翻译成“释放/拉低”。参数非零代表逻辑高，零代表逻辑低。</li>
+    <li><strong>第 35 行：</strong>结束 SCL 包装函数。</li>
+    <li><strong>第 37～40 行：</strong>SDA 使用完全相同的开漏规则。封装后，协议函数只需关心 0/1，不再重复底层 GPIO 操作。</li>
+    <li><strong>第 41 行：</strong>结束 SDA 写函数。</li>
+    <li><strong>第 43～46 行：</strong>读 SDA 前先释放它，保证从机有权拉低；随后把实际引脚电平规范化成 0 或 1。</li>
+    <li><strong>第 47 行：</strong>结束 SDA 读取。</li>
+    <li><strong>第 49～51 行：</strong>I2C START 的本质是“SCL 为高时，SDA 从高变低”；最后再拉低 SCL，为发送第一位做准备。</li>
+    <li><strong>第 52 行：</strong>结束起始条件。</li>
+    <li><strong>第 54～56 行：</strong>I2C STOP 的本质是“SCL 为高时，SDA 从低变高”；总线随后回到两线释放状态。</li>
+    <li><strong>第 57 行：</strong>结束停止条件。</li>
+    <li><strong>第 59～62 行：</strong>发送函数接收一个字节，声明 8 次循环下标和最终 ACK 结果。</li>
+    <li><strong>第 63～65 行：</strong>每轮检查最高位 <code>0x80</code>，决定释放 SDA 发送 1，还是拉低 SDA 发送 0；I2C 规定高位先发。</li>
+    <li><strong>第 66～68 行：</strong>SCL 拉高让从机采样，再拉低结束这一位；随后把 <code>value</code> 左移，使下一位进入最高位位置。</li>
+    <li><strong>第 69 行：</strong>8 个数据位发送完毕。</li>
+    <li><strong>第 70～72 行：</strong>主机释放 SDA，产生第 9 个时钟并读取应答。ACK 是低电平，所以逻辑非 <code>!</code> 把“读到 0”转换成成功值 1。</li>
+    <li><strong>第 73～75 行：</strong>拉低 SCL 收尾，返回 1 表示收到 ACK，0 表示无应答。</li>
+    <li><strong>第 77～80 行：</strong>接收函数的 <code>nack</code> 参数决定读完后主机回 ACK 还是 NACK；结果字节先清零。</li>
+    <li><strong>第 81～84 行：</strong>释放 SDA 让从机发送；每轮先左移已有结果，为新读到的最低位腾位置。</li>
+    <li><strong>第 85～87 行：</strong>SCL 拉高时读取 SDA；若为 1，就用 <code>|= 1</code> 设置结果最低位，然后拉低时钟。</li>
+    <li><strong>第 88 行：</strong>8 位数据读取结束。</li>
+    <li><strong>第 89～92 行：</strong>第 9 个时钟由主机发回应答；本项目读单字节时传入 1，即发送 NACK，告诉 MPU“不再继续发”。最后释放 SDA。</li>
+    <li><strong>第 93～94 行：</strong>返回拼好的字节并结束函数。</li>
+    <li><strong>第 96～99 行：</strong>写寄存器函数接收寄存器地址和值，先发 START，并准备逐步累计成功标志。</li>
+    <li><strong>第 100 行：</strong>7 位地址左移一位，为最低的读写位腾位置；最低位保持 0，表示写操作。</li>
+    <li><strong>第 101～102 行：</strong>只有前一步成功才继续发送寄存器地址和值；<code>&amp;&amp;</code> 的短路规则可以在 NACK 后停止后续发送。</li>
+    <li><strong>第 103～105 行：</strong>无论成功与否都发 STOP 释放总线，并把最终结果返回。</li>
+    <li><strong>第 107～110 行：</strong>读寄存器通过指针写回结果；若调用者给了空指针，立即返回失败，避免解引用 <code>NULL</code>。</li>
+    <li><strong>第 111～113 行：</strong>第一次 START 后以写方向发送设备地址和目标寄存器地址，相当于先把 MPU 内部“书签”放到要读的位置。</li>
+    <li><strong>第 114～117 行：</strong>前半段成功才发重复 START，并把地址最低位置 1，切换成读方向。重复 START 让总线控制权保持在本次事务中。</li>
+    <li><strong>第 118～121 行：</strong>地址再次应答后读取一个字节并写入 <code>*value</code>；随后 STOP，返回事务成功状态。</li>
+    <li><strong>第 122 行：</strong>结束单寄存器读取。</li>
+    <li><strong>第 124～128 行：</strong>初始化时先准备身份变量，同时释放 SCL/SDA，并等待 20 ms 让上电后的传感器稳定。</li>
+    <li><strong>第 129 行：</strong>首先写电源管理寄存器 <code>0x01</code>，唤醒芯片并选择时钟源；这一步失败，<code>s_ready</code> 变 0。</li>
+    <li><strong>第 130 行：</strong>采样分频写 <code>0x09</code>；结合当前滤波配置，目标是得到适合 100 Hz 应用节拍的数据更新速度。</li>
+    <li><strong>第 131 行：</strong>配置数字低通滤波。滤波越强通常噪声越小、响应延迟越大，因此它会影响控制手感。</li>
+    <li><strong>第 132 行：</strong><code>GYRO_CONFIG=0x10</code> 选择 ±1000°/s，后续 Heading 才能使用 32.8 LSB/(°/s) 换算。</li>
+    <li><strong>第 133 行：</strong><code>ACCEL_CONFIG=0x18</code> 配置加速度量程；本模块虽暂不消费加速度，六轴接口仍保留它。</li>
+    <li><strong>第 134～135 行：</strong>最后读取身份并要求等于 <code>0x68</code>。整条 <code>&amp;&amp;</code> 链任一步失败都会让 ready 为 0。</li>
+    <li><strong>第 137 行：</strong>一行函数返回缓存的在线状态，不访问总线。</li>
+    <li><strong>第 139～143 行：</strong>主动读取设备 ID；若通信失败就锁存离线状态，成功时返回实际 ID 供调试比较。</li>
+    <li><strong>第 144 行：</strong>结束 ID 读取。</li>
+    <li><strong>第 146～149 行：</strong>MPU 的一个有符号测量值由相邻的高、低两个字节组成，所以先准备两个 8 位容器。</li>
+    <li><strong>第 150～153 行：</strong>任一字节读取失败都把设备标记为离线并返回 0。这里的 0 是失败替代值，不代表传感器真的测到了零。</li>
+    <li><strong>第 154～155 行：</strong>高字节转成无符号 16 位后左移 8 位，再与低字节拼接；最后转成 <code>int16_t</code>，保留二进制补码的正负含义。</li>
+    <li><strong>第 156 行：</strong>结束 16 位读取。</li>
+    <li><strong>第 158～160 行：</strong>六轴接口收到六个输出地址；函数本身不返回结构体，而是按需写入多个变量。</li>
+    <li><strong>第 161～163 行：</strong>只有指针非空才读对应加速度轴。寄存器每轴占 2 字节，所以起始地址依次加 0、2、4。</li>
+    <li><strong>第 164～166 行：</strong>三轴陀螺仪使用同样布局。调用者可把不关心的轴传 <code>NULL</code>，省掉这些 I2C 事务。</li>
+    <li><strong>第 167 行：</strong>结束六轴读取函数。</li>
+    <li><strong>第 169 行：</strong>航向模块的快捷路径：直接从 Z 轴陀螺仪高字节地址读取一个 16 位原始值。</li>
+  </ol>
+
+<h4>Hardware/Motor/Encoder.h：编码器只公开“初始化”和“取增量”</h4>
+  <pre class="source-code"><code data-source="Hardware/Motor/Encoder.h" data-lines="1-11">#ifndef __ENCODER_H
+#define __ENCODER_H
+
+/* 软件正交解码器：GPIO 中断记录计数，主循环读取增量。 */
+
+#include &lt;stdint.h&gt;
+
+void Encoder_Init(void);
+int16_t Encoder_Get(uint8_t n);
+
+#endif</code></pre>
+  <ol class="line-notes">
+    <li><strong>第 1～2 行：</strong>头文件保护开始。</li>
+    <li><strong>第 4 行：</strong>一句话点明并发关系：ISR 是生产者，主循环是消费者。</li>
+    <li><strong>第 6 行：</strong>引入固定宽度类型；增量允许正转或反转，因此返回 <code>int16_t</code>。</li>
+    <li><strong>第 8 行：</strong>初始化历史 AB 状态、清计数并开启 GPIO/NVIC 中断。</li>
+    <li><strong>第 9 行：</strong><code>n</code> 用 1 表示左轮、2 表示右轮；每次调用不只读取，还会清零该轮累计桶。</li>
+    <li><strong>第 11 行：</strong>头文件保护结束。</li>
+  </ol>
+
+  <h4>Hardware/Motor/Encoder.c：在中断中用旧状态和新状态判断方向</h4>
+  <pre class="source-code"><code data-source="Hardware/Motor/Encoder.c" data-lines="1-74">#include "Hardware/Motor/Encoder.h"
+#include "ti_msp_dl_config.h"
+
+#define LEFT_ENCODER_SIGN  (-1)
+#define RIGHT_ENCODER_SIGN (+1)
+
+static volatile int32_t s_leftCount;
+static volatile int32_t s_rightCount;
+static uint8_t s_leftState;
+static uint8_t s_rightState;
+
+static const int8_t s_quadratureDelta[16] = {
+     0, -1,  1,  0,
+     1,  0,  0, -1,
+    -1,  0,  0,  1,
+     0,  1, -1,  0
+};
+
+static uint8_t Encoder_ReadState(uint32_t pinA, uint32_t pinB)
+{
+    uint32_t pins = DL_GPIO_readPins(ENCODER_INPUTS_PORT, pinA | pinB);
+    return (uint8_t)(((pins &amp; pinA) != 0U ? 2U : 0U) | ((pins &amp; pinB) != 0U ? 1U : 0U));
+}
+
+void Encoder_Init(void)
+{
+    const uint32_t interruptMask = ENCODER_INPUTS_LEFT_A_PIN | ENCODER_INPUTS_LEFT_B_PIN |
+                                   ENCODER_INPUTS_RIGHT_A_PIN | ENCODER_INPUTS_RIGHT_B_PIN;
+
+    s_leftCount = 0;
+    s_rightCount = 0;
+    s_leftState = Encoder_ReadState(ENCODER_INPUTS_LEFT_A_PIN, ENCODER_INPUTS_LEFT_B_PIN);
+    s_rightState = Encoder_ReadState(ENCODER_INPUTS_RIGHT_A_PIN, ENCODER_INPUTS_RIGHT_B_PIN);
+    DL_GPIO_clearInterruptStatus(ENCODER_INPUTS_PORT, interruptMask);
+    DL_GPIO_enableInterrupt(ENCODER_INPUTS_PORT, interruptMask);
+    NVIC_ClearPendingIRQ(ENCODER_INPUTS_INT_IRQN);
+    NVIC_EnableIRQ(ENCODER_INPUTS_INT_IRQN);
+}
+
+int16_t Encoder_Get(uint8_t n)
+{
+    int32_t value = 0;
+    uint32_t primask = __get_PRIMASK();
+    __disable_irq();
+    if (n == 1U) { value = s_leftCount; s_leftCount = 0; }
+    else if (n == 2U) { value = s_rightCount; s_rightCount = 0; }
+    __set_PRIMASK(primask);
+    if (value &gt; 32767) value = 32767;
+    if (value &lt; -32768) value = -32768;
+    return (int16_t)value;
+}
+
+void GROUP1_IRQHandler(void)
+{
+    const uint32_t mask = ENCODER_INPUTS_LEFT_A_PIN | ENCODER_INPUTS_LEFT_B_PIN |
+                          ENCODER_INPUTS_RIGHT_A_PIN | ENCODER_INPUTS_RIGHT_B_PIN;
+    uint32_t pending = DL_GPIO_getEnabledInterruptStatus(ENCODER_INPUTS_PORT, mask);
+
+    if ((pending &amp; (ENCODER_INPUTS_LEFT_A_PIN | ENCODER_INPUTS_LEFT_B_PIN)) != 0U)
+    {
+        uint8_t next = Encoder_ReadState(ENCODER_INPUTS_LEFT_A_PIN, ENCODER_INPUTS_LEFT_B_PIN);
+        s_leftCount += (int32_t)(LEFT_ENCODER_SIGN * s_quadratureDelta[(s_leftState &lt;&lt; 2) | next]);
+        s_leftState = next;
+    }
+    if ((pending &amp; (ENCODER_INPUTS_RIGHT_A_PIN | ENCODER_INPUTS_RIGHT_B_PIN)) != 0U)
+    {
+        uint8_t next = Encoder_ReadState(ENCODER_INPUTS_RIGHT_A_PIN, ENCODER_INPUTS_RIGHT_B_PIN);
+        s_rightCount += (int32_t)(
+            RIGHT_ENCODER_SIGN *
+            s_quadratureDelta[(s_rightState &lt;&lt; 2) | next]);
+        s_rightState = next;
+    }
+    DL_GPIO_clearInterruptStatus(ENCODER_INPUTS_PORT, pending &amp; mask);
+}</code></pre>
+  <ol class="line-notes">
+    <li><strong>第 1～2 行：</strong>引入公开声明和工程生成的编码器引脚、中断号、GPIO/NVIC 接口。</li>
+    <li><strong>第 4～5 行：</strong>左右编码器物理安装方向相反时，相同的“车辆向前”可能产生相反计数；两个符号宏把它们统一到工程坐标系。</li>
+    <li><strong>第 7～8 行：</strong>左右累计计数既会被 ISR 修改，也会被主循环读取，所以声明为 <code>volatile</code>；使用 32 位是为了在两次读取间容纳更多脉冲。</li>
+    <li><strong>第 9～10 行：</strong>保存上一次读到的 AB 两位状态。它们只在初始化和 ISR 中访问，因此没有主循环共享问题。</li>
+    <li><strong>第 12 行：</strong>16 项查表覆盖“4 种旧状态 × 4 种新状态”。表中 <code>+1/-1</code> 是有效相邻跳变方向，0 是未变化或不可信的跨两位跳变。</li>
+    <li><strong>第 13 行：</strong>旧状态 0（AB=00）到新状态 0、1、2、3 的结果依次为 0、-1、+1、0。</li>
+    <li><strong>第 14 行：</strong>旧状态 1（AB=01）的四个转移结果。</li>
+    <li><strong>第 15 行：</strong>旧状态 2（AB=10）的四个转移结果。</li>
+    <li><strong>第 16～17 行：</strong>旧状态 3（AB=11）的结果，并结束常量表。</li>
+    <li><strong>第 19～21 行：</strong>私有函数一次读取 A、B 两个引脚。把引脚掩码先按位或，可确保两路来自同一次 GPIO 端口快照。</li>
+    <li><strong>第 22 行：</strong>A 为高贡献二进制 <code>10</code>（数值 2），B 为高贡献 <code>01</code>（数值 1）；按位或后得到 0～3 的 AB 状态编号。</li>
+    <li><strong>第 23 行：</strong>结束状态读取。</li>
+    <li><strong>第 25～28 行：</strong>初始化开始，并把左右四个引脚合成统一中断掩码。表达式换行只是为可读性。</li>
+    <li><strong>第 30～31 行：</strong>清空两个累计桶。</li>
+    <li><strong>第 32～33 行：</strong>在开中断前记录真实初始 AB 状态；否则第一次边沿没有可靠“旧状态”可比较。</li>
+    <li><strong>第 34 行：</strong>清除 GPIO 外设中可能残留的中断标志，避免刚启动就响应历史事件。</li>
+    <li><strong>第 35 行：</strong>允许这四个 GPIO 事件产生中断请求。</li>
+    <li><strong>第 36 行：</strong>再清除 NVIC 控制器中该 IRQ 的待处理标志，GPIO 外设层和 CPU 中断控制层都要清。</li>
+    <li><strong>第 37～38 行：</strong>最后使能 CPU 侧 IRQ 并结束初始化。先清状态、后使能可减少伪中断。</li>
+    <li><strong>第 40～42 行：</strong>读取函数先准备 32 位临时值。非法轮号时它保持 0。</li>
+    <li><strong>第 43 行：</strong>读取当前 PRIMASK，记住调用前全局中断原本是开还是关。</li>
+    <li><strong>第 44 行：</strong>进入临界区，暂时禁止可屏蔽中断，防止 ISR 恰好插在“读”和“清零”之间。</li>
+    <li><strong>第 45 行：</strong>轮号 1：复制左计数到局部变量，然后把共享桶清零。这意味着返回的是“自上次 Get 以来的增量”。</li>
+    <li><strong>第 46 行：</strong>轮号 2 对右计数执行同样的消费操作。</li>
+    <li><strong>第 47 行：</strong>恢复保存的 PRIMASK，而不是无条件开中断；若调用者进入函数前就关闭了中断，这里仍保持关闭。</li>
+    <li><strong>第 48～49 行：</strong>把 32 位结果饱和到 <code>int16_t</code> 的 -32768～32767，避免强制转换发生回绕而把大正数变负。</li>
+    <li><strong>第 50～51 行：</strong>安全转换后返回并结束函数。</li>
+    <li><strong>第 53～56 行：</strong><code>GROUP1_IRQHandler</code> 是硬件向量表约定的 ISR 名字；函数内重建四路掩码，用于筛选本模块关心的事件。</li>
+    <li><strong>第 57 行：</strong>读取“已使能且正在等待处理”的 GPIO 中断位。一个 IRQ 可能同时包含多个引脚事件。</li>
+    <li><strong>第 59～61 行：</strong>只要左 A 或左 B 有事件，就读取新的两位状态。</li>
+    <li><strong>第 62 行：</strong>核心索引是 <code>(旧状态 &lt;&lt; 2) | 新状态</code>：旧状态占高两位、新状态占低两位，刚好得到 0～15；查表结果再乘左轮方向修正并累加。</li>
+    <li><strong>第 63～64 行：</strong>把本次新状态保存为下次旧状态，结束左轮分支。</li>
+    <li><strong>第 65～67 行：</strong>右 A 或右 B 有事件时读取右轮新状态。</li>
+    <li><strong>第 68～70 行：</strong>右轮使用同一张转移表，只是乘 <code>RIGHT_ENCODER_SIGN</code>；三行共同组成一次累加表达式。</li>
+    <li><strong>第 71～72 行：</strong>更新右轮旧状态并结束分支。</li>
+    <li><strong>第 73～74 行：</strong>只清除本次确实读到且属于掩码的 pending 位，然后退出 ISR；若不清，CPU 会立刻再次进入中断。</li>
+  </ol>
+
+  <h4>Application/State/Heading.h：定义连续航向的公共契约</h4>
+  <pre class="source-code"><code data-source="Application/State/Heading.h" data-lines="1-37">#ifndef HEADING_H
+#define HEADING_H
+
+#include &lt;stdint.h&gt;
+
+#define HEADING_CALIBRATION_SAMPLES      400U
+#define HEADING_CALIBRATION_INTERVAL_MS  2U
+
+/* 航向角 —— 对 MPU6050 的 Z 轴角速度积分得到连续累计偏航角（度）。
+ * 角度不做 ±180° 归一化，可直接表示多圈旋转。
+ * 漂移处理：开机静止校准零偏；检测到外部地标时可用 Heading_SetYaw() 重置基准。
+ * 尺度修正：标称灵敏度 32.8 LSB/(°/s) 未必完全匹配当前芯片，
+ * 可通过原地旋转 N 圈标定 s_scale。
+ * 用法：开机调用 Heading_Init() 和 Heading_Calibrate()，
+ * 在 100 Hz 节拍中调用 Heading_Update(dt)。
+ */
+void Heading_Init(void);        /* 初始化 MPU6050，并复位角度、零偏和尺度因子 */
+void Heading_Calibrate(void);   /* 静止采样取零漂均值，调用期间会阻塞 */
+void Heading_Update(float dt);  /* 按 dt 积分偏航角；尺度标定时同步累计原始角 */
+uint8_t Heading_IsReady(void);  /* MPU6050 是否在线；读取失败后返回 0 */
+
+float Heading_GetYaw(void);      /* 累计偏航角（度），可超出 ±180° */
+void  Heading_SetYaw(float yaw); /* 设置当前偏航角基准，可用于地标校正 */
+
+/* 陀螺仪尺度标定：原地旋转 N 圈，真实角度为 N×360°，不依赖轴距或轮径。
+ * 用法：对准地标后开始标定，原地旋转 N 整圈并回到地标，再结束标定。
+ * 尺度因子 = 真实角度 / 标定期间按标称灵敏度积分的角度绝对值。 */
+void  Heading_ScaleCalibStart(void);            /* 清零标定角并开始累计 */
+float Heading_ScaleCalibFinish(uint16_t turns); /* 解算并应用尺度因子，返回新值 */
+void  Heading_ScaleCalibCancel(void);           /* 中止标定，不改变尺度因子 */
+float Heading_GetCalibAngle(void);              /* 返回标定期间累计的原始角度 */
+uint8_t Heading_IsScaleCalibActive(void);       /* 是否正在尺度标定 */
+
+float Heading_GetScale(void);                   /* 返回当前尺度修正因子，默认 1.0 */
+void  Heading_SetScale(float scale);            /* 设置尺度因子，用于掉电恢复或手动标定 */
+
+#endif</code></pre>
+  <ol class="line-notes">
+    <li><strong>第 1～2 行：</strong>头文件保护开始。</li>
+    <li><strong>第 4 行：</strong>为采样次数、圈数和在线标志提供固定宽度整数类型。</li>
+    <li><strong>第 6～7 行：</strong>零偏标定采 400 次，每次间隔 2 ms；仅延时就约 800 ms，再加软件 I2C 读取时间。</li>
+    <li><strong>第 9～10 行：</strong>说明状态含义：这里保存累计角，而不是指南针式的 -180°～+180° 方位。</li>
+    <li><strong>第 11～13 行：</strong>区分两类误差修正：静止均值解决“零点偏了”，整圈标定解决“刻度比例不准”。</li>
+    <li><strong>第 14～16 行：</strong>给出生命周期：开机初始化和阻塞校准，运行时每个 100 Hz 周期更新。</li>
+    <li><strong>第 17 行：</strong>初始化底层 MPU 并把本模块所有状态复位。</li>
+    <li><strong>第 18 行：</strong>静止采样计算零偏；“阻塞”表示函数返回前主循环不能做别的事。</li>
+    <li><strong>第 19 行：</strong><code>dt</code> 必须以秒为单位，函数用它把角速度积分成角度。</li>
+    <li><strong>第 20 行：</strong>向控制层暴露传感器健康状态，避免离线时仍启动车辆。</li>
+    <li><strong>第 22～23 行：</strong>读取或重设当前累计航向。Set 不是清除陀螺仪物理漂移，而是人为改变坐标原点。</li>
+    <li><strong>第 25～27 行：</strong>整圈尺度标定只需要真实旋转角，不依赖轮胎打滑、轴距或轮径，因此比用编码器推转角更直接。</li>
+    <li><strong>第 28 行：</strong>开始记录“按标称灵敏度算出的角度”。</li>
+    <li><strong>第 29 行：</strong>传入真实圈数，结束并计算新尺度。</li>
+    <li><strong>第 30 行：</strong>取消只停止累计，不应用半成品。</li>
+    <li><strong>第 31～32 行：</strong>读取正在累计的原始标定角，并查询尺度标定是否仍在进行；通信层用后者阻止 Z2 零漂重采样与 E/Y 尺度标定互相干扰。</li>
+    <li><strong>第 34～35 行：</strong>允许读取或恢复尺度因子，例如把上次标定结果从非易失存储加载回来。</li>
+    <li><strong>第 37 行：</strong>头文件保护结束。</li>
+  </ol>
+
+  <h4>Application/State/Heading.c：原始角速度减零偏，再乘 dt 累加</h4>
+  <pre class="source-code"><code data-source="Application/State/Heading.c" data-lines="1-109">#include "Application/State/Heading.h"
+#include "Hardware/Sensors/MPU6050.h"
+#include "System/Delay.h"
+#include &lt;math.h&gt;
+
+/* 航向角 —— 对 MPU6050 的 Z 轴角速度积分得到连续累计偏航角（度）。
+ * yaw(°) += (gz_raw - bias) / GYRO_LSB_PER_DPS * s_scale * dt
+ * 角度不限制在 ±180°，因此可直接记录多圈旋转。
+ * 漂移处理：开机静止取零偏；检测到外部地标时可用 Heading_SetYaw() 重置基准。
+ * 尺度修正：标称 32.8 LSB/(°/s) 未必匹配本芯片，可旋转 N 圈标定 s_scale。
+ */
+
+/* GYRO_CONFIG=0x10 -&gt; ±1000 dps, 灵敏度 32.8 LSB/(°/s) */
+#define GYRO_LSB_PER_DPS 32.8f
+#define GYRO_Z_DIR_SIGN  (-1.0f)
+
+static float s_yaw;
+static float s_bias;
+static float s_scale = 1.0f;      /* 陀螺仪尺度修正因子 */
+static uint8_t s_ready;
+static uint8_t s_calibActive;     /* 1 表示正在进行尺度标定 */
+static float s_calibAngle;        /* 标定期间按标称灵敏度积分的原始角度 */
+
+void Heading_Init(void)
+{
+    MPU6050_Init();
+    s_yaw = 0.0f;
+    s_bias = 0.0f;
+    s_scale = 1.0f;
+    s_calibActive = 0U;
+    s_calibAngle = 0.0f;
+    s_ready = MPU6050_IsReady();
+}
+
+void Heading_Calibrate(void)
+{
+    uint16_t i;
+    float sum = 0.0f;
+    if (s_ready == 0U) return;
+
+    for (i = 0U; i &lt; HEADING_CALIBRATION_SAMPLES; i++)
+    {
+        sum += (float)MPU6050_GetGyroZ();
+        if (MPU6050_IsReady() == 0U)
+        {
+            s_ready = 0U;
+            s_bias = 0.0f;
+            return;
+        }
+        Delay_ms(HEADING_CALIBRATION_INTERVAL_MS);
+    }
+    s_bias = sum / (float)HEADING_CALIBRATION_SAMPLES;
+    s_yaw = 0.0f;
+}
+
+void Heading_Update(float dt)
+{
+    float gz;
+    float rate;
+    if (s_ready == 0U) return;
+    gz = (float)MPU6050_GetGyroZ() - s_bias;   /* 去零偏后的原始值 */
+    if (MPU6050_IsReady() == 0U) { s_ready = 0U; return; }
+    rate = GYRO_Z_DIR_SIGN * gz / GYRO_LSB_PER_DPS; /* 统一到工程约定的偏航角正方向。 */
+    s_yaw += rate * s_scale * dt;              /* 积分(应用标定尺度) */
+    if (s_calibActive != 0U)
+    {
+        s_calibAngle += rate * dt;             /* 累计标称角度，用于解算真实尺度 */
+    }
+}
+
+uint8_t Heading_IsReady(void) { return s_ready; }
+float Heading_GetYaw(void) { return s_yaw; }
+void Heading_SetYaw(float yaw) { s_yaw = yaw; }
+
+/* ===== 陀螺仪尺度标定：原地旋转 N 圈 ===== */
+
+void Heading_ScaleCalibStart(void)
+{
+    s_calibAngle = 0.0f;
+    s_calibActive = 1U;
+}
+
+float Heading_ScaleCalibFinish(uint16_t turns)
+{
+    float truth = (float)turns * 360.0f;             /* N 整圈对应的真实角度 */
+    s_calibActive = 0U;
+    /* 旋转角度过小时不更新尺度因子，避免除零或误标定。 */
+    if ((s_calibAngle &gt; 1.0f) || (s_calibAngle &lt; -1.0f))
+    {
+        s_scale = truth / fabsf(s_calibAngle);
+    }
+    return s_scale;
+}
+
+void Heading_ScaleCalibCancel(void)
+{
+    s_calibActive = 0U;                              /* 中止: 不改 s_scale */
+}
+
+float Heading_GetCalibAngle(void) { return s_calibAngle; }
+
+uint8_t Heading_IsScaleCalibActive(void) { return s_calibActive; }
+
+float Heading_GetScale(void) { return s_scale; }
+
+void Heading_SetScale(float scale)
+{
+    if (scale &gt; 0.0f) { s_scale = scale; }           /* 掉电恢复/手动填已知标定值 */
+}</code></pre>
+  <ol class="line-notes">
+    <li><strong>第 1～4 行：</strong>依次引入自身接口、MPU 原始数据、校准延时和 <code>fabsf</code> 所需的数学库。</li>
+    <li><strong>第 6～10 行：</strong>注释直接写出整个模块的核心公式，并说明累计角、零偏和比例误差三件事不能混为一谈。</li>
+    <li><strong>第 11 行：</strong>结束模块说明注释。</li>
+    <li><strong>第 13～15 行：</strong>量程配置决定换算常数 32.8；方向符号 -1 用于把芯片 Z 轴正方向统一成整车约定方向，不改变传感器本身的数据。</li>
+    <li><strong>第 17～18 行：</strong><code>s_yaw</code> 保存累计角度，<code>s_bias</code> 保存静止时原始 Z 轴平均值。两者只在本文件可见。</li>
+    <li><strong>第 19～22 行：</strong>尺度默认 1；另存在线标志、是否正在尺度标定，以及标定期间不乘尺度的原始累计角。</li>
+    <li><strong>第 24～26 行：</strong>航向初始化先初始化底层 MPU，保证后续状态建立在已配置的量程上。</li>
+    <li><strong>第 27～31 行：</strong>清角度、零偏、尺度和标定状态。注意重新调用 Init 会丢失此前手动设置的尺度。</li>
+    <li><strong>第 32～33 行：</strong>复制底层 ready 状态并结束初始化。</li>
+    <li><strong>第 35～38 行：</strong>校准函数准备 16 位循环计数器和浮点总和；400 个有符号原始值累加到 float 中。</li>
+    <li><strong>第 39 行：</strong>设备本来就不在线时立即返回，避免耗时约 800 ms 的无效循环。</li>
+    <li><strong>第 41～43 行：</strong>循环固定样本数，每次读取 Z 轴原始值并累加。校准时车必须静止，否则真实转动也会被当成零偏。</li>
+    <li><strong>第 44～48 行：</strong>每次读取后检查底层状态；中途失败就锁存离线、清零尚未完成的 bias，并立即退出。</li>
+    <li><strong>第 49～50 行：</strong>结束失败分支，并在成功样本之间等待设定的 2 ms。</li>
+    <li><strong>第 51～53 行：</strong>循环结束后用“总和 ÷ 样本数”得到平均零偏，并把当前航向归零，令校准结束时刻成为角度原点。</li>
+    <li><strong>第 54 行：</strong>结束零偏校准。</li>
+    <li><strong>第 56～60 行：</strong>周期更新函数接收秒单位 <code>dt</code>，准备去偏原始值与物理角速度；离线时不更新旧状态。</li>
+    <li><strong>第 61 行：</strong>读取有符号原始 Z 值并减去 bias。此时 <code>gz</code> 的单位仍是 LSB，不是 °/s。</li>
+    <li><strong>第 62 行：</strong>若刚才的读取失败，马上同步离线并退出，避免把失败替代值 0 拿去积分。</li>
+    <li><strong>第 63 行：</strong>先乘方向符号，再除以 32.8，得到工程正方向下的 °/s。</li>
+    <li><strong>第 64 行：</strong><code>角度增量 = 角速度 × 尺度修正 × 秒</code>，再加到连续角。这里没有任何 ±180° 归一化。</li>
+    <li><strong>第 65～68 行：</strong>尺度标定期间额外累计未乘 <code>s_scale</code> 的标称角，这样结束时才能比较“标称测得多少”和“真实转了多少”。</li>
+    <li><strong>第 69 行：</strong>结束周期更新。</li>
+    <li><strong>第 71 行：</strong>返回航向模块在线状态。</li>
+    <li><strong>第 72 行：</strong>返回当前连续累计角，单位为度。</li>
+    <li><strong>第 73 行：</strong>直接改变角度坐标基准；它不会改变 <code>s_bias</code> 或 MPU 寄存器。</li>
+    <li><strong>第 75 行：</strong>分隔注释，标出下面是尺度标定接口。</li>
+    <li><strong>第 77～80 行：</strong>开始尺度标定时先清零累计角，再打开标志；之后每次 <code>Heading_Update</code> 都会同步累计。</li>
+    <li><strong>第 81 行：</strong>结束开始函数。</li>
+    <li><strong>第 83～86 行：</strong>结束函数把整数圈数换成真实角度 <code>N × 360°</code>，然后先关闭累计，固定本次样本。</li>
+    <li><strong>第 87～88 行：</strong>只有累计绝对值大于 1° 才允许更新，避免静止噪声导致接近除零。</li>
+    <li><strong>第 89～90 行：</strong><code>fabsf</code> 去掉旋转方向，只校正比例；新尺度 = 真实角度 ÷ 标称累计角绝对值。</li>
+    <li><strong>第 91～93 行：</strong>结束条件，返回当前尺度；若旋转太小则返回旧值。</li>
+    <li><strong>第 95～98 行：</strong>取消标定只清 active，不清旧尺度，也不要求清掉仅用于观察的 <code>s_calibAngle</code>。</li>
+    <li><strong>第 100 行：</strong>返回标定累计角，便于 OLED 或命令行显示。</li>
+    <li><strong>第 102 行：</strong>返回尺度标定活动标志；Z2 重采零漂前会查询它，避免两种校准流程同时修改航向状态。</li>
+    <li><strong>第 104 行：</strong>返回当前生效尺度。</li>
+    <li><strong>第 106～108 行：</strong>只接受大于 0 的尺度，拒绝负数和零，防止反转角度方向或让积分永久为零。</li>
+    <li><strong>第 109 行：</strong>结束文件。</li>
+  </ol>
+
+<h4>Application/State/Odometry.h：把编码器计数提升为可共享的距离与速度</h4>
+  <pre class="source-code"><code data-source="Application/State/Odometry.h" data-lines="1-24">#ifndef __ODOMETRY_H
+#define __ODOMETRY_H
+
+/* 基于编码器增量的车轮里程状态，由 100 Hz 系统节拍更新。 */
+
+#include &lt;stdint.h&gt;
+
+/* 里程计 —— 基于左右编码器增量积分前进距离
+ * 用法：每个 100 Hz 节拍调用一次 Odometry_Update(ticks)；
+ * 每段起点调用 Odometry_Reset()。编码器计数到毫米的换算需现场标定。
+ */
+void  Odometry_Init(void);            /* 含 Encoder_Init */
+void  Odometry_Update(uint8_t ticks); /* 读取编码器增量，并更新路程和速度 */
+void  Odometry_Reset(void);           /* 在当前分段起点清零里程 */
+
+float Odometry_GetDistanceMM(void); /* 返回自上次复位起的左右平均路程，单位 mm */
+float Odometry_GetDistanceLMM(void);
+float Odometry_GetDistanceRMM(void);
+float Odometry_GetSpeedL(void);     /* 左轮速度(mm/s) */
+float Odometry_GetSpeedR(void);     /* 右轮速度(mm/s) */
+
+extern float Odometry_CountsPerMM;  /* 标定常量：每毫米对应编码器计数，现场标定 */
+
+#endif</code></pre>
+  <ol class="line-notes">
+    <li><strong>第 1～2 行：</strong>头文件保护开始。</li>
+    <li><strong>第 4 行：</strong>里程状态不是在编码器每个边沿都换算，而是由主循环按系统节拍批量更新。</li>
+    <li><strong>第 6 行：</strong>提供 <code>uint8_t ticks</code> 所需类型。</li>
+    <li><strong>第 8～11 行：</strong>说明算法和使用顺序：不断消费增量形成累计距离，每段任务需要新坐标原点时再 Reset。</li>
+    <li><strong>第 12 行：</strong>里程初始化内部也会初始化编码器，调用者不必重复做。</li>
+    <li><strong>第 13 行：</strong>每次更新同时消费左右计数，并以 <code>ticks</code> 还原真实经过时间。</li>
+    <li><strong>第 14 行：</strong>Reset 是“从当前位置重新计里程”，不会让车轮或硬件编码器真的回到机械零位。</li>
+    <li><strong>第 16 行：</strong>返回左右累计距离平均值，适合表示车体大致前进路程。</li>
+    <li><strong>第 17～18 行：</strong>分别返回左右轮累计距离，直线控制会比较两侧进度。</li>
+    <li><strong>第 19～20 行：</strong>分别返回最近更新周期估算的左右轮速度，单位 mm/s。</li>
+    <li><strong>第 22 行：</strong><code>extern</code> 表示变量实体定义在某个 <code>.c</code> 中，这里只发布声明；它不是编译期常量，可被标定流程修改。</li>
+    <li><strong>第 24 行：</strong>头文件保护结束。</li>
+  </ol>
+
+  <h4>Application/State/Odometry.c：计数除以 counts/mm 得位移，再除以时间得速度</h4>
+  <pre class="source-code"><code data-source="Application/State/Odometry.c" data-lines="1-78">#include "Odometry.h"
+#include "Hardware/Motor/Encoder.h"
+#include "System/Tick.h"
+
+/* 初始参考值，必须通过实车定距滚动测试进一步标定。 */
+float Odometry_CountsPerMM = 6.23f;
+
+static float s_distanceL = 0.0f;
+static float s_distanceR = 0.0f;
+static float s_speedL = 0.0f;
+static float s_speedR = 0.0f;
+
+void Odometry_Init(void)
+{
+    Encoder_Init();
+    Odometry_Reset();
+}
+
+void Odometry_Update(uint8_t ticks)
+{
+    int16_t deltaL = Encoder_Get(1);
+    int16_t deltaR = Encoder_Get(2);
+
+    if (ticks &lt; 1U)
+    {
+        ticks = 1U;
+    }
+
+    if (Odometry_CountsPerMM &gt; 0.001f)
+    {
+        s_distanceL += (float)deltaL / Odometry_CountsPerMM;
+        s_distanceR += (float)deltaR / Odometry_CountsPerMM;
+        s_speedL = ((float)deltaL / Odometry_CountsPerMM) /
+                   ((float)ticks * TICK_DT);
+        s_speedR = ((float)deltaR / Odometry_CountsPerMM) /
+                   ((float)ticks * TICK_DT);
+    }
+    else
+    {
+        s_speedL = 0.0f;
+        s_speedR = 0.0f;
+    }
+}
+
+void Odometry_Reset(void)
+{
+    (void)Encoder_Get(1);
+    (void)Encoder_Get(2);
+    s_distanceL = 0.0f;
+    s_distanceR = 0.0f;
+    s_speedL = 0.0f;
+    s_speedR = 0.0f;
+}
+
+float Odometry_GetDistanceMM(void)
+{
+    return (s_distanceL + s_distanceR) * 0.5f;
+}
+
+float Odometry_GetDistanceLMM(void)
+{
+    return s_distanceL;
+}
+
+float Odometry_GetDistanceRMM(void)
+{
+    return s_distanceR;
+}
+
+float Odometry_GetSpeedL(void)
+{
+    return s_speedL;
+}
+
+float Odometry_GetSpeedR(void)
+{
+    return s_speedR;
+}</code></pre>
+  <ol class="line-notes">
+    <li><strong>第 1～3 行：</strong>引入本模块接口、编码器增量接口和 <code>TICK_DT</code> 时间常量。第 1 行使用同目录短路径。</li>
+    <li><strong>第 5～6 行：</strong>初始标定认为每移动 1 mm 产生 6.23 个计数；注释强调这是参考值，不是所有车辆通用的真理。</li>
+    <li><strong>第 8～11 行：</strong>四个私有状态分别保存左右累计距离和最近周期速度，初值都为零。</li>
+    <li><strong>第 13～16 行：</strong>初始化先启用编码器，再调用统一 Reset；复用 Reset 可避免两套清零逻辑逐渐不一致。</li>
+    <li><strong>第 17 行：</strong>结束初始化。</li>
+    <li><strong>第 19～22 行：</strong>更新一开始就读取左右增量。由于 <code>Encoder_Get</code> 会清零，这两个局部变量拥有本周期唯一的一份计数快照。</li>
+    <li><strong>第 24～27 行：</strong>若错误传入 0 tick，就按 1 tick 处理，防止后面的时间分母为零；正常 <code>App</code> 只在经过至少一拍时调用。</li>
+    <li><strong>第 29～30 行：</strong>只有 counts/mm 明显大于零才允许换算。用 <code>0.001</code> 而不是只比较 0，也挡住极小值造成的巨大结果。</li>
+    <li><strong>第 31 行：</strong>左轮位移增量 = 左计数增量 ÷ 每毫米计数，然后累加到左轮总距离。</li>
+    <li><strong>第 32 行：</strong>右轮执行同一换算。编码器层已经统一左右正方向，所以这里无需再改符号。</li>
+    <li><strong>第 33～34 行：</strong>左轮速度 = 本周期左位移 ÷ 本周期秒数；<code>ticks × TICK_DT</code> 就是真实时间。</li>
+    <li><strong>第 35～36 行：</strong>右轮使用完全相同的速度公式。</li>
+    <li><strong>第 37～41 行：</strong>若标定值非法，不更新距离，并把两侧速度置零，避免旧速度继续欺骗控制器。</li>
+    <li><strong>第 42～43 行：</strong>结束非法分支和更新函数。</li>
+    <li><strong>第 45～48 行：</strong>Reset 先调用两次 <code>Encoder_Get</code> 丢弃尚未消费的硬件增量；强制转换为 <code>void</code> 明确表示“有意忽略返回值”。</li>
+    <li><strong>第 49～52 行：</strong>再把应用层距离、速度全清零。先丢硬件桶、后清软件状态，可使新路段从调用时刻附近开始计数。</li>
+    <li><strong>第 53 行：</strong>结束 Reset。</li>
+    <li><strong>第 55～57 行：</strong>车体平均路程取左右轮均值。原地转弯时一侧为正、一侧为负，平均值可能接近 0，这正好表示车体中心几乎没前进。</li>
+    <li><strong>第 58 行：</strong>结束平均距离读取。</li>
+    <li><strong>第 60～63 行：</strong>直接返回左轮累计距离，不做额外采样或计算。</li>
+    <li><strong>第 65～68 行：</strong>直接返回右轮累计距离。</li>
+    <li><strong>第 70～73 行：</strong>返回最近一次更新得到的左轮速度。</li>
+    <li><strong>第 75～78 行：</strong>返回最近一次更新得到的右轮速度，并结束文件。</li>
+  </ol>
+
+  <h3>难点函数拆解</h3>
+
+  <div class="deep-dive">
+    <h4>难点一：GPIO 位图、掩码和加权误差到底在算什么</h4>
+    <p><strong>输入：</strong>五个 GPIO 的逻辑状态，以及 <code>side</code> 区域选择。</p>
+    <p><strong>过程：</strong>先把 CH0～CH4 分别放进 bit0～bit4；再用掩码留下区域；最后给每个触发位配上 -2、-1、0、+1、+2 的横向位置并求平均。</p>
+    <table>
+      <thead><tr><th>表示</th><th>二进制</th><th>含义</th></tr></thead>
+      <tbody>
+        <tr><td><code>0x1F</code></td><td><code>11111</code></td><td>全区五路</td></tr>
+        <tr><td><code>0x07</code></td><td><code>00111</code></td><td>左侧 bit0、bit1 与中心 bit2</td></tr>
+        <tr><td><code>0x1C</code></td><td><code>11100</code></td><td>中心 bit2、bit3 与右侧 bit4</td></tr>
+      </tbody>
+    </table>
+    <p>例：位图为 <code>0b00110</code>，表示 bit1 和 bit2 检测到线；全区误差是 <code>(-1 + 0) / 2 = -0.5</code>，说明线位于中心略偏左。若位图为 <code>0b10001</code>，平均权重是 0，但这不一定表示一条正常居中的线，也可能是横线或复杂路口，所以任务判断还会直接查看位图形状。</p>
+    <p><strong>输出：</strong>位图、单个位、平均横向误差或“区域是否在线”的布尔结果。</p>
+    <p><strong>边界条件：</strong>没有任何位触发时，误差返回 0。这个 0 表示“没有可计算位置”，与“线正好居中”数值相同，调用者若要区分，必须同时调用 <code>Graydetect_OnLine</code> 或检查原始位图。</p>
+    <p><strong>设计原因：</strong>底层统一位序后，Motion 与 Mission 可以按逻辑位置写算法，不会被换引脚牵着走。</p>
+  </div>
+
+  <div class="deep-dive">
+    <h4>难点二：软件 I2C 的一笔寄存器读取</h4>
+    <p><strong>输入：</strong>7 位设备地址 <code>0x68</code>、寄存器地址和一个用于接收结果的指针。</p>
+    <p><strong>过程：</strong><code>START → 0x68&lt;&lt;1 | 写位0 → 寄存器地址 → repeated START → 0x68&lt;&lt;1 | 读位1 → 读8位 → 主机NACK → STOP</code>。每发送 8 位都检查从机的低电平 ACK。</p>
+    <p><strong>输出：</strong>成功时把字节写到 <code>*value</code> 并返回 1；地址无人应答或指针为空时返回 0。</p>
+    <p><strong>边界条件：</strong>代码没有等待 SCL 被从机释放后的实际电平，因此没有实现 clock stretching；也没有总线卡死恢复脉冲。当前单从机、短连线环境通常够用，调试异常时应先用逻辑分析仪确认 START、地址、ACK 和 STOP。</p>
+    <p><strong>设计原因：</strong>以“只拉低或释放”模拟开漏，符合 I2C 多设备共享线路的电气规则；所有协议细节都锁在 <code>MPU6050.c</code> 内，上层无需理解时序。</p>
+  </div>
+
+  <div class="deep-dive">
+    <h4>难点三：六个指针输出参数为什么允许传 NULL</h4>
+    <p><strong>输入：</strong><code>ax</code>～<code>gz</code> 是六个变量地址。例如调用者可写 <code>MPU6050_GetData(&amp;ax, NULL, NULL, NULL, NULL, &amp;gz)</code>。</p>
+    <p><strong>过程：</strong>函数先判断某地址是否非空；只有非空才读取对应寄存器，再用 <code>*ax = ...</code> 写进调用者变量。</p>
+    <p><strong>输出：</strong>一个函数可以同时返回多项数据，而不必定义结构体；传 <code>NULL</code> 的轴保持未读取。</p>
+    <p><strong>边界条件：</strong>调用者必须传真实、仍有效、类型匹配的变量地址；野指针比 NULL 更危险，因为非空检查挡不住它。</p>
+    <p><strong>设计原因：</strong>软件 I2C 很慢，按需读取可节省不必要的事务；航向模块进一步使用专门的 <code>GetGyroZ</code>，路径更清楚。</p>
+  </div>
+
+  <div class="deep-dive">
+    <h4>难点四：从原始陀螺仪值到连续角度</h4>
+    <p><strong>输入：</strong>有符号 16 位 <code>gz_raw</code>、静止零偏 <code>bias</code>、灵敏度 32.8 LSB/(°/s)、方向符号、尺度 <code>s_scale</code> 和秒单位 <code>dt</code>。</p>
+    <p><strong>过程：</strong><code>去偏原始值 = gz_raw - bias</code>；<code>角速度 = -去偏值 / 32.8</code>；<code>角增量 = 角速度 × s_scale × dt</code>；最后累加进 <code>s_yaw</code>。</p>
+    <p>例：去偏后原始值为 164 LSB，则大小约为 <code>164 / 32.8 = 5°/s</code>。方向符号为 -1，<code>dt=0.01 s</code>、尺度 1.02 时，本拍角度增量为 <code>-5 × 1.02 × 0.01 = -0.051°</code>。</p>
+    <p><strong>输出：</strong>可超过一圈的连续角。若依次转过 370°，状态就是约 370°，不会自动变成 10°。</p>
+    <p><strong>边界条件：</strong><code>dt</code> 必须是正的秒数；本函数不限制异常大 dt，也不融合加速度计/磁力计，因此长时间积分必然逐渐漂移。</p>
+    <p><strong>设计原因：</strong>连续角让“转 N 圈”和绝对累计目标容易表达，也避免每跨过 ±180° 时数值突然跳变；代价是调用者若要最短转向，必须自己处理角度等价关系。</p>
+  </div>
+
+  <div class="deep-dive">
+    <h4>难点五：零漂标定与尺度标定不是一回事</h4>
+    <p><strong>零漂输入与过程：</strong>车静止，采 400 个 Z 轴原始值，每隔 2 ms 累加，平均得到 <code>s_bias</code>。以后读数先减它。</p>
+    <p><strong>尺度输入与过程：</strong>车对准地标后开始，实际转 N 整圈回到地标；期间按标称 32.8 灵敏度累计 <code>s_calibAngle</code>，结束时令 <code>s_scale = N×360 / |s_calibAngle|</code>。</p>
+    <p><strong>输出：</strong>零漂修正“静止时不该转却显示在转”；尺度修正“真实转 360°，计算却只有 350°或 370°”。</p>
+    <p><strong>边界条件：</strong>零漂期间移动会把真实运动误当偏差；尺度累计不足 1°不更新。调用者还必须保证 <code>turns ≥ 1</code>：当前函数没有检查 0 圈，若传 0 且累计角足够大，会把尺度算成 0。</p>
+    <p><strong>设计原因：</strong>把偏置与比例分开，能对应两类不同物理误差，也方便分别重新校准。</p>
+  </div>
+
+  <div class="deep-dive">
+    <h4>难点六：正交表索引为何是 (old&lt;&lt;2)|new</h4>
+    <p><strong>输入：</strong>旧 AB 状态和新 AB 状态，二者都只有 2 位、范围 0～3。</p>
+    <p><strong>过程：</strong>旧状态左移 2 位成为高半字节，新状态放低两位，组合成 4 位索引。例如旧 <code>01</code>、新 <code>11</code>：<code>01&lt;&lt;2 | 11 = 0111₂ = 7</code>，查表第 7 项得到 -1。</p>
+    <p><strong>输出：</strong>合法相邻变化输出 +1 或 -1；没有变化输出 0；00→11 这类同时跳两位、可能由漏采或毛刺造成的变化也输出 0。</p>
+    <p><strong>边界条件：</strong>查表能拒绝部分非法跳变，但不能恢复已经漏掉的脉冲；ISR 太慢或中断被关太久仍会造成里程误差。</p>
+    <p><strong>设计原因：</strong>查表比嵌套大量 if 更短、更稳定，且天然覆盖全部 16 种组合。</p>
+  </div>
+
+  <div class="deep-dive">
+    <h4>难点七：volatile、ISR 共享数据与“读后清零”</h4>
+    <p><strong>输入：</strong>ISR 随时增加的 <code>s_leftCount/s_rightCount</code>，以及主循环指定的轮号。</p>
+    <p><strong>过程：</strong><code>volatile</code> 强迫主循环真读内存；<code>Encoder_Get</code> 进一步保存 PRIMASK、关中断、复制并清零、恢复 PRIMASK。</p>
+    <p>若不关中断，可能发生：主循环读到 100 → ISR 加到 101 → 主循环清零。那刚到的第 101 个脉冲就丢了。临界区让 ISR 只能在整组操作之前或之后发生。</p>
+    <p><strong>输出：</strong>一次性消费的增量快照；同一轮连续调用两次，第二次通常接近 0。</p>
+    <p><strong>边界条件：</strong>临界区应尽可能短。本实现关中断时只做少量赋值，浮点换算放在恢复中断后；这是正确的实时性取舍。</p>
+    <p><strong>设计原因：</strong><code>volatile</code> 解决编译器缓存问题，临界区解决操作被打断问题；二者职责不同，缺一不可。</p>
+  </div>
+
+  <div class="deep-dive">
+    <h4>难点八：计数到毫米、毫米到速度，以及 dt 与 ticks</h4>
+    <p><strong>输入：</strong>本周期增量 <code>delta</code>、标定值 <code>Odometry_CountsPerMM</code>、经过节拍数 <code>ticks</code>，以及 <code>TICK_DT=0.01 s</code>。</p>
+    <p><strong>过程：</strong><code>位移(mm)=delta/countsPerMM</code>；<code>时间(s)=ticks×0.01</code>；<code>速度(mm/s)=位移/时间</code>。</p>
+    <p>例：<code>delta=623</code> 个整数计数、<code>countsPerMM=6.23</code>，位移是 100 mm。若经过 20 tick，即 0.20 s，速度是 <code>100/0.20=500 mm/s</code>。若主循环延迟了两拍却仍固定除以 0.01，速度会错误翻倍，所以必须传真实 ticks。</p>
+    <p><strong>输出：</strong>距离是长期累计值；速度是最近一批计数的区间平均值，不是编码器边沿时刻的连续瞬时速度。</p>
+    <p><strong>边界条件：</strong>低速时一个周期可能没有脉冲，速度会在 0 与较大值之间量化跳动；需要控制层滤波/PID 参数与编码器分辨率共同配合。</p>
+    <p><strong>设计原因：</strong><code>App</code> 同一周期把 <code>dt = elapsedTicks×TICK_DT</code> 给 Heading/Motion，把 <code>elapsedTicks</code> 给 Odometry，所有状态和控制器就使用同一段真实时间。</p>
+  </div>
+
+  <h3>放回总体调用链</h3>
+  <div class="relation-chain">
+    <p>灰度探头电平 → <code>Graydetect_GetState/GetError/OnLine</code> → <code>MotionLine</code> 差速巡线 / Mission 地标条件 → <code>MotionManager</code> 动作状态 / DebugDisplay 与 Telemetry</p>
+    <p>MPU6050 寄存器 → 软件 I2C → <code>MPU6050_GetGyroZ</code> 原始 LSB → <code>Heading_Update(dt)</code> 连续角 → <code>MotionStraight</code> 航向保持 / <code>Nav</code> 转向 → Mission；同时送往 DebugDisplay、Telemetry 与蓝牙调零</p>
+    <p>编码器 A/B 边沿 → <code>GROUP1_IRQHandler</code> 增量桶 → <code>Encoder_Get</code> 读后清零 → <code>Odometry_Update(ticks)</code> 距离/速度 → <code>MotionWheel</code> 速度 PID / <code>MotionStraight</code> 距离闭环 → <code>MotionManager</code> → Mission；同时送往 DebugDisplay 与 Telemetry</p>
+  </div>
+  <p><code>Application/Core/App.c</code> 的顺序非常关键：初始化阶段先调用 <code>Graydetect_Init</code>（第 45 行）、<code>Odometry_Init</code>（第 50 行）、<code>Heading_Init</code> 与校准（第 53～55 行）；运行阶段先算 <code>context-&gt;dt = elapsedTicks × TICK_DT</code>（第 92 行），再更新 Heading 和 Odometry（第 96～97 行），之后才更新 <code>MotionManager</code>（第 120 行），最后输出 Telemetry 和 OLED（第 140、147 行）。因此本周期控制读取到的是本周期刚更新的状态。</p>
+  <p>具体消费者也能验证这条链：<code>MotionLine.c</code> 第 103 行读取灰度位图；<code>MotionStraight.c</code> 第 123～124、164～168 行使用左右距离，第 308 行使用航向；<code>MotionWheel.c</code> 第 130～132 行用左右速度作 PID 反馈；<code>Nav.c</code> 第 118、249 行用连续航向算转角误差。</p>
+  <p>Mission 并不重复采样或重复更新状态：<code>Accomplish/25E.c</code> 第 169 行用 <code>Graydetect_OnLine</code> 判断黑线，第 78 行保存起始航向；<code>Accomplish/25H.c</code> 第 60～65 行先检查并保存航向基准，第 139 行读取灰度位图识别地标。Debug 则是只读旁路：<code>DebugDisplay.c</code> 第 113～133 行显示位图、角度、距离和速度；<code>Telemetry.c</code> 第 135～153 行把同样数据发到串口。</p>
+
+  <h3>常见误解与调试提示</h3>
+  <div class="pitfall">
+    <h4>误解：灰度误差为 0 就一定在线且居中</h4>
+    <p>全白时 count 为 0，函数返回 0；左右对称多路同时触发时平均值也可能是 0。必须同时查看 <code>Graydetect_OnLine</code> 或原始位图。调试先在 OLED/Telemetry 上确认 bit0 真的是最左、bit4 真的是最右。</p>
+  </div>
+  <div class="pitfall">
+    <h4>误解：MPU6050_GetGyroZ 返回的是角度</h4>
+    <p>它返回的是有符号原始 LSB，只表示当下角速度刻度。减 bias、除 32.8 后才是 °/s，再乘 dt 累加后才是角度。把原始值直接当度会让参数完全失去物理意义。</p>
+  </div>
+  <div class="pitfall">
+    <h4>误解：volatile 已经保证 Encoder_Get 安全</h4>
+    <p><code>volatile</code> 只防止编译器偷偷复用旧值，不能把“读取 + 清零”变成不可分割操作。真正防丢计数的是短临界区与恢复原 PRIMASK。</p>
+  </div>
+  <div class="pitfall">
+    <h4>误解：任何模块都可以直接调用 Encoder_Get 看一眼</h4>
+    <p>它是“读后清零”。如果 Debug 或 Motion 再读一次，就会抢走 Odometry 尚未消费的增量，导致里程少算。工程约定应由 Odometry 成为唯一周期消费者，其他模块只读 <code>Odometry_Get...</code>。</p>
+  </div>
+  <div class="pitfall">
+    <h4>误解：Heading_SetYaw 能修好陀螺仪漂移</h4>
+    <p>它只改当前坐标原点；bias 或尺度错误仍然存在。并且直线动作运行中改 yaw 会突然改变航向保持目标的参考系，所以蓝牙调零命令需要先检查 MotionManager 是否忙。</p>
+  </div>
+  <div class="pitfall">
+    <h4>调试顺序</h4>
+    <p>灰度先看原始五位位图，再看误差；MPU 先看 ID/ready，再静止看 raw 是否稳定，再看 yaw；编码器先悬空转单轮确认方向和计数，再定距标 counts/mm，最后才调速度 PID。由底向上逐层验证，比一开始怀疑 Motion 算法更容易定位。</p>
+  </div>
+
+  <div class="ripple-effect">
+    <h4>修改参数会牵动哪里</h4>
+    <ul>
+      <li>改灰度 bit 顺序、极性或权重，会同时影响 <code>MotionLine</code> 的差速方向、Mission 的地标掩码、OLED/Telemetry 的位图含义。</li>
+      <li>改 <code>MPU_GYRO_CONFIG</code> 量程，必须同步改 <code>GYRO_LSB_PER_DPS</code>；否则所有航向、直行保持和 Nav 转向比例都会错。</li>
+      <li>改 <code>GYRO_Z_DIR_SIGN</code> 会反转航向正方向，Nav 和 MotionStraight 的修正符号也必须实车复核。</li>
+      <li>改 <code>HEADING_CALIBRATION_SAMPLES/INTERVAL</code> 会改变启动等待时间与 bias 平滑程度；采样更久不等于允许校准时移动。</li>
+      <li>改 <code>LEFT/RIGHT_ENCODER_SIGN</code> 会改变里程和速度正负，进而影响 MotionWheel PID、MotionStraight 进度和转向轮速命令的反馈关系。</li>
+      <li>改 <code>Odometry_CountsPerMM</code> 会按反比例同时改变距离和速度：值增大，算出的 mm 与 mm/s 都减小。之后应重新核对直线距离、速度环和任务终点。</li>
+      <li>改系统 <code>TICK_DT</code> 或调用频率，必须保证 App 的 <code>dt</code> 与 Odometry 的 <code>ticks×TICK_DT</code> 仍代表同一真实时间。</li>
+    </ul>
+  </div>
+
+  <h3>学完自测</h3>
+  <details class="quiz"><summary>1. 位图 0b10100 表示哪些灰度通道检测到黑线？右半区掩码后还剩什么？</summary><p>bit2 和 bit4 为 1，即中心与最右通道触发。右半区掩码 0x1C 保留 bit2～bit4，所以仍是 0b10100。</p></details>
+  <details class="quiz"><summary>2. 为什么 MPU_SendByte 读到低电平 ACK 后，变量 ack 反而是 1？</summary><p>I2C 的 ACK 在电气上是低电平。代码先读到 0，再用逻辑非 ! 把它转换为 C 语言中的成功真值 1。</p></details>
+  <details class="quiz"><summary>3. 静止零偏为 20 LSB，当前原始值为 184 LSB，dt=0.01 s、scale=1 时，本拍航向变化是多少？</summary><p>去偏为 164 LSB，除以 32.8 得 5°/s，再乘方向符号 -1 和 0.01 s，变化为 -0.05°。</p></details>
+  <details class="quiz"><summary>4. 为什么 Encoder_Get 必须保存并恢复 PRIMASK，而不能函数结尾直接开中断？</summary><p>调用者进入函数前可能已经关闭中断。直接开中断会破坏调用者的临界区；恢复旧 PRIMASK 才能保持进入前的中断状态。</p></details>
+  <details class="quiz"><summary>5. 某段左轮增量 623 count，counts/mm=6.23，经过 20 tick，左轮速度是多少？</summary><p>位移是 623/6.23=100 mm；20 tick 是 0.20 s；速度是 100/0.20=500 mm/s。</p></details>
+
+  <h3>覆盖清单</h3>
+  <ul class="coverage-list">
+    <li><code>Hardware/Sensors/Graydetect.h</code>：第 1～26 行；公开契约、区域编号、全部接口与注释逐行覆盖，空行只承担排版分组。</li>
+    <li><code>Hardware/Sensors/Graydetect.c</code>：第 1～64 行；GPIO 初始化、五位位图、掩码、单路读取、加权误差和在线判断全部按真实行号覆盖。</li>
+    <li><code>Hardware/Sensors/MPU6050.h</code>：第 1～15 行；软件 I2C 驱动接口、在线/ID、六轴指针输出和 Z 轴快捷接口全部覆盖。</li>
+    <li><code>Hardware/Sensors/MPU6050.c</code>：第 1～169 行；寄存器常量、开漏模拟、START/STOP、收发字节、ACK/NACK、寄存器读写、初始化、16 位拼接和指针输出全部覆盖。</li>
+    <li><code>Hardware/Motor/Encoder.h</code>：第 1～11 行；初始化与读后清零增量接口全部覆盖。</li>
+    <li><code>Hardware/Motor/Encoder.c</code>：第 1～74 行；方向符号、volatile 共享计数、16 项正交表、GPIO 状态编码、临界区和 ISR 全部覆盖；查表的 16 个值按四行旧状态逐行解释，并在难点部分说明索引法。</li>
+    <li><code>Application/State/Heading.h</code>：第 1～36 行；零漂参数、连续角契约、运行接口和尺度标定接口全部覆盖。</li>
+    <li><code>Application/State/Heading.c</code>：第 1～107 行；原始值单位、零偏均值、dt 积分、连续角、方向与尺度修正、标定开始/结束/取消全部覆盖。</li>
+    <li><code>Application/State/Odometry.h</code>：第 1～24 行；周期更新、复位、距离/速度接口与 extern 标定变量全部覆盖。</li>
+    <li><code>Application/State/Odometry.c</code>：第 1～78 行；编码器读后清零、ticks 防零、count→mm、速度除以真实时间、复位与 getter 全部覆盖。</li>
+  </ul>
+</section>

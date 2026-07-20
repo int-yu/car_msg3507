@@ -1,0 +1,1135 @@
+<section class="lesson-section" id="module-09" data-title="25E、25H 与测试任务图" data-group="任务编排">
+  <h2>模块 09：25E、25H 与测试任务图——用静态表给通用 Mission 装上不同题目</h2>
+
+  <div class="module-map">
+    <p><strong>一句话职责：</strong>三个 Accomplish 模块只描述“有哪些状态、每个状态启动什么动作、什么条件切到哪里”，真正执行状态机的是公共 Mission。</p>
+    <p><strong>上游输入：</strong>App_UpdateContext 的按键按下沿与经过节拍、灰度状态、连续航向、MotionManager 动作状态。</p>
+    <p><strong>下游输出：</strong>静态 Mission_StateDefinition_t 状态表、Mission_Transition_t 转换表和 Mission_GraphDefinition_t 图描述。</p>
+    <p><strong>依赖：</strong>Mission 公共类型与执行器、MotionManager、Heading、Graydetect。</p>
+    <p><strong>调用者：</strong>main.c 选择一张图传给 Mission_Init；Mission 按表调用 Accomplish 的 onEnter、onUpdate 和条件函数。</p>
+    <p><strong>总体位置：</strong>按键/传感器 → AppContext → Mission 引擎 → Accomplish 回调 → MotionManager → 底层运动。</p>
+  </div>
+
+  <div class="pitfall">
+    <h4>先纠正最重要的理解</h4>
+    <p>Accomplish/25E.c、25H.c、Test.c <strong>不是三套新的状态机引擎</strong>。它们是三份“任务数据 + 小回调”：用 Mission.h 的公共结构体声明静态数组。循环调度、错误处理、转换顺序、停止当前运动、进入目标状态都由 Application/Mission/Mission.c 完成。</p>
+  </div>
+  <div class="pitfall">
+    <h4>当前烧进程序的是哪张图？</h4>
+    <p><strong>当前 main.c 第 1 行包含 Accomplish/Test.h，第 11 行调用 Mission_Init(AccomplishTest_GetMissionGraph())。</strong>所以现在按 KEY2 执行刹车测试；25E 与 25H 虽然源码完整存在，却没有被 main 选中。要运行正式题目必须明确改 main 的 include 和 GetMissionGraph 调用。</p>
+  </div>
+
+  <h3>1. 三张文字流程图</h3>
+  <div class="relation-chain">25E：WAITING --KEY1沿→ STRAIGHT(最多2000mm找线) --连续3拍见线→ LINE --连续丢线50拍→ TURN(绝对目标每轮+180°) → STRAIGHT循环；2000mm无线上限→ WAITING</div>
+  <div class="relation-chain">25H：WAITING --KEY1沿→ LINE --左侧bit0+bit1同时为1→ FORWARD(150mm并降到0) → TURN(绝对目标每轮−90°) → LINE循环；普通丢线完成→ WAITING</div>
+  <div class="relation-chain">Test：WAITING --KEY2沿→ FORWARD(500mm并降到0) → BRAKE(释放→短刹→释放) → WAITING</div>
+
+  <table>
+    <thead><tr><th>任务图</th><th>目的</th><th>启动键</th><th>运动序列</th><th>核心参数</th></tr></thead>
+    <tbody>
+      <tr><td>25E</td><td>直线寻找黑线，巡线至丢线，再掉头寻找下一段</td><td>KEY1 / bit0</td><td>直行→巡线→绝对转向→循环</td><td>2000 mm、300/200 mm/s、见线3拍、每轮+180°</td></tr>
+      <tr><td>25H</td><td>巡线识别左侧标志，越过标志后做连续左转</td><td>KEY1 / bit0</td><td>巡线→150 mm直行→绝对转向→循环</td><td>左两位0x03、200 mm/s、每轮−90°</td></tr>
+      <tr><td>Test</td><td>观察定距减速后主动刹车的滑行差异</td><td>KEY2 / bit1</td><td>500 mm直行→短刹→等待</td><td>500 mm、200 mm/s、终点速度0</td></tr>
+    </tbody>
+  </table>
+
+  <h3>2. 初学者需要先知道</h3>
+  <p><dfn data-term="finite state machine">有限状态机</dfn>把流程分成有限个状态，并规定何时从一个状态转到另一个状态。这里 Mission 是执行器，Accomplish 数组是流程说明书。</p>
+  <p><dfn data-term="callback">回调函数</dfn>是“把函数地址交给框架，等框架在合适时机调用”。onEnter 进入状态时一次，onUpdate 每个有效系统拍一次，condition 在检查转换时调用。</p>
+  <p><dfn data-term="function pointer">函数指针</dfn>保存函数入口地址。Mission_StateDefinition_t 的 onEnter/onUpdate/onExit 字段和 Mission_Transition_t 的 condition 字段都是函数指针。</p>
+  <p><dfn data-term="static table">静态表</dfn>在编译期确定、程序运行时只读的数组。任务图不动态申请内存，状态和转换关系一目了然。</p>
+  <p><dfn data-term="designated initializer">指定下标初始化</dfn>例如 [STATE_LINE] = {...}，明确把结构体放到枚举对应槽位；即使枚举顺序调整，也比只靠位置更易检查。</p>
+  <p><dfn data-term="interrupt transition">打断转换</dfn>可在当前动作仍 RUNNING 时生效，例如巡线中发现标志立即切走。普通转换只在动作 FINISHED 后检查。</p>
+  <p><dfn data-term="absolute heading">绝对航向目标</dfn>表示连续角度坐标中的指定方向。Heading 不限制在 ±180°，所以目标可以是 360°、−270°等连续累计值。</p>
+  <p><dfn data-term="bit mask">位掩码</dfn>用整数各位表示多个传感器。0x03 二进制是 00000011，表示灰度 bit0 与 bit1 都要关注。</p>
+
+  <h3>3. 文件导读</h3>
+  <ul>
+    <li>25E.h：只放实车参数和取图接口；25E.c：五状态图、见线确认和 +180°绝对目标循环。</li>
+    <li>25H.h：左侧标志、前移和转角参数；25H.c：五状态图、左双黑条件和 −90°目标循环。</li>
+    <li>Test.h：刹车测试参数；Test.c：等待、直行、刹车、错误四状态图。</li>
+  </ul>
+
+  <h3>4. 逐行讲解</h3>
+  <h4>4.1 Accomplish/25E.h：25E 可调参数</h4>
+  <pre class="source-code"><code data-source="Accomplish/25E.h" data-lines="1-48">#ifndef ACCOMPLISH_25E_H
+#define ACCOMPLISH_25E_H
+
+#include "Application/Mission/Mission.h"
+
+/*
+ * 25E 题目流程：
+ * 等待 KEY1 按下 -&gt; 最多直行 2000 mm -&gt; 检测到黑线后巡线
+ * -&gt; 连续丢线 50 拍后转向绝对目标 -&gt; 重新直行并循环。
+ *
+ * 本文件只保存需要按题目或实车调整的参数。
+ * 距离单位为 mm，速度单位为 mm/s，角度单位为 °。
+ */
+
+/* KEY1 在 App 按键位图中对应 bit0；使用按下沿启动，长按不会重复触发。 */
+#define ACCOMPLISH_25E_START_KEY_MASK              0x01U
+
+/* 每轮直线寻找黑线的最大距离；走满仍未找到线时停车并回到等待。 */
+#define ACCOMPLISH_25E_STRAIGHT_DISTANCE_MM        2000U
+
+/* 直线阶段的巡航速度。 */
+#define ACCOMPLISH_25E_STRAIGHT_SPEED_MMPS         300.0f
+
+/* 直线走满最大距离后的终点速度；当前为 0，表示平滑减速至停车。 */
+#define ACCOMPLISH_25E_STRAIGHT_END_SPEED_MMPS     0.0f
+
+/* 检测到黑线并进入 MotionLine 后使用的巡线速度。 */
+#define ACCOMPLISH_25E_LINE_SPEED_MMPS             200.0f
+
+/* 直线阶段必须连续检测到黑线的节拍数；3 拍在 100 Hz 下约为 30 ms。 */
+#define ACCOMPLISH_25E_LINE_DETECT_CONFIRM_TICKS   3U
+
+/*
+ * 每次转向时在上一绝对目标上增加的角度。
+ * 以 KEY1 启动航向为基准，目标依次增加 180°、360°……
+ */
+#define ACCOMPLISH_25E_TURN_TARGET_OFFSET_DEG      180.0f
+
+/* Nav 转向时每侧车轮的目标速度。 */
+#define ACCOMPLISH_25E_TURN_SPEED_MMPS             80.0f
+
+/*
+ * 返回 25E 的只读静态状态图。
+ * main.c 把该指针传给 Mission_Init()；调用者不得修改状态表内容。
+ */
+const Mission_GraphDefinition_t *Accomplish25E_GetMissionGraph(void);
+
+#endif</code></pre>
+  <ol class="line-notes">
+    <li><strong>第 1～4 行：</strong>保护宏并引入 Mission_GraphDefinition_t 类型；头文件不需要知道 Mission 如何执行。</li>
+    <li><strong>第 6～13 行：</strong>先用自然语言定义流程和单位，防止把 300.0f 误当 PWM 或把角度当弧度。</li>
+    <li><strong>第 15～16 行：</strong>KEY1 对应 bit0，掩码 0x01。</li>
+    <li><strong>第 18～25 行：</strong>每轮最多直行 2000 mm，巡航 300 mm/s，末速 0 表示到距离上限时减速停车。</li>
+    <li><strong>第 27～31 行：</strong>巡线速度 200 mm/s；直线阶段需连续 3 个真实系统拍检测到线，约 30 ms。</li>
+    <li><strong>第 33～40 行：</strong>每轮绝对目标增加 180°，转向轮速 80 mm/s。这里不是“每次相对转180°”接口，而是代码累加后调用 TurnTo。</li>
+    <li><strong>第 42～46 行：</strong>唯一公开函数返回 const 图指针；调用者可读但不应改静态表。</li>
+    <li><strong>第 48 行：</strong>结束保护。</li>
+  </ol>
+
+  <h4>4.2 Accomplish/25E.c：状态编号、运行期记忆与动作入口</h4>
+  <pre class="source-code"><code data-source="Accomplish/25E.c" data-lines="1-88">#include "Accomplish/25E.h"
+#include "Application/Control/MotionManager.h"
+#include "Application/State/Heading.h"
+#include "Hardware/Sensors/Graydetect.h"
+#include &lt;stddef.h&gt;
+
+/*
+ * 25E 状态图全部保存在本文件，不向其他模块公开状态编号或回调。
+ * Mission 负责执行状态图，MotionManager 负责保证只有一种运动占用双轮。
+ *
+ * 状态流程：
+ * WAITING --KEY1 按下--&gt; STRAIGHT --检测到黑线--&gt; LINE
+ * STRAIGHT --走满 2000 mm 未找到线--&gt; WAITING
+ * LINE --连续丢线 50 拍--&gt; TURN --到达启动航向 + 180°--&gt; STRAIGHT
+ */
+
+/* 根据静态数组自动计算转换数量，避免手工填写后与数组长度不一致。 */
+#define ACCOMPLISH_25E_ARRAY_COUNT(array) \
+    ((uint8_t)(sizeof(array) / sizeof((array)[0])))
+
+/* 状态编号只在 25E 内部使用，最后的 COUNT 用于定义和校验状态表长度。 */
+typedef enum
+{
+    ACCOMPLISH_25E_STATE_WAITING = 0, /* 等待 KEY1 按下，不驱动车轮。 */
+    ACCOMPLISH_25E_STATE_STRAIGHT,    /* 直行并在途中检查灰度黑线。 */
+    ACCOMPLISH_25E_STATE_LINE,        /* 使用五路灰度持续巡线。 */
+    ACCOMPLISH_25E_STATE_TURN,        /* 指向启动航向加 180° 的绝对目标。 */
+    ACCOMPLISH_25E_STATE_ERROR,       /* 运动启动或运行异常后的安全状态。 */
+    ACCOMPLISH_25E_STATE_COUNT
+} Accomplish25E_StateId_t;
+
+/*
+ * 直线阶段的黑线连续检测计数。
+ * 进入每一轮直线状态时清零，防止上一轮残留值直接触发巡线。
+ */
+static uint8_t s_lineDetectedTicks;
+
+/*
+ * KEY1 启动本轮任务时的连续航向角。
+ * Heading 的角度不做正负 180° 限幅，因此这里保存的也是连续绝对角。
+ */
+static float s_startYawDeg;
+static uint8_t s_startYawCaptured;
+
+/*
+ * 每次回到等待状态都清除上一轮任务的航向基准。
+ * 下一次按 KEY1 进入直线状态时会重新记录当前航向。
+ */
+static Mission_CallbackResult_t Accomplish25E_WaitingEnter(void)
+{
+    s_startYawDeg = 0.0f;
+    s_startYawCaptured = 0U;
+    return MISSION_CALLBACK_OK;
+}
+
+/*
+ * 等待状态必须持续返回 RUNNING。
+ * 如果 onUpdate 为空或返回 FINISHED，Mission 将不会检查 KEY1 打断转换。
+ */
+static Mission_ActionStatus_t Accomplish25E_WaitingUpdate(float dt)
+{
+    (void)dt;
+    return MISSION_ACTION_RUNNING;
+}
+
+/*
+ * 每次进入直线状态只调用一次。
+ * 先清除入线确认计数，再启动最大距离 2000 mm 的直线运动。
+ * MotionManager 启动失败时返回 ERROR，由 Mission 停车并进入错误状态。
+ */
+static Mission_CallbackResult_t Accomplish25E_StraightEnter(void)
+{
+    s_lineDetectedTicks = 0U;
+
+    if (s_startYawCaptured == 0U)
+    {
+        /* 首次直行开始前记录 KEY1 启动时的航向，后续循环不再覆盖。 */
+        s_startYawDeg = Heading_GetYaw();
+        s_startYawCaptured = 1U;
+    }
+
+    return (MotionManager_StartForward(
+                ACCOMPLISH_25E_STRAIGHT_DISTANCE_MM,
+                ACCOMPLISH_25E_STRAIGHT_SPEED_MMPS,
+                ACCOMPLISH_25E_STRAIGHT_END_SPEED_MMPS) ==
+            MOTION_MANAGER_RESULT_OK) ?
+        MISSION_CALLBACK_OK : MISSION_CALLBACK_ERROR;
+}</code></pre>
+  <ol class="line-notes">
+    <li><strong>第 1～5 行：</strong>25E 依赖公共 Mission 类型、运动管理、航向、灰度和 NULL。</li>
+    <li><strong>第 7～15 行：</strong>注释再次强调职责分层并给出状态边。Accomplish 不在 onUpdate 里直接驱动轮子。</li>
+    <li><strong>第 17～19 行：</strong>数组计数宏用“整个数组字节数÷单元素字节数”。它只能接真实数组；若传指针，sizeof 得到指针大小，结果错误。</li>
+    <li><strong>第 21～30 行：</strong>枚举把五个状态编号固定为 0～4，COUNT 自动成为 5，用来定义数组长度和 graph.stateCount。</li>
+    <li><strong>第 32～36 行：</strong>s_lineDetectedTicks 是跨 Update 保留的连续见线计数，static 让它只在本文件可见且整个运行期存在。</li>
+    <li><strong>第 38～43 行：</strong>s_startYawDeg 与 captured 保存一次任务的航向基准。注意后面会在原变量上 +=180，所以转向后它实际保存“最近绝对目标”。</li>
+    <li><strong>第 45～54 行：</strong>每次进入 WAITING 清除旧基准并返回 OK；下次启动会重新以当前车头方向为起点。</li>
+    <li><strong>第 56～64 行：</strong>等待状态丢弃 dt 并永远返回 RUNNING。Mission 只有在动作 RUNNING 且 interruptible=1 时检查打断转换，因此不能把它写成 FINISHED。</li>
+    <li><strong>第 66～73 行：</strong>StraightEnter 每次进入只执行一次，先清见线计数。</li>
+    <li><strong>第 75～80 行：</strong>只有第一轮直线捕获 Heading_GetYaw；后续 TURN→STRAIGHT 循环不会覆盖基准。</li>
+    <li><strong>第 82～88 行：</strong>启动 2000 mm 直线并用三目运算把 MotionManager_Result 映射成 Mission_CallbackResult；失败会让 Mission 进入 ERROR。</li>
+  </ol>
+
+  <pre class="source-code"><code data-source="Accomplish/25E.c" data-lines="90-149">/*
+ * 检测到黑线后进入本状态，只调用一次 MotionManager_StartLine()。
+ * MotionLine 内部完成五路权重差速，并在连续全白 50 拍后返回 FINISHED。
+ */
+static Mission_CallbackResult_t Accomplish25E_LineEnter(void)
+{
+    return (MotionManager_StartLine(
+                ACCOMPLISH_25E_LINE_SPEED_MMPS) ==
+            MOTION_MANAGER_RESULT_OK) ?
+        MISSION_CALLBACK_OK : MISSION_CALLBACK_ERROR;
+}
+
+/*
+ * 巡线完成后进入本状态，在上一绝对目标上增加 180°。
+ * 使用 TurnTo 依次指向启动航向 +180°、+360°、+540°……
+ */
+static Mission_CallbackResult_t Accomplish25E_TurnEnter(void)
+{
+    if (s_startYawCaptured == 0U)
+    {
+        /* 未保存启动航向说明状态流程异常，禁止使用错误基准启动转向。 */
+        return MISSION_CALLBACK_ERROR;
+    }
+
+    return (MotionManager_TurnTo(
+                s_startYawDeg += ACCOMPLISH_25E_TURN_TARGET_OFFSET_DEG,
+                ACCOMPLISH_25E_TURN_SPEED_MMPS) ==
+            MOTION_MANAGER_RESULT_OK) ?
+        MISSION_CALLBACK_OK : MISSION_CALLBACK_ERROR;
+}
+
+/*
+ * 直线、巡线和转向共用的状态更新回调。
+ * 底层运动已经由 App_Update() 调用 MotionManager_Update(dt) 更新，
+ * 此处只查询动作是运行、完成还是错误，不能再次更新底层控制器。
+ */
+static Mission_ActionStatus_t Accomplish25E_MotionUpdate(float dt)
+{
+    (void)dt;
+    return Mission_GetMotionActionStatus();
+}
+
+/*
+ * 等待状态的启动条件。
+ * App 只在 KEY1 从松开变为按下的那一拍设置 pressedEdges bit0。
+ * 使用按下沿而不是 pressedKeys，可以避免长按 KEY1 时反复启动流程。
+ */
+static uint8_t Accomplish25E_ConditionStart(
+    const Mission_Runtime_t *runtime,
+    const App_UpdateContext_t *updateContext)
+{
+    (void)runtime;
+    if (updateContext == NULL)
+    {
+        return 0U;
+    }
+
+    return ((updateContext-&gt;pressedEdges &amp;
+             ACCOMPLISH_25E_START_KEY_MASK) != 0U) ? 1U : 0U;
+}</code></pre>
+  <ol class="line-notes">
+    <li><strong>第 90～100 行：</strong>LineEnter 只启动一次 MotionLine；连续全白 50 拍是 MotionLine 公共配置决定的“正常完成”，不是 25E 自己计数。</li>
+    <li><strong>第 102～112 行：</strong>TurnEnter 先确认基准存在，防止异常状态路径用 0°乱转。</li>
+    <li><strong>第 114～119 行：</strong>表达式 s_startYawDeg +=180 先修改变量再把新值传给 TurnTo。若启动航向 12°，目标依次为 192°、372°、552°。</li>
+    <li><strong>第 121～130 行：</strong>公共 MotionUpdate 不重复调用 MotionManager_Update；App 已先更新控制器，这里只把 error/finished/busy 映射为 Mission 动作状态。</li>
+    <li><strong>第 132～141 行：</strong>ConditionStart 的两个参数符合公共条件回调签名；runtime 本条件不用，以 (void) 避免警告。</li>
+    <li><strong>第 142～149 行：</strong>空上下文不触发；pressedEdges &amp; 0x01 非零才返回 1，因此长按 KEY1 只在首拍启动。</li>
+  </ol>
+
+  <pre class="source-code"><code data-source="Accomplish/25E.c" data-lines="151-188">/*
+ * 直线阶段的入线条件：五路灰度任意一路为 1 都表示检测到黑线。
+ * 为避免单拍毛刺误触发，必须连续达到头文件设定的确认节拍数。
+ * 使用 updateContext-&gt;elapsedTicks 累加真实经过的系统拍数，主循环偶尔延迟时
+ * 仍能保持正确的确认时间，而不是固定按一次函数调用等于 10 ms 计算。
+ */
+static uint8_t Accomplish25E_ConditionLineDetected(
+    const Mission_Runtime_t *runtime,
+    const App_UpdateContext_t *updateContext)
+{
+    uint16_t detectedTicks;
+
+    (void)runtime;
+    if (updateContext == NULL)
+    {
+        return 0U;
+    }
+
+    if (Graydetect_OnLine(GRAY_SIDE_ALL) == 0U)
+    {
+        /* 任意一拍恢复全白都重新开始连续检测。 */
+        s_lineDetectedTicks = 0U;
+        return 0U;
+    }
+
+    detectedTicks = (uint16_t)s_lineDetectedTicks +
+                    updateContext-&gt;elapsedTicks;
+    if (detectedTicks &gt;= ACCOMPLISH_25E_LINE_DETECT_CONFIRM_TICKS)
+    {
+        /* 达到阈值后进行饱和，避免计数继续累加溢出。 */
+        s_lineDetectedTicks =
+            ACCOMPLISH_25E_LINE_DETECT_CONFIRM_TICKS;
+        return 1U;
+    }
+
+    s_lineDetectedTicks = (uint8_t)detectedTicks;
+    return 0U;
+}</code></pre>
+  <ol class="line-notes">
+    <li><strong>第 151～159 行：</strong>见线条件要求五路中任意一路为黑，并用 App 的真实 elapsedTicks 做连续确认。</li>
+    <li><strong>第 161～167 行：</strong>用 uint16_t 临时和防止 uint8_t 加法先回绕；空 context 返回假。</li>
+    <li><strong>第 169～174 行：</strong>Graydetect_OnLine(GRAY_SIDE_ALL)=0 表示全白，立即把连续计数清零，所以条件是“连续”而非“累计总共”。</li>
+    <li><strong>第 176～178 行：</strong>旧计数加真实经过拍数；主循环若一次补 2 拍，就加 2 而不是只加 1。</li>
+    <li><strong>第 178～184 行：</strong>达到 3 拍后把状态饱和在 3 并返回真，防止后续继续增长溢出。</li>
+    <li><strong>第 186～188 行：</strong>未达阈值时保存新计数并继续留在 STRAIGHT。</li>
+  </ol>
+
+  <pre class="source-code"><code data-source="Accomplish/25E.c" data-lines="190-248">/* WAITING 持续运行，因此 KEY1 按下沿使用打断转换进入第一轮直线状态。 */
+static const Mission_Transition_t s_waitingTransitions[] = {
+    {
+        Accomplish25E_ConditionStart,
+        ACCOMPLISH_25E_STATE_STRAIGHT,
+        MISSION_TRANSITION_INTERRUPT,
+    },
+};
+
+/*
+ * 直线状态共有三条转换：
+ * 1. 运动未完成时检测到线，立即打断直线；
+ * 2. 黑线与距离完成出现在同一拍时，仍优先进入巡线；
+ * 3. 走满距离仍无黑线时，无条件回到等待状态。
+ * Mission 按数组声明顺序检查，因此入线条件必须写在兜底转换之前。
+ */
+static const Mission_Transition_t s_straightTransitions[] = {
+    /* 2000 mm 内确认检测到黑线时，立即打断直线并开始巡线。 */
+    {
+        Accomplish25E_ConditionLineDetected,
+        ACCOMPLISH_25E_STATE_LINE,
+        MISSION_TRANSITION_INTERRUPT,
+    },
+    /* 黑线恰好在直线完成的同一拍出现时，仍优先进入巡线。 */
+    {
+        Accomplish25E_ConditionLineDetected,
+        ACCOMPLISH_25E_STATE_LINE,
+        MISSION_TRANSITION_NORMAL,
+    },
+    /* 走满 2000 mm 仍未检测到线，停车并回到等待状态。 */
+    {
+        NULL,
+        ACCOMPLISH_25E_STATE_WAITING,
+        MISSION_TRANSITION_NORMAL,
+    },
+};
+
+/*
+ * 丢线是“巡线直到丢线”动作的预期结束条件，不属于系统故障。
+ * MotionLine 返回 FINISHED 后，Mission 检查本正常转换并进入转向状态。
+ */
+static const Mission_Transition_t s_lineTransitions[] = {
+    /* MotionLine 连续丢线 50 拍后完成，随后进入绝对目标转向。 */
+    {
+        NULL,
+        ACCOMPLISH_25E_STATE_TURN,
+        MISSION_TRANSITION_NORMAL,
+    },
+};
+
+/* Nav 到达本轮绝对目标并稳定后返回 FINISHED，无条件开始下一轮直线。 */
+static const Mission_Transition_t s_turnTransitions[] = {
+    /* 到达目标后重新直行；下一轮 TURN 会再增加 180°。 */
+    {
+        NULL,
+        ACCOMPLISH_25E_STATE_STRAIGHT,
+        MISSION_TRANSITION_NORMAL,
+    },
+};</code></pre>
+  <ol class="line-notes">
+    <li><strong>第 190～197 行：</strong>WAITING 只有一条 KEY1 打断转换，目标 STRAIGHT；const 表示运行时不修改数组。</li>
+    <li><strong>第 199～205 行：</strong>注释给出三条直线转换的优先级理由。Mission 扫描数组，找到第一条类型匹配且条件真的转换就停止。</li>
+    <li><strong>第 206～212 行：</strong>动作 RUNNING 时只检查 INTERRUPT，因此连续见线可立刻停止直线并进入 LINE。</li>
+    <li><strong>第 213～218 行：</strong>动作恰好 FINISHED 时 Mission 改查 NORMAL；复制一条同条件的 NORMAL 保证同拍见线仍优先。</li>
+    <li><strong>第 219～225 行：</strong>NULL condition 表示无条件兜底，必须放在有条件 NORMAL 之后，否则永远先回 WAITING。</li>
+    <li><strong>第 227～238 行：</strong>巡线因连续丢线返回 FINISHED 后，无条件正常转到 TURN；这是预期业务结束，不进入 ERROR。</li>
+    <li><strong>第 240～248 行：</strong>Nav 转向完成后无条件回 STRAIGHT，建立循环。</li>
+  </ol>
+
+  <div class="deep-dive">
+    <h4>难点拆解：同一拍既到 2000 mm 又确认黑线</h4>
+    <p><strong>输入：</strong>MotionManager 本拍报告 FINISHED，灰度连续确认也达到 3 拍。</p>
+    <p><strong>过程：</strong>Mission 不再检查 INTERRUPT，而按声明顺序检查 NORMAL；第一条 NORMAL 是 ConditionLineDetected，第二条才是 NULL 兜底。</p>
+    <p><strong>输出：</strong>优先进入 LINE，不回 WAITING。</p>
+    <p><strong>边界：</strong>若只写 INTERRUPT 见线转换，动作完成同拍会跳过它；若把 NULL 放前面，条件转换永远没有机会。</p>
+    <p><strong>设计原因：</strong>把“同拍竞争”明确编码进转换表顺序，行为可读且可测试。</p>
+  </div>
+
+  <pre class="source-code"><code data-source="Accomplish/25E.c" data-lines="250-325">/*
+ * 25E 状态定义表：
+ * - onEnter 只负责启动一次动作；
+ * - onUpdate 只返回动作状态；
+ * - onExit 为空，因为 Mission 转换时会统一调用 MotionManager_Stop()；
+ * - interruptible 只控制普通打断转换，任何状态都无法屏蔽 C0 全局停车。
+ */
+static const Mission_StateDefinition_t s_stateDefinitions[
+    ACCOMPLISH_25E_STATE_COUNT] = {
+    [ACCOMPLISH_25E_STATE_WAITING] = {
+        /* 清除旧航向基准，并保持 RUNNING 以接收 KEY1 按下沿。 */
+        .onEnter = Accomplish25E_WaitingEnter,
+        .onUpdate = Accomplish25E_WaitingUpdate,
+        .onExit = NULL,
+        .transitions = s_waitingTransitions,
+        .transitionCount =
+            ACCOMPLISH_25E_ARRAY_COUNT(s_waitingTransitions),
+        .interruptible = 1U,
+    },
+    [ACCOMPLISH_25E_STATE_STRAIGHT] = {
+        /* 允许灰度入线条件在直线完成前打断当前动作。 */
+        .onEnter = Accomplish25E_StraightEnter,
+        .onUpdate = Accomplish25E_MotionUpdate,
+        .onExit = NULL,
+        .transitions = s_straightTransitions,
+        .transitionCount =
+            ACCOMPLISH_25E_ARRAY_COUNT(s_straightTransitions),
+        .interruptible = 1U,
+    },
+    [ACCOMPLISH_25E_STATE_LINE] = {
+        /* 巡线通过正常完成进入转向，不设置普通打断转换。 */
+        .onEnter = Accomplish25E_LineEnter,
+        .onUpdate = Accomplish25E_MotionUpdate,
+        .onExit = NULL,
+        .transitions = s_lineTransitions,
+        .transitionCount =
+            ACCOMPLISH_25E_ARRAY_COUNT(s_lineTransitions),
+        .interruptible = 0U,
+    },
+    [ACCOMPLISH_25E_STATE_TURN] = {
+        /* 转向完成后使用正常转换进入下一轮直线。 */
+        .onEnter = Accomplish25E_TurnEnter,
+        .onUpdate = Accomplish25E_MotionUpdate,
+        .onExit = NULL,
+        .transitions = s_turnTransitions,
+        .transitionCount =
+            ACCOMPLISH_25E_ARRAY_COUNT(s_turnTransitions),
+        .interruptible = 0U,
+    },
+    [ACCOMPLISH_25E_STATE_ERROR] = {
+        /* 错误状态不启动运动；只能通过 C0 复位到 WAITING。 */
+        .onEnter = NULL,
+        .onUpdate = NULL,
+        .onExit = NULL,
+        .transitions = NULL,
+        .transitionCount = 0U,
+        .interruptible = 0U,
+    },
+};
+
+/*
+ * 提供给通用 Mission 的图描述。
+ * Mission_Init() 会检查状态数量、起始/错误状态和所有转换目标是否合法。
+ */
+static const Mission_GraphDefinition_t s_missionGraph = {
+    .states = s_stateDefinitions,
+    .stateCount = ACCOMPLISH_25E_STATE_COUNT,
+    .startState = ACCOMPLISH_25E_STATE_WAITING,
+    .errorState = ACCOMPLISH_25E_STATE_ERROR,
+};
+
+/* 唯一跨模块接口：返回静态只读图，不能返回函数内部的临时变量。 */
+const Mission_GraphDefinition_t *Accomplish25E_GetMissionGraph(void)
+{
+    return &amp;s_missionGraph;
+}</code></pre>
+  <ol class="line-notes">
+    <li><strong>第 250～258 行：</strong>状态表长度等于 COUNT。每个槽是同一公共结构体，不含新的引擎代码。</li>
+    <li><strong>第 259～268 行：</strong>指定下标初始化 WAITING：进入清基准、更新保持 RUNNING、无退出回调、挂等待转换、自动算数量、允许打断。</li>
+    <li><strong>第 269～278 行：</strong>STRAIGHT 启动直线、查询运动状态，并允许灰度条件在运行中打断。</li>
+    <li><strong>第 279～288 行：</strong>LINE 只等待 MotionLine 正常结束，没有运行中打断需求，所以 interruptible=0。</li>
+    <li><strong>第 289～298 行：</strong>TURN 同样等 Nav 正常完成再转移。</li>
+    <li><strong>第 299～308 行：</strong>ERROR 不启动、不更新、无转换。Mission 的 C0 全局复位在错误状态检查之前执行，所以仍能回 WAITING。</li>
+    <li><strong>第 310～319 行：</strong>图对象把状态数组、状态数、起始和错误编号交给 Mission_Init 校验。</li>
+    <li><strong>第 321～325 行：</strong>getter 返回静态对象地址；静态生命周期贯穿程序，不能返回局部临时结构体地址。</li>
+  </ol>
+
+  <h4>4.3 Accomplish/25H.h：左侧标志与连续左转参数</h4>
+  <pre class="source-code"><code data-source="Accomplish/25H.h" data-lines="1-42">#ifndef ACCOMPLISH_25H_H
+#define ACCOMPLISH_25H_H
+
+#include "Application/Mission/Mission.h"
+
+/*
+ * 25H 题目流程：
+ * 等待 KEY1 -&gt; 巡线 -&gt; 最左侧两路同时检测到黑线
+ * -&gt; 向前直行 150 mm -&gt; 左转到下一个绝对 90°目标 -&gt; 继续巡线并循环。
+ *
+ * 角度使用 MPU6050 连续累计航向，不做正负 180°限幅。
+ * 假设 KEY1 启动方向为 0°，各轮左转目标依次为 -90°、-180°、-270°……
+ */
+
+/* KEY1 在 App 按键位图中对应 bit0；使用按下沿启动。 */
+#define ACCOMPLISH_25H_START_KEY_MASK             0x01U
+
+/* 灰度 bit0 和 bit1 分别为最左侧、左内侧；两位都为 1 才触发。 */
+#define ACCOMPLISH_25H_LEFT_MARKER_MASK           0x03U
+
+/* 正常巡线速度。 */
+#define ACCOMPLISH_25H_LINE_SPEED_MMPS            200.0f
+
+/* 检测到左侧标志后继续向前行驶的距离。 */
+#define ACCOMPLISH_25H_FORWARD_DISTANCE_MM        150U
+
+/* 离开标志线时的直线速度。 */
+#define ACCOMPLISH_25H_FORWARD_SPEED_MMPS         200.0f
+
+/* 直行 150 mm 后减速至零，并固定保持零速目标后再开始原地转向。 */
+#define ACCOMPLISH_25H_FORWARD_END_SPEED_MMPS     0.0f
+
+/* 每轮绝对目标相对上一目标减少 90°，负号对应当前工程的左转方向。 */
+#define ACCOMPLISH_25H_TURN_STEP_DEG              (-90.0f)
+
+/* Nav 原地转向时每侧车轮的目标速度。 */
+#define ACCOMPLISH_25H_TURN_SPEED_MMPS            80.0f
+
+/* 返回 25H 的只读静态状态图；调用者不得修改状态表内容。 */
+const Mission_GraphDefinition_t *Accomplish25H_GetMissionGraph(void);
+
+#endif</code></pre>
+  <ol class="line-notes">
+    <li><strong>第 1～4 行：</strong>保护宏和 Mission 图类型。</li>
+    <li><strong>第 6～13 行：</strong>流程先巡线识别标志，再离开标志、左转；连续航向允许目标不断小于 −180°。</li>
+    <li><strong>第 15～19 行：</strong>KEY1 掩码 0x01；左标志掩码 0x03 要求 bit0、bit1 两位同时为 1。</li>
+    <li><strong>第 21～31 行：</strong>巡线 200 mm/s，见标志后前进 150 mm，直线速度 200，末速 0 为转向前稳定停车。</li>
+    <li><strong>第 33～37 行：</strong>每轮目标减少 90°，负号由本工程方向约定决定；Nav 转向速度 80 mm/s。</li>
+    <li><strong>第 39～42 行：</strong>公开只读图 getter 并结束保护。</li>
+  </ol>
+
+  <h4>4.4 Accomplish/25H.c：基准航向、动作入口与标志条件</h4>
+  <pre class="source-code"><code data-source="Accomplish/25H.c" data-lines="1-103">#include "Accomplish/25H.h"
+#include "Application/Control/MotionManager.h"
+#include "Application/State/Heading.h"
+#include "Hardware/Sensors/Graydetect.h"
+#include &lt;stddef.h&gt;
+
+/*
+ * 25H 只描述题目流程，不直接更新底层运动控制器。
+ * App 每拍更新 MotionManager，Mission 再根据本状态图决定是否切换动作。
+ *
+ * 状态流程：
+ * WAITING --KEY1--&gt; LINE --左侧两路同时为 1--&gt; FORWARD
+ * FORWARD --完成 150 mm--&gt; TURN --到达绝对目标--&gt; LINE
+ * LINE --连续丢线并停止--&gt; WAITING
+ */
+
+#define ACCOMPLISH_25H_ARRAY_COUNT(array) \
+    ((uint8_t)(sizeof(array) / sizeof((array)[0])))
+
+typedef enum
+{
+    ACCOMPLISH_25H_STATE_WAITING = 0, /* 等待 KEY1，不驱动车轮。 */
+    ACCOMPLISH_25H_STATE_LINE,        /* 使用五路灰度巡线。 */
+    ACCOMPLISH_25H_STATE_FORWARD,     /* 离开标志线并直行 150 mm。 */
+    ACCOMPLISH_25H_STATE_TURN,        /* 转到下一绝对左转目标。 */
+    ACCOMPLISH_25H_STATE_ERROR,       /* 运动异常后的安全停车状态。 */
+    ACCOMPLISH_25H_STATE_COUNT
+} Accomplish25H_StateId_t;
+
+/*
+ * s_nextTurnTargetDeg 保存下一次 TurnTo() 使用的连续绝对角。
+ * KEY1 启动时以当前航向作为 0°基准；每进入一次 TURN 就减去 90°。
+ */
+static float s_nextTurnTargetDeg;
+static uint8_t s_headingReferenceCaptured;
+
+/* 返回等待状态时清除上一轮任务的航向基准。 */
+static Mission_CallbackResult_t Accomplish25H_WaitingEnter(void)
+{
+    s_nextTurnTargetDeg = 0.0f;
+    s_headingReferenceCaptured = 0U;
+    return MISSION_CALLBACK_OK;
+}
+
+/* 等待状态保持 RUNNING，才能检查 KEY1 的打断转换。 */
+static Mission_ActionStatus_t Accomplish25H_WaitingUpdate(float dt)
+{
+    (void)dt;
+    return MISSION_ACTION_RUNNING;
+}
+
+/*
+ * 首次进入巡线时记录 KEY1 启动方向；后续循环不再覆盖该基准。
+ * MotionLine 连续丢线达到公共配置值后会正常结束并回到等待。
+ */
+static Mission_CallbackResult_t Accomplish25H_LineEnter(void)
+{
+    if (s_headingReferenceCaptured == 0U)
+    {
+        if (Heading_IsReady() == 0U)
+        {
+            /* 本题后续必须使用绝对角转向，MPU 离线时禁止启动车辆。 */
+            return MISSION_CALLBACK_ERROR;
+        }
+        s_nextTurnTargetDeg = Heading_GetYaw();
+        s_headingReferenceCaptured = 1U;
+    }
+
+    return (MotionManager_StartLine(
+                ACCOMPLISH_25H_LINE_SPEED_MMPS) ==
+            MOTION_MANAGER_RESULT_OK) ?
+        MISSION_CALLBACK_OK : MISSION_CALLBACK_ERROR;
+}
+
+/* 检测到左侧标志后，使用航向闭环向前直行 150 mm 并平滑停车。 */
+static Mission_CallbackResult_t Accomplish25H_ForwardEnter(void)
+{
+    return (MotionManager_StartForward(
+                ACCOMPLISH_25H_FORWARD_DISTANCE_MM,
+                ACCOMPLISH_25H_FORWARD_SPEED_MMPS,
+                ACCOMPLISH_25H_FORWARD_END_SPEED_MMPS) ==
+            MOTION_MANAGER_RESULT_OK) ?
+        MISSION_CALLBACK_OK : MISSION_CALLBACK_ERROR;
+}
+
+/*
+ * 每次进入 TURN 都先生成新的绝对目标，再调用 TurnTo()。
+ * 例如启动航向为 12°，目标依次为 -78°、-168°、-258°……
+ */
+static Mission_CallbackResult_t Accomplish25H_TurnEnter(void)
+{
+    if (s_headingReferenceCaptured == 0U)
+    {
+        return MISSION_CALLBACK_ERROR;
+    }
+
+    s_nextTurnTargetDeg += ACCOMPLISH_25H_TURN_STEP_DEG;
+    return (MotionManager_TurnTo(
+                s_nextTurnTargetDeg,
+                ACCOMPLISH_25H_TURN_SPEED_MMPS) ==
+            MOTION_MANAGER_RESULT_OK) ?
+        MISSION_CALLBACK_OK : MISSION_CALLBACK_ERROR;
+}</code></pre>
+  <ol class="line-notes">
+    <li><strong>第 1～15 行：</strong>依赖与职责和 25E 相似，但状态流程从 LINE 开始，没有“先直行找线”。</li>
+    <li><strong>第 17～28 行：</strong>数组计数宏和五状态枚举；COUNT 同样用于表长。</li>
+    <li><strong>第 30～35 行：</strong>s_nextTurnTargetDeg 初始保存启动航向，之后每轮加 −90；captured 防止循环重采样。</li>
+    <li><strong>第 37～43 行：</strong>回 WAITING 清除上一轮基准。</li>
+    <li><strong>第 45～50 行：</strong>等待持续 RUNNING 以接收 KEY1 打断。</li>
+    <li><strong>第 52～64 行：</strong>首次 LineEnter 先要求 Heading ready；25H 后续必做绝对转向，所以 MPU 不可用时宁可进入错误状态也不启动车。</li>
+    <li><strong>第 65～73 行：</strong>保存当前连续 yaw 后启动 200 mm/s 巡线；后续 TURN→LINE 不再覆盖目标基准。</li>
+    <li><strong>第 75～84 行：</strong>ForwardEnter 启动 150 mm 航向闭环直行，并以 0 末速结束。</li>
+    <li><strong>第 86～95 行：</strong>TurnEnter 防御性检查基准。</li>
+    <li><strong>第 97～103 行：</strong>先把目标减 90，再调用 TurnTo。启动 12°时首次是 −78°，不是固定 −90°世界坐标。</li>
+  </ol>
+
+  <pre class="source-code"><code data-source="Accomplish/25H.c" data-lines="105-183">/* MotionManager 已由 App 更新，本回调只读取当前动作状态。 */
+static Mission_ActionStatus_t Accomplish25H_MotionUpdate(float dt)
+{
+    (void)dt;
+    return Mission_GetMotionActionStatus();
+}
+
+/* KEY1 按下沿启动；长按不会重复进入巡线。 */
+static uint8_t Accomplish25H_ConditionStart(
+    const Mission_Runtime_t *runtime,
+    const App_UpdateContext_t *updateContext)
+{
+    (void)runtime;
+    if (updateContext == NULL)
+    {
+        return 0U;
+    }
+
+    return ((updateContext-&gt;pressedEdges &amp;
+             ACCOMPLISH_25H_START_KEY_MASK) != 0U) ? 1U : 0U;
+}
+
+/*
+ * 左侧标志条件必须同时满足 bit0=1 和 bit1=1。
+ * 条件在同一拍立即生效，避免 MotionLine 继续把双黑线当作普通左偏处理。
+ */
+static uint8_t Accomplish25H_ConditionLeftMarker(
+    const Mission_Runtime_t *runtime,
+    const App_UpdateContext_t *updateContext)
+{
+    uint8_t grayState;
+
+    (void)runtime;
+    (void)updateContext;
+    grayState = Graydetect_GetState();
+    return ((grayState &amp; ACCOMPLISH_25H_LEFT_MARKER_MASK) ==
+            ACCOMPLISH_25H_LEFT_MARKER_MASK) ? 1U : 0U;
+}
+
+static const Mission_Transition_t s_waitingTransitions[] = {
+    {
+        Accomplish25H_ConditionStart,
+        ACCOMPLISH_25H_STATE_LINE,
+        MISSION_TRANSITION_INTERRUPT,
+    },
+};
+
+static const Mission_Transition_t s_lineTransitions[] = {
+    /* 巡线尚在运行时，左侧双黑线立即打断并进入定距直行。 */
+    {
+        Accomplish25H_ConditionLeftMarker,
+        ACCOMPLISH_25H_STATE_FORWARD,
+        MISSION_TRANSITION_INTERRUPT,
+    },
+    /* 非标志原因导致 MotionLine 丢线完成时，停车并重新等待 KEY1。 */
+    {
+        NULL,
+        ACCOMPLISH_25H_STATE_WAITING,
+        MISSION_TRANSITION_NORMAL,
+    },
+};
+
+static const Mission_Transition_t s_forwardTransitions[] = {
+    /* 零速目标固定保持结束后，直接进入绝对角转向。 */
+    {
+        NULL,
+        ACCOMPLISH_25H_STATE_TURN,
+        MISSION_TRANSITION_NORMAL,
+    },
+};
+
+static const Mission_Transition_t s_turnTransitions[] = {
+    /* Nav 到达本轮绝对目标并稳定后，继续下一轮巡线。 */
+    {
+        NULL,
+        ACCOMPLISH_25H_STATE_LINE,
+        MISSION_TRANSITION_NORMAL,
+    },
+};</code></pre>
+  <ol class="line-notes">
+    <li><strong>第 105～110 行：</strong>动作状态映射与 25E 共用同一公共函数模式。</li>
+    <li><strong>第 112～125 行：</strong>KEY1 pressedEdges bit0 启动；runtime 未用。</li>
+    <li><strong>第 127～139 行：</strong>左标志条件不需要时间或 runtime，直接读当前五路灰度位图。</li>
+    <li><strong>第 140～142 行：</strong>(grayState &amp; 0x03)==0x03 要求低两位都为 1；其他三位无论 0/1 都不影响。</li>
+    <li><strong>第 144～150 行：</strong>WAITING 通过 KEY1 打断进入 LINE。</li>
+    <li><strong>第 152～158 行：</strong>LINE 运行时检测左双黑，立即打断巡线并进 FORWARD，没有 3 拍确认。</li>
+    <li><strong>第 159～165 行：</strong>若 MotionLine 因普通连续丢线而 FINISHED，则正常回 WAITING。</li>
+    <li><strong>第 167～174 行：</strong>150 mm 前进完成后无条件进 TURN。</li>
+    <li><strong>第 176～183 行：</strong>转向完成后无条件回 LINE，形成标志循环。</li>
+  </ol>
+
+  <div class="pitfall">
+    <h4>25H 的同拍边界与 25E 不同</h4>
+    <p>25H 只为左标志写了 INTERRUPT 转换，没有再复制一条 NORMAL 条件转换。若 MotionLine 在某拍先报告 FINISHED，Mission 会跳过所有 INTERRUPT，只执行 NULL 的 NORMAL→WAITING；这一拍即使左双黑也不会进 FORWARD。25E 特意写了两种类型的见线转换来处理同拍竞争。</p>
+  </div>
+
+  <pre class="source-code"><code data-source="Accomplish/25H.c" data-lines="185-243">static const Mission_StateDefinition_t s_stateDefinitions[
+    ACCOMPLISH_25H_STATE_COUNT] = {
+    [ACCOMPLISH_25H_STATE_WAITING] = {
+        .onEnter = Accomplish25H_WaitingEnter,
+        .onUpdate = Accomplish25H_WaitingUpdate,
+        .onExit = NULL,
+        .transitions = s_waitingTransitions,
+        .transitionCount =
+            ACCOMPLISH_25H_ARRAY_COUNT(s_waitingTransitions),
+        .interruptible = 1U,
+    },
+    [ACCOMPLISH_25H_STATE_LINE] = {
+        .onEnter = Accomplish25H_LineEnter,
+        .onUpdate = Accomplish25H_MotionUpdate,
+        .onExit = NULL,
+        .transitions = s_lineTransitions,
+        .transitionCount =
+            ACCOMPLISH_25H_ARRAY_COUNT(s_lineTransitions),
+        .interruptible = 1U,
+    },
+    [ACCOMPLISH_25H_STATE_FORWARD] = {
+        .onEnter = Accomplish25H_ForwardEnter,
+        .onUpdate = Accomplish25H_MotionUpdate,
+        .onExit = NULL,
+        .transitions = s_forwardTransitions,
+        .transitionCount =
+            ACCOMPLISH_25H_ARRAY_COUNT(s_forwardTransitions),
+        .interruptible = 0U,
+    },
+    [ACCOMPLISH_25H_STATE_TURN] = {
+        .onEnter = Accomplish25H_TurnEnter,
+        .onUpdate = Accomplish25H_MotionUpdate,
+        .onExit = NULL,
+        .transitions = s_turnTransitions,
+        .transitionCount =
+            ACCOMPLISH_25H_ARRAY_COUNT(s_turnTransitions),
+        .interruptible = 0U,
+    },
+    [ACCOMPLISH_25H_STATE_ERROR] = {
+        .onEnter = NULL,
+        .onUpdate = NULL,
+        .onExit = NULL,
+        .transitions = NULL,
+        .transitionCount = 0U,
+        .interruptible = 0U,
+    },
+};
+
+static const Mission_GraphDefinition_t s_missionGraph = {
+    .states = s_stateDefinitions,
+    .stateCount = ACCOMPLISH_25H_STATE_COUNT,
+    .startState = ACCOMPLISH_25H_STATE_WAITING,
+    .errorState = ACCOMPLISH_25H_STATE_ERROR,
+};
+
+const Mission_GraphDefinition_t *Accomplish25H_GetMissionGraph(void)
+{
+    return &amp;s_missionGraph;
+}</code></pre>
+  <ol class="line-notes">
+    <li><strong>第 185～195 行：</strong>WAITING 进入时清基准、更新保持 RUNNING、允许 KEY1 打断。</li>
+    <li><strong>第 196～204 行：</strong>LINE 是 interruptible=1，因为左标志必须在巡线动作尚运行时抢先切到 FORWARD。</li>
+    <li><strong>第 205～213 行：</strong>FORWARD 不接受运行中普通打断，只等 150 mm 动作完成。</li>
+    <li><strong>第 214～222 行：</strong>TURN 同样只等绝对转向完成。</li>
+    <li><strong>第 223～231 行：</strong>ERROR 无回调和转换。</li>
+    <li><strong>第 233～238 行：</strong>图定义指定五状态、WAITING 起点和 ERROR。</li>
+    <li><strong>第 240～243 行：</strong>getter 返回静态图地址。</li>
+  </ol>
+
+  <h4>4.5 Accomplish/Test.h：当前实际加载的刹车测试参数</h4>
+  <pre class="source-code"><code data-source="Accomplish/Test.h" data-lines="1-31">#ifndef ACCOMPLISH_TEST_H
+#define ACCOMPLISH_TEST_H
+
+#include "Application/Mission/Mission.h"
+
+/*
+ * 刹车测试任务：
+ * 等待 KEY2 -&gt; 定距直行并按 MotionStraight 速度曲线减速 -&gt;
+ * MotionManager 短暂主动刹车 -&gt; 返回等待。
+ *
+ * 使用时，在 main.c 中临时包含本头文件，并改为：
+ * Mission_Init(AccomplishTest_GetMissionGraph());
+ * 测试结束后恢复实际题目的 Accomplish 状态图。
+ */
+
+/* KEY2 在 App 按键位图中对应 bit1，使用按下沿触发一次测试。 */
+#define ACCOMPLISH_TEST_START_KEY_MASK              0x02U
+
+/* 测试用直线距离；修改后可观察到点前减速和刹车后的滑行量。 */
+#define ACCOMPLISH_TEST_BRAKE_DISTANCE_MM           500U
+
+/* 测试用巡航速度。速度越高，主动刹车与纯滑行的差异越容易观察。 */
+#define ACCOMPLISH_TEST_BRAKE_SPEED_MMPS            200.0f
+
+/* 必须设为零，直线模块才会完成并进入后续 BRAKE 状态。 */
+#define ACCOMPLISH_TEST_BRAKE_END_SPEED_MMPS        0.0f
+
+/* 返回刹车测试的只读静态状态图；调用者不得修改状态表内容。 */
+const Mission_GraphDefinition_t *AccomplishTest_GetMissionGraph(void);
+
+#endif</code></pre>
+  <ol class="line-notes">
+    <li><strong>第 1～4 行：</strong>保护宏和 Mission 图类型。</li>
+    <li><strong>第 6～14 行：</strong>注释把 Test 定位为临时验证图；但当前 main 尚未恢复正式题目，所以这一“临时”图正是实际运行图。</li>
+    <li><strong>第 16～17 行：</strong>启动键是 KEY2，掩码 bit1=0x02，和 25E/25H 的 KEY1 不同。</li>
+    <li><strong>第 19～26 行：</strong>直行 500 mm、巡航 200 mm/s、末速必须为 0；若 MotionStraight 一直保持非零末速，动作不会按测试预期完成并进入 BRAKE。</li>
+    <li><strong>第 28～31 行：</strong>公开 Test 图 getter 并结束保护。</li>
+  </ol>
+
+  <h4>4.6 Accomplish/Test.c：定距完成后再主动刹车</h4>
+  <pre class="source-code"><code data-source="Accomplish/Test.c" data-lines="1-69">#include "Accomplish/Test.h"
+#include "Application/Control/MotionManager.h"
+#include &lt;stddef.h&gt;
+
+/*
+ * 本文件只验证“定距减速完成后再短暂主动刹车”的效果。
+ * 不直接调用 Motor_Brake()，所有电机控制仍由 MotionManager 统一调度。
+ *
+ * 流程：WAITING --KEY2--&gt; FORWARD --定距完成--&gt; BRAKE --刹车结束--&gt; WAITING
+ */
+
+#define ACCOMPLISH_TEST_ARRAY_COUNT(array) \
+    ((uint8_t)(sizeof(array) / sizeof((array)[0])))
+
+typedef enum
+{
+    ACCOMPLISH_TEST_STATE_WAITING = 0,  /* 等待 KEY2，不驱动车轮。 */
+    ACCOMPLISH_TEST_STATE_FORWARD,      /* 定距直行并按速度曲线降速。 */
+    ACCOMPLISH_TEST_STATE_BRAKE,        /* PWM 释放后短暂主动刹车。 */
+    ACCOMPLISH_TEST_STATE_ERROR,        /* 运动异常后的安全状态。 */
+    ACCOMPLISH_TEST_STATE_COUNT
+} AccomplishTest_StateId_t;
+
+/* 等待状态持续运行，使 Mission 能检查 KEY2 的打断转换。 */
+static Mission_ActionStatus_t AccomplishTest_WaitingUpdate(float dt)
+{
+    (void)dt;
+    return MISSION_ACTION_RUNNING;
+}
+
+/* 启动定距直行；终点速度为零后才会报告正常完成。 */
+static Mission_CallbackResult_t AccomplishTest_ForwardEnter(void)
+{
+    return (MotionManager_StartForward(
+                ACCOMPLISH_TEST_BRAKE_DISTANCE_MM,
+                ACCOMPLISH_TEST_BRAKE_SPEED_MMPS,
+                ACCOMPLISH_TEST_BRAKE_END_SPEED_MMPS) ==
+            MOTION_MANAGER_RESULT_OK) ?
+        MISSION_CALLBACK_OK : MISSION_CALLBACK_ERROR;
+}
+
+/* 由统一运动调度层执行释放、短刹和最终释放。 */
+static Mission_CallbackResult_t AccomplishTest_BrakeEnter(void)
+{
+    return (MotionManager_StartBrake() == MOTION_MANAGER_RESULT_OK) ?
+        MISSION_CALLBACK_OK : MISSION_CALLBACK_ERROR;
+}
+
+/* App 每拍已更新 MotionManager，此处只转换其状态供 Mission 使用。 */
+static Mission_ActionStatus_t AccomplishTest_MotionUpdate(float dt)
+{
+    (void)dt;
+    return Mission_GetMotionActionStatus();
+}
+
+/* KEY2 按下沿启动；长按不会反复触发。 */
+static uint8_t AccomplishTest_ConditionStart(
+    const Mission_Runtime_t *runtime,
+    const App_UpdateContext_t *updateContext)
+{
+    (void)runtime;
+    if (updateContext == NULL)
+    {
+        return 0U;
+    }
+
+    return ((updateContext-&gt;pressedEdges &amp;
+             ACCOMPLISH_TEST_START_KEY_MASK) != 0U) ? 1U : 0U;
+}</code></pre>
+  <ol class="line-notes">
+    <li><strong>第 1～10 行：</strong>Test 仍只依赖 Mission/MotionManager；主动刹车不能绕过调度层直接调用 Motor_Brake。</li>
+    <li><strong>第 12～22 行：</strong>数组计数宏和四状态枚举，比正式题目少一个巡线/转向状态。</li>
+    <li><strong>第 24～29 行：</strong>WAITING 保持 RUNNING，让 KEY2 interrupt 转换可被检查。</li>
+    <li><strong>第 31～40 行：</strong>ForwardEnter 启动 500 mm、200 mm/s、末速 0 的直线动作，并映射启动结果。</li>
+    <li><strong>第 42～47 行：</strong>BrakeEnter 只请求 MotionManager_StartBrake。实际“先释放、短刹、再释放”和时长由 MotionManager 公共配置执行。</li>
+    <li><strong>第 49～54 行：</strong>运动状态回调只查询，不二次更新。</li>
+    <li><strong>第 56～69 行：</strong>启动条件检查 KEY2 pressedEdges &amp;0x02；长按不重复。</li>
+  </ol>
+
+  <pre class="source-code"><code data-source="Accomplish/Test.c" data-lines="71-144">static const Mission_Transition_t s_waitingTransitions[] = {
+    {
+        AccomplishTest_ConditionStart,
+        ACCOMPLISH_TEST_STATE_FORWARD,
+        MISSION_TRANSITION_INTERRUPT,
+    },
+};
+
+static const Mission_Transition_t s_forwardTransitions[] = {
+    {
+        NULL,
+        ACCOMPLISH_TEST_STATE_BRAKE,
+        MISSION_TRANSITION_NORMAL,
+    },
+};
+
+static const Mission_Transition_t s_brakeTransitions[] = {
+    {
+        NULL,
+        ACCOMPLISH_TEST_STATE_WAITING,
+        MISSION_TRANSITION_NORMAL,
+    },
+};
+
+static const Mission_StateDefinition_t s_stateDefinitions[
+    ACCOMPLISH_TEST_STATE_COUNT] = {
+    [ACCOMPLISH_TEST_STATE_WAITING] = {
+        .onEnter = NULL,
+        .onUpdate = AccomplishTest_WaitingUpdate,
+        .onExit = NULL,
+        .transitions = s_waitingTransitions,
+        .transitionCount =
+            ACCOMPLISH_TEST_ARRAY_COUNT(s_waitingTransitions),
+        .interruptible = 1U,
+    },
+    [ACCOMPLISH_TEST_STATE_FORWARD] = {
+        .onEnter = AccomplishTest_ForwardEnter,
+        .onUpdate = AccomplishTest_MotionUpdate,
+        .onExit = NULL,
+        .transitions = s_forwardTransitions,
+        .transitionCount =
+            ACCOMPLISH_TEST_ARRAY_COUNT(s_forwardTransitions),
+        .interruptible = 0U,
+    },
+    [ACCOMPLISH_TEST_STATE_BRAKE] = {
+        .onEnter = AccomplishTest_BrakeEnter,
+        .onUpdate = AccomplishTest_MotionUpdate,
+        .onExit = NULL,
+        .transitions = s_brakeTransitions,
+        .transitionCount =
+            ACCOMPLISH_TEST_ARRAY_COUNT(s_brakeTransitions),
+        .interruptible = 0U,
+    },
+    [ACCOMPLISH_TEST_STATE_ERROR] = {
+        .onEnter = NULL,
+        .onUpdate = NULL,
+        .onExit = NULL,
+        .transitions = NULL,
+        .transitionCount = 0U,
+        .interruptible = 0U,
+    },
+};
+
+static const Mission_GraphDefinition_t s_missionGraph = {
+    .states = s_stateDefinitions,
+    .stateCount = ACCOMPLISH_TEST_STATE_COUNT,
+    .startState = ACCOMPLISH_TEST_STATE_WAITING,
+    .errorState = ACCOMPLISH_TEST_STATE_ERROR,
+};
+
+const Mission_GraphDefinition_t *AccomplishTest_GetMissionGraph(void)
+{
+    return &amp;s_missionGraph;
+}</code></pre>
+  <ol class="line-notes">
+    <li><strong>第 71～77 行：</strong>KEY2 打断 WAITING 进入 FORWARD。</li>
+    <li><strong>第 79～85 行：</strong>直线 FINISHED 后无条件 NORMAL 进入 BRAKE。</li>
+    <li><strong>第 87～93 行：</strong>刹车 FINISHED 后无条件回 WAITING，可再次按 KEY2 测试。</li>
+    <li><strong>第 95～105 行：</strong>WAITING 无 onEnter，只需持续更新与打断转换。</li>
+    <li><strong>第 106～114 行：</strong>FORWARD 不可被普通 interrupt 转换打断。</li>
+    <li><strong>第 115～123 行：</strong>BRAKE 也不可打断，等待 MotionManager 报告短刹完成。</li>
+    <li><strong>第 124～132 行：</strong>ERROR 空状态。</li>
+    <li><strong>第 134～139 行：</strong>四状态图以 WAITING 开始、ERROR 兜底。</li>
+    <li><strong>第 141～144 行：</strong>getter 返回静态图地址。</li>
+  </ol>
+
+  <div class="deep-dive">
+    <h4>难点拆解：为什么刹车是独立状态</h4>
+    <p><strong>输入：</strong>FORWARD 已按速度曲线到达 500 mm并以目标末速 0 正常结束。</p>
+    <p><strong>过程：</strong>Mission 正常转入 BRAKE；BrakeEnter 请求 MotionManager 的刹车模式，公共层按“释放一段时间→主动短刹→最终释放”推进。</p>
+    <p><strong>输出：</strong>刹车动作 FINISHED 后回 WAITING。</p>
+    <p><strong>边界：</strong>任何阶段出错都转 ERROR；C0 仍能从外部全局复位并释放电机。</p>
+    <p><strong>设计原因：</strong>把定距减速和主动刹车分成两个可观测动作，便于比较滑行距离，也保持所有电机所有权在 MotionManager。</p>
+  </div>
+
+  <h3>5. 难点：这些静态表怎样被公共 Mission 执行</h3>
+  <p>Mission.h 定义统一插槽：一个状态包含 onEnter、onUpdate、onExit、transitions、transitionCount、interruptible；一条转换包含 condition、targetState、type；整张图只包含状态数组指针、状态数、起始状态、错误状态。</p>
+  <ol>
+    <li>Mission_Init 先校验图非空、状态数非零、起始/错误编号合法、每个转换目标合法，再进入 startState。</li>
+    <li>进入状态时先把 actionStatus 设为 RUNNING（有 onUpdate）或 FINISHED（无 onUpdate），然后调用一次 onEnter。onEnter 返回 ERROR 就进入错误流程。</li>
+    <li>App_Update 已先执行 MotionManager_Update(dt)，随后 main 才调用 Mission_Update。因此 Accomplish 的 MotionUpdate 只查询，不能重复推进底层控制。</li>
+    <li>动作仍 RUNNING 时，只有 interruptible=1 才扫描 MISSION_TRANSITION_INTERRUPT。</li>
+    <li>动作 FINISHED 时扫描 MISSION_TRANSITION_NORMAL；condition=NULL 表示无条件。</li>
+    <li>Mission_TryTransition 从数组下标 0 向后找，第一条“类型匹配且条件真”的转换获胜；随后调用 onExit、MotionManager_Stop，再进入 targetState。</li>
+    <li>动作或 MotionManager 报错时进入 graph.errorState。C0 全局停车在错误状态判断之前处理，可回到 startState。</li>
+  </ol>
+
+  <div class="deep-dive">
+    <h4>难点拆解：ARRAY_COUNT 为什么比手写数字安全</h4>
+    <p><strong>输入：</strong>一个含 3 个 Mission_Transition_t 元素的真实数组。</p>
+    <p><strong>过程：</strong>sizeof(array) 得到整个数组字节数，sizeof(array[0]) 得到单元素字节数，两者相除得到 3，再转成 uint8_t。</p>
+    <p><strong>输出：</strong>transitionCount 自动随增删元素变化，避免数组已有 3 条但手写 count=2。</p>
+    <p><strong>边界：</strong>函数参数中的 array 会退化为指针；把指针传给宏只会得到“指针大小÷元素大小”。本项目只在静态数组定义所在文件使用。</p>
+    <p><strong>设计原因：</strong>让数据表自己携带可由编译器计算的长度，减少维护重复信息。</p>
+  </div>
+
+  <div class="deep-dive">
+    <h4>难点拆解：25E 与 25H 的绝对目标如何累积</h4>
+    <p><strong>输入：</strong>启动时 Heading_GetYaw()=12°。</p>
+    <p><strong>过程：</strong>25E 首次直行保存 12，进入 TURN 时每次 +=180，依次传 192、372、552；25H 首次巡线保存 12，每次 +=(-90)，依次传 −78、−168、−258。</p>
+    <p><strong>输出：</strong>两者都调用 TurnTo 的连续绝对目标，避免每轮相对误差简单累积到目标定义中。</p>
+    <p><strong>边界：</strong>回 WAITING 会清 captured，下一次按键重新以当前航向为新基准；Heading 未做 ±180°包裹，Nav 必须理解连续角。</p>
+    <p><strong>设计原因：</strong>题目循环目标相对于启动方向稳定，车体中途小偏差不会把下一目标改成“当前误差再转固定角”。</p>
+  </div>
+
+  <h3>6. 放回总体调用链</h3>
+  <div class="relation-chain">实体 KEY1/KEY2 → Key_GetPressedMask → App_Update pressedEdges → App_UpdateContext → Mission condition 回调</div>
+  <div class="relation-chain">main 选择 GetMissionGraph → Mission_Init 校验静态图 → 进入 WAITING</div>
+  <div class="relation-chain">Mission onEnter → Accomplish StartForward/StartLine/TurnTo/StartBrake → MotionManager 独占双轮</div>
+  <div class="relation-chain">App MotionManager_Update(dt) → Mission onUpdate → Mission_GetMotionActionStatus → RUNNING/FINISHED/ERROR → 转换表</div>
+  <p>main.c 第 10 行 App_Init 建好硬件与 MotionManager，第 11 行只选择一张图，第 12 行开中断。主循环第 16～18 行每有有效 App 节拍就把同一份 updateContext 交给 Mission。更换题目通常不改 Mission.c，只改 main 包含的 Accomplish 头文件和传入的 getter。</p>
+  <p>所有状态的 onExit 当前都是 NULL，因为公共 Mission 在任何成功转换的第 172～174 行会先处理退出，再统一 MotionManager_Stop，确保旧动作释放双轮后才调用新状态 onEnter。Accomplish 不需要在每张图重复 Stop。</p>
+  <p>MotionManager 同一时刻只允许 STRAIGHT、LINE、TURN、BRAKE 等一种模式。任务图表达顺序，MotionManager 管动作所有权，MotionStraight/MotionLine/Nav 管具体闭环，Motor 才管最终引脚；层次不能颠倒。</p>
+
+  <h3>7. 常见误解与修改联动</h3>
+  <div class="pitfall">
+    <p><strong>“interruptible=0 就什么都停不了。”</strong>它只禁止该状态的普通 INTERRUPT 转换。C0 是 Mission_Update 最前面的全局复位，MotionManager 错误也会强制进 ERROR。</p>
+  </div>
+  <div class="pitfall">
+    <p><strong>“condition=NULL 表示转换无效。”</strong>相反，它表示无条件。NORMAL 数组中的 NULL 常作为动作完成后的唯一去向或最后兜底，放置顺序非常重要。</p>
+  </div>
+  <div class="pitfall">
+    <p><strong>“onUpdate 应该再次调用 MotionManager_Update。”</strong>不能。App 已经更新一次；重复更新会让同一个真实 10 ms 被计算两次，距离、PID、转向和刹车计时都会变快。</p>
+  </div>
+  <div class="pitfall">
+    <p><strong>“25H 的 0x03 表示灰度状态必须恰好等于3。”</strong>条件先与 0x03，再比较 0x03，因此只要求低两位都为1；例如 0x07、0x1B 同样触发。</p>
+  </div>
+  <div class="pitfall">
+    <p><strong>“修改了 25E 参数，车就会跑25E。”</strong>当前 main 仍选 Test。参数文件存在不代表图已加载，必须检查 main.c 的 include 和 Mission_Init 实参。</p>
+  </div>
+
+  <div class="ripple-effect">
+    <h4>修改任务图时必须一起检查</h4>
+    <ul>
+      <li>增加状态：在 enum 的 COUNT 之前加入编号，在 stateDefinitions 增加指定初始化，并确认 graph.stateCount 自动随 COUNT 变化。</li>
+      <li>增加转换：用 ARRAY_COUNT 自动更新数量；检查它应在 RUNNING 时打断还是 FINISHED 后正常发生，并检查数组优先级。</li>
+      <li>改变启动键：同步掩码与人机说明；KEY1=0x01、KEY2=0x02，条件读取的是 pressedEdges 而非 pressedKeys。</li>
+      <li>改变直线末速：Test 的末速必须允许 MotionStraight 按预期完成；25H 转向前需要稳定零速。</li>
+      <li>改变绝对转角：同时确认 Heading 连续角方向、Nav 的正负方向约定、机械场地转向方向和目标累积变量。</li>
+      <li>改变灰度标志：确认 Graydetect 位序、是否需要连续多拍确认，以及动作完成同拍是否要补 NORMAL 条件转换。</li>
+      <li>切换正式任务：main.c 只能选择一个 GetMissionGraph；构建前在启动提示、按键和路线说明中同步当前图。</li>
+    </ul>
+  </div>
+
+  <h3>8. 学完自测</h3>
+  <details class="quiz"><summary>为什么说 25E.c 不是第二套状态机引擎？</summary><p>它只定义 Mission 公共结构体数组和回调；状态进入、更新、错误、转换扫描与停止动作都由 Mission.c 执行。</p></details>
+  <details class="quiz"><summary>WAITING 的 onUpdate 为什么必须返回 RUNNING？</summary><p>Mission 只在 RUNNING 且 interruptible=1 时检查 INTERRUPT 转换；若 WAITING 直接 FINISHED，KEY 按下沿转换不会按设计被检查。</p></details>
+  <details class="quiz"><summary>25E 在同拍到达2000mm并确认黑线时去哪里？</summary><p>去 LINE。动作已完成时检查 NORMAL，见线 NORMAL 条件排在 NULL→WAITING 之前。</p></details>
+  <details class="quiz"><summary>25H 灰度为0x07时左标志条件成立吗？</summary><p>成立。0x07 &amp; 0x03=0x03，低两位同时为1，其他位不影响。</p></details>
+  <details class="quiz"><summary>启动航向12°时，25H前两次TurnTo目标是什么？</summary><p>−78°、−168°；每次在连续绝对目标上加−90°。</p></details>
+  <details class="quiz"><summary>Test 为什么不直接调用 Motor_Brake？</summary><p>电机所有权必须由 MotionManager 统一调度；独立 BRAKE 状态请求 StartBrake，公共层负责刹车阶段和最终释放。</p></details>
+  <details class="quiz"><summary>interruptible=0 能否阻止C0停车？</summary><p>不能。C0 是 Mission 的全局复位路径，在普通状态转换和错误状态判断之前处理。</p></details>
+  <details class="quiz"><summary>当前按哪个键运行什么任务？</summary><p>当前 main 加载 AccomplishTest 图，按 KEY2 运行500mm直行后主动刹车测试；KEY1不会启动25E或25H。</p></details>
+
+  <h3>9. 覆盖清单</h3>
+  <ul class="coverage-list">
+    <li>Accomplish/25E.h：第 1～48 行全文，覆盖 KEY1、距离/速度、3拍见线、+180°目标和图 getter。</li>
+    <li>Accomplish/25E.c：第 1～325 行全文，分四块讲解数组计数宏、枚举、航向记忆、onEnter/onUpdate、见线确认、同拍优先级、转换表、状态表和图定义。</li>
+    <li>Accomplish/25H.h：第 1～42 行全文，覆盖左标志掩码、150mm前移、−90°目标和速度参数。</li>
+    <li>Accomplish/25H.c：第 1～243 行全文，分三块讲解 Heading ready、连续绝对目标、左双黑条件、巡线打断、丢线回等待、状态表与图定义。</li>
+    <li>Accomplish/Test.h：第 1～31 行全文，覆盖 KEY2、500mm刹车测试参数以及“临时测试图”说明与当前 main 现实的差异。</li>
+    <li>Accomplish/Test.c：第 1～144 行全文，分两块讲解直线、BRAKE、动作状态映射、转换表、状态定义和图 getter。</li>
+  </ul>
+</section>

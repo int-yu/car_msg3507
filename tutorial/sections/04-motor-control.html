@@ -1,0 +1,875 @@
+<section class="lesson-section" id="module-04" data-title="电机驱动与轮速闭环" data-group="运动控制基础">
+  <h2>模块 04：电机驱动与轮速闭环</h2>
+  <p class="lesson-lead">上层说“左轮 200mm/s、右轮 180mm/s”，电机听不懂毫米每秒，只认识方向引脚和 PWM。本模块就是翻译链：先用编码器实测速度做 PID 修正，再加上前馈和差速修正，最后把带正负号的 PWM 命令变成 TB6612 的方向电平与 20kHz 占空比。</p>
+
+  <div class="module-map">
+    <h3>1. 先看它在整车中的位置</h3>
+    <dl>
+      <dt>一句话职责</dt>
+      <dd>把左右轮目标速度转换为受限的左右 PWM，并用编码器速度反馈减小“目标速度－实际速度”的误差。</dd>
+      <dt>上游输入</dt>
+      <dd>MotionStraight、MotionLine 或 Nav 产生的左右目标速度、附加差速修正 <code>trim</code>，以及 App 传下来的真实 <code>dt</code>。</dd>
+      <dt>反馈输入</dt>
+      <dd>Odometry 根据左右编码器算出的 <code>Odometry_GetSpeedL/R()</code>，单位 mm/s。</dd>
+      <dt>下游输出</dt>
+      <dd>左右带符号 PWM 命令（逻辑范围 -1000～1000）、电机方向 GPIO，以及 TIMG8 两路 PWM 比较值。</dd>
+      <dt>依赖模块</dt>
+      <dd>Odometry、TI DriverLib/SysConfig、GPIO、TIMG8 PWM 定时器和 TB6612 电机驱动器。</dd>
+      <dt>被谁调用</dt>
+      <dd>MotionManager 统一选择 MotionStraight、MotionLine、Nav 等上层运动模块；这些模块共用 MotionWheel，MotionWheel 再调用 Motor 和 PWM。</dd>
+      <dt>总体位置</dt>
+      <dd><code>Mission → MotionManager → MotionStraight / MotionLine / Nav → MotionWheel → PID + 前馈 → Motor → PWM/GPIO → 电机</code>。</dd>
+    </dl>
+  </div>
+
+  <h3>2. 初学者需要先知道</h3>
+  <ul>
+    <li><dfn data-term="PWM">脉宽调制</dfn>：让引脚快速开关，用“每个周期有多少时间为有效电平”控制平均功率。像快速反复开关水龙头，开得越久，平均水流越大。</li>
+    <li><dfn data-term="duty cycle">占空比</dfn>：有效时间占整个 PWM 周期的比例。本项目用 0～1000 表示 0%～100%，500 就是约 50%。</li>
+    <li><dfn data-term="H-bridge">H 桥</dfn>：通过两根方向输入改变电机两端电压方向，因此同一个电机可以正转、反转、滑行或主动刹车。TB6612 的 A、B 是两套电机通道。</li>
+    <li><dfn data-term="closed-loop control">闭环控制</dfn>：不只“发一个命令”，还读取实际结果并纠偏。这里目标轮速是 setpoint，编码器轮速是 measure，差值是 error。</li>
+    <li><dfn data-term="PID">比例－积分－微分控制</dfn>：P 看当前误差，I 累加过去误差，D 看误差变化速度。三项加权后成为反馈修正量。</li>
+    <li><dfn data-term="feedforward">前馈</dfn>：根据目标速度先猜一个基础 PWM，不必等误差出现才出力；反馈 PID 再修正电池、电机、负载造成的偏差。</li>
+    <li><dfn data-term="static friction compensation">静摩擦补偿</dfn>：目标不为零时额外加一小段同方向 PWM，帮助电机跨过“命令很小但轮子不动”的死区。当前左右轮分别使用 19.884 和 22.205 PWM，承认两套机械系统的起步阻力不同。</li>
+    <li><dfn data-term="saturation / clamp">饱和/限幅</dfn>：把过大的值截到允许边界，防止命令超过 PWM 硬件范围。</li>
+    <li><dfn data-term="struct pointer">结构体指针</dfn>：<code>PID_t *pid</code> 指向一套 PID 参数与历史状态；<code>pid-&gt;integral</code> 就是修改那套对象里的积分成员。</li>
+    <li><dfn data-term="const pointer target">只读指向对象</dfn>：<code>const MotionWheel_Command_t *command</code> 表示函数可读取命令结构体，但不应通过该指针改写它。</li>
+    <li><dfn data-term="dt">时间增量</dfn>：本次控制距离上次控制经过的秒数。积分要乘 <code>dt</code>，微分要除 <code>dt</code>，否则控制效果会随循环快慢改变。</li>
+    <li><dfn data-term="finite number">有限数</dfn>：不是 NaN，也不是正负无穷。控制参数或传感数据一旦出现这些异常浮点值，比较和输出会变得不可预测，因此代码先用 <code>isfinite()</code> 拒绝它们。</li>
+  </ul>
+
+  <h3>3. 文件导读</h3>
+  <table>
+    <thead><tr><th>文件</th><th>角色</th><th>单位/边界</th></tr></thead>
+    <tbody>
+      <tr><td><code>Hardware/Motor/PWM.h/.c</code></td><td>最底层双通道 PWM 定时器驱动，把 0～1000 占空比刻度转换为 TIMG8 比较值。</td><td>无方向概念，只接收非负强度。</td></tr>
+      <tr><td><code>Hardware/Motor/Motor.h/.c</code></td><td>处理正负号、左右物理接线、H 桥方向 GPIO、停止与主动刹车。</td><td>逻辑命令 -1000～1000。</td></tr>
+      <tr><td><code>Application/Control/PID.h/.c</code></td><td>通用位置式 PID 算法，保存 Kp/Ki/Kd、积分和上次误差。</td><td>本身不知道 mm/s 或 PWM，单位由调用者决定。</td></tr>
+      <tr><td><code>Application/Control/MotionWheel.h/.c</code></td><td>双轮速度控制总入口：校验参数，读取左右实测速度，组合前馈、PID 和 trim，再驱动 Motor。</td><td>输入速度 mm/s，输出 PWM。</td></tr>
+    </tbody>
+  </table>
+
+  <h3>4. 逐行讲解</h3>
+  <h4>4.1 <code>Hardware/Motor/PWM.h</code>：底层 PWM 接口</h4>
+  <pre class="source-code"><code data-source="Hardware/Motor/PWM.h" data-lines="1-14">#ifndef __PWM_H
+#define __PWM_H
+
+/* 电机双通道底层 PWM 定时器驱动。 */
+
+#include &lt;stdint.h&gt;
+
+#define PWM_MAX_DUTY    1000U
+
+void PWM_Init(void);
+void PWM_SetCompareA(uint16_t Compare);
+void PWM_SetCompareB(uint16_t Compare);
+
+#endif</code></pre>
+  <ol class="line-notes">
+    <li><strong>第 1～2、14 行：</strong>头文件保护，避免同一声明被重复展开。</li>
+    <li><strong>第 4 行：</strong>说明该层只管定时器的两个 PWM 通道，不判断小车前进还是后退。</li>
+    <li><strong>第 6 行：</strong>引入 <code>uint16_t</code>；它是 16 位无符号整数。</li>
+    <li><strong>第 8 行：</strong>项目把满占空比分成 1000 份。<code>U</code> 表示无符号整数常量。</li>
+    <li><strong>第 10 行：</strong>初始化两路占空比并启动 PWM 计数器。</li>
+    <li><strong>第 11～12 行：</strong>分别设置驱动器 A、B 通道。参数名虽叫 Compare，调用者实际传的是 0～1000 的占空比刻度，函数内部才换算成寄存器比较值。</li>
+  </ol>
+
+  <h4>4.2 <code>Hardware/Motor/PWM.c</code>：占空比换算</h4>
+  <pre class="source-code"><code data-source="Hardware/Motor/PWM.c" data-lines="1-12">#include "Hardware/Motor/PWM.h"
+#include "ti_msp_dl_config.h"
+
+#define MOTOR_PWM_PERIOD_TICKS 1600U
+
+static uint16_t PWM_DutyToCompare(uint16_t duty)
+{
+    uint32_t highTicks;
+    if (duty &gt; PWM_MAX_DUTY) duty = PWM_MAX_DUTY;
+    highTicks = ((uint32_t)duty * MOTOR_PWM_PERIOD_TICKS) / PWM_MAX_DUTY;
+    return (uint16_t)(MOTOR_PWM_PERIOD_TICKS - highTicks);
+}</code></pre>
+  <ol class="line-notes">
+    <li><strong>第 1～2 行：</strong>取得本模块声明和 SysConfig 生成的定时器实例、通道编号及 DriverLib 函数。</li>
+    <li><strong>第 4 行：</strong>一个 PWM 周期包含 1600 个计数。当前 32MHz 定时器时钟下，<code>32,000,000 / 1600 = 20,000Hz</code>，即 20kHz。</li>
+    <li><strong>第 6～7 行：</strong>文件私有转换函数，只允许本 <code>PWM.c</code> 使用。</li>
+    <li><strong>第 8 行：</strong>用 32 位临时变量保存乘法结果；最大 <code>1000 × 1600 = 1,600,000</code>，超过 16 位上限 65535。</li>
+    <li><strong>第 9 行：</strong>调用者即使传入大于 1000 的值，也先截成 1000，避免超出 100% 占空比。</li>
+    <li><strong>第 10 行：</strong>按比例换算高电平计数：<code>duty × 1600 / 1000</code>。整数除法会舍去小数部分。</li>
+    <li><strong>第 11～12 行：</strong>当前定时器输出方式要求写入“周期计数－有效计数”，所以 duty 越大，寄存器 compare 反而越小；最后转回 16 位。</li>
+  </ol>
+  <table>
+    <thead><tr><th>duty 参数</th><th>highTicks</th><th>写入 compare</th><th>含义</th></tr></thead>
+    <tbody>
+      <tr><td>0</td><td>0</td><td>1600</td><td>0% 输出</td></tr>
+      <tr><td>500</td><td>800</td><td>800</td><td>约 50% 输出</td></tr>
+      <tr><td>1000</td><td>1600</td><td>0</td><td>100% 输出</td></tr>
+    </tbody>
+  </table>
+
+  <pre class="source-code"><code data-source="Hardware/Motor/PWM.c" data-lines="14-31">void PWM_Init(void)
+{
+    PWM_SetCompareA(0U);
+    PWM_SetCompareB(0U);
+    DL_TimerG_startCounter(MOTOR_PWM_INST);
+}
+
+void PWM_SetCompareA(uint16_t compare)
+{
+    DL_TimerG_setCaptureCompareValue(
+        MOTOR_PWM_INST, PWM_DutyToCompare(compare), GPIO_MOTOR_PWM_C0_IDX);
+}
+
+void PWM_SetCompareB(uint16_t compare)
+{
+    DL_TimerG_setCaptureCompareValue(
+        MOTOR_PWM_INST, PWM_DutyToCompare(compare), GPIO_MOTOR_PWM_C1_IDX);
+}</code></pre>
+  <ol class="line-notes">
+    <li><strong>第 14～18 行：</strong>先把 A、B 两路设为 0% 再启动计数器，防止初始化瞬间输出意外脉冲。</li>
+    <li><strong>第 21～25 行：</strong>A 通道先做 duty→compare 换算，再把结果写入 TIMG8 的 C0 比较通道；本车物理右电机接 A。</li>
+    <li><strong>第 27～31 行：</strong>B 通道做同样处理，但写入 C1；本车物理左电机接 B。</li>
+  </ol>
+
+  <h4>4.3 <code>Hardware/Motor/Motor.h</code>：带方向的电机接口</h4>
+  <pre class="source-code"><code data-source="Hardware/Motor/Motor.h" data-lines="1-24">#ifndef __MOTOR_H
+#define __MOTOR_H
+
+/* 基于 PWM 和 GPIO 方向控制的电机驱动；本模块不包含导航逻辑。 */
+
+#include &lt;stdint.h&gt;
+
+void Motor_Init(void);
+void Motor_SetLeftPWM(int16_t PWM);
+void Motor_SetRightPWM(int16_t PWM);
+void Motor_SetPWM(int16_t LeftPWM, int16_t RightPWM);
+void Motor_StopAll(void);
+void Motor_Brake(void);     /* 主动刹车(短接绕组急停)，到点停车用以减少冲过线 */
+
+void Motor_Run(int16_t leftSpeed, int16_t rightSpeed);
+void Motor_Forward(int16_t speed);
+void Motor_Backward(int16_t speed);
+void Motor_TurnLeft(int16_t speed);
+void Motor_TurnRight(int16_t speed);
+void Motor_SpinLeft(int16_t speed);
+void Motor_SpinRight(int16_t speed);
+void Motor_Stop(void);
+
+#endif</code></pre>
+  <ol class="line-notes">
+    <li><strong>第 1～6、24 行：</strong>头文件保护、职责说明和 16 位整数类型。这里用 <code>int16_t</code>，因为正负号表示两个转动方向。</li>
+    <li><strong>第 8 行：</strong>初始化 PWM 并把电机置于停止状态。</li>
+    <li><strong>第 9～11 行：</strong>可分别或同时设置左右轮带符号 PWM；正数代表逻辑前进，负数代表逻辑后退，底层会消化实际接线方向差异。</li>
+    <li><strong>第 12 行：</strong>停止 PWM 并把四个方向引脚清低，属于普通停止/滑行。</li>
+    <li><strong>第 13 行：</strong>主动刹车让 H 桥短接电机绕组，利用反电动势更快停住；它和简单的 0 PWM 不是同一种电气状态。</li>
+    <li><strong>第 15～22 行：</strong>提供更直观的运动便捷函数，但参数仍是 PWM 刻度，不是 mm/s；真正的轮速闭环走 MotionWheel。</li>
+  </ol>
+
+  <h4>4.4 <code>Hardware/Motor/Motor.c</code>：接线映射、正负号与限幅</h4>
+  <pre class="source-code"><code data-source="Hardware/Motor/Motor.c" data-lines="1-17">#include "Hardware/Motor/Motor.h"
+#include "Hardware/Motor/PWM.h"
+#include "ti_msp_dl_config.h"
+
+/* 实测: 物理左电机接在驱动器 B 通道、物理右电机接在 A 通道(接线左右反了)。
+ * 故左轮走 B 通道(前进符号 +1)、右轮走 A 通道(前进符号 -1)。
+ * 交叉的后果: 左环算的 PWM 驱动到右电机 → 巡线/航向差速全反 → 发 s 冲出去/打转。
+ * 此处把左右各自绑定到正确的物理通道(与 ti_24_h 一致)。 */
+#define LEFT_MOTOR_DIR_SIGN  (+1)   /* 左电机 = B 通道 */
+#define RIGHT_MOTOR_DIR_SIGN (-1)   /* 右电机 = A 通道 */
+
+static int16_t Motor_ClampPWM(int16_t pwm)
+{
+    if (pwm &gt; (int16_t)PWM_MAX_DUTY) return (int16_t)PWM_MAX_DUTY;
+    if (pwm &lt; -(int16_t)PWM_MAX_DUTY) return -(int16_t)PWM_MAX_DUTY;
+    return pwm;
+}</code></pre>
+  <ol class="line-notes">
+    <li><strong>第 1～3 行：</strong>取得带方向接口、底层 PWM 接口和 GPIO/定时器配置。</li>
+    <li><strong>第 5～8 行：</strong>记录实车接线事实：软件“左轮”必须发到 B，软件“右轮”必须发到 A。若左右绑定交叉，外层算出的差速会作用到错误车轮，方向控制会整体反常。</li>
+    <li><strong>第 9～10 行：</strong>左轮逻辑正号与硬件方向一致；右轮因电机安装/接线方向相反，要乘 -1。这样上层仍可统一认为“两轮正数都表示小车前进”。</li>
+    <li><strong>第 12～13 行：</strong>文件私有限幅函数，输入输出都是带符号 16 位 PWM。</li>
+    <li><strong>第 14～15 行：</strong>大于 1000 截成 1000，小于 -1000 截成 -1000。显式强制类型转换使宏值与 <code>int16_t</code> 比较一致。</li>
+    <li><strong>第 16～17 行：</strong>范围内的值原样返回。</li>
+  </ol>
+
+  <pre class="source-code"><code data-source="Hardware/Motor/Motor.c" data-lines="19-37">static void Motor_WritePin(GPIO_Regs *port, uint32_t pin, uint8_t high)
+{
+    if (high != 0U) DL_GPIO_setPins(port, pin);
+    else DL_GPIO_clearPins(port, pin);
+}
+
+void Motor_Init(void)
+{
+    PWM_Init();
+    Motor_StopAll();
+}
+
+void Motor_SetLeftPWM(int16_t pwm)   /* 物理左电机 = 驱动器 B 通道(BIN/CompareB) */
+{
+    int16_t value = Motor_ClampPWM((int16_t)(pwm * LEFT_MOTOR_DIR_SIGN));
+    Motor_WritePin(BOARD_OUTPUTS_MOTOR_BIN1_PORT, BOARD_OUTPUTS_MOTOR_BIN1_PIN, value &gt;= 0);
+    Motor_WritePin(BOARD_OUTPUTS_MOTOR_BIN2_PORT, BOARD_OUTPUTS_MOTOR_BIN2_PIN, value &lt; 0);
+    PWM_SetCompareB((uint16_t)((value &lt; 0) ? -value : value));
+}</code></pre>
+  <ol class="line-notes">
+    <li><strong>第 19～20 行：</strong>辅助函数接收 GPIO 端口指针、引脚掩码和逻辑高低。<code>GPIO_Regs *port</code> 指向一组硬件寄存器。</li>
+    <li><strong>第 21～23 行：</strong><code>high</code> 非零就置位引脚，否则清零；集中封装后，左右轮方向代码更容易读。</li>
+    <li><strong>第 25～29 行：</strong>先安全启动两路 PWM，再明确执行一次停止，使占空比与方向引脚都进入已知状态。</li>
+    <li><strong>第 31～33 行：</strong>左轮使用 B 通道；先乘接线方向符号 +1，再限制在 ±1000。</li>
+    <li><strong>第 34～35 行：</strong>value 非负时 BIN1 高、BIN2 低；value 为负时相反。比较表达式在 C 中产生 0 或 1，可直接作为 <code>high</code> 参数。</li>
+    <li><strong>第 36～37 行：</strong>PWM 只需要强度，所以三目运算取绝对值，再转为无符号数送给 B 通道。方向已经由 BIN1/BIN2 表达。</li>
+  </ol>
+
+  <pre class="source-code"><code data-source="Hardware/Motor/Motor.c" data-lines="39-59">void Motor_SetRightPWM(int16_t pwm)  /* 物理右电机 = 驱动器 A 通道(AIN/CompareA) */
+{
+    int16_t value = Motor_ClampPWM((int16_t)(pwm * RIGHT_MOTOR_DIR_SIGN));
+    Motor_WritePin(BOARD_OUTPUTS_MOTOR_AIN1_PORT, BOARD_OUTPUTS_MOTOR_AIN1_PIN, value &gt;= 0);
+    Motor_WritePin(BOARD_OUTPUTS_MOTOR_AIN2_PORT, BOARD_OUTPUTS_MOTOR_AIN2_PIN, value &lt; 0);
+    PWM_SetCompareA((uint16_t)((value &lt; 0) ? -value : value));
+}
+
+void Motor_SetPWM(int16_t leftPWM, int16_t rightPWM)
+{
+    Motor_SetLeftPWM(leftPWM);
+    Motor_SetRightPWM(rightPWM);
+}
+
+void Motor_StopAll(void)
+{
+    PWM_SetCompareA(0U);
+    PWM_SetCompareB(0U);
+    DL_GPIO_clearPins(GPIOA, BOARD_OUTPUTS_MOTOR_AIN1_PIN | BOARD_OUTPUTS_MOTOR_AIN2_PIN);
+    DL_GPIO_clearPins(GPIOB, BOARD_OUTPUTS_MOTOR_BIN1_PIN | BOARD_OUTPUTS_MOTOR_BIN2_PIN);
+}</code></pre>
+  <ol class="line-notes">
+    <li><strong>第 39～41 行：</strong>右轮绑定 A 通道，并乘 -1 修正实车方向；上层给正数，底层 value 会变负以产生物理前进。</li>
+    <li><strong>第 42～44 行：</strong>按 value 正负设置 AIN1/AIN2，再把绝对值送入 A 通道 PWM。</li>
+    <li><strong>第 47～51 行：</strong>双轮接口只是依次调用左右轮接口，因此左右映射、限幅和方向修正都不会重复实现。</li>
+    <li><strong>第 53～56 行：</strong>普通停止先把 A、B 两路 PWM 都设为 0。</li>
+    <li><strong>第 57～58 行：</strong><code>|</code> 是按位或，把同一端口的两个引脚掩码合并，一次清低 AIN1/AIN2 或 BIN1/BIN2。</li>
+    <li><strong>第 59 行：</strong>普通停止完成。它不等于主动刹车。</li>
+  </ol>
+
+  <pre class="source-code"><code data-source="Hardware/Motor/Motor.c" data-lines="61-76">void Motor_Brake(void)
+{
+    DL_GPIO_setPins(GPIOA, BOARD_OUTPUTS_MOTOR_AIN1_PIN | BOARD_OUTPUTS_MOTOR_AIN2_PIN);
+    DL_GPIO_setPins(GPIOB, BOARD_OUTPUTS_MOTOR_BIN1_PIN | BOARD_OUTPUTS_MOTOR_BIN2_PIN);
+    PWM_SetCompareA(PWM_MAX_DUTY);
+    PWM_SetCompareB(PWM_MAX_DUTY);
+}
+
+void Motor_Run(int16_t leftSpeed, int16_t rightSpeed) { Motor_SetPWM(leftSpeed, rightSpeed); }
+void Motor_Forward(int16_t speed) { Motor_SetPWM(speed, speed); }
+void Motor_Backward(int16_t speed) { Motor_SetPWM(-speed, -speed); }
+void Motor_TurnLeft(int16_t speed) { Motor_SetPWM(0, speed); }
+void Motor_TurnRight(int16_t speed) { Motor_SetPWM(speed, 0); }
+void Motor_SpinLeft(int16_t speed) { Motor_SetPWM(-speed, speed); }
+void Motor_SpinRight(int16_t speed) { Motor_SetPWM(speed, -speed); }
+void Motor_Stop(void) { Motor_StopAll(); }</code></pre>
+  <ol class="line-notes">
+    <li><strong>第 61～64 行：</strong>主动刹车把每个 H 桥通道的两根方向线同时置高，这是 TB6612 的短刹状态。</li>
+    <li><strong>第 65～67 行：</strong>两路 PWM 设为满值，让刹车状态持续作用；具体只应短时间使用，由更高层 MotionManager 管理。</li>
+    <li><strong>第 69 行：</strong><code>Motor_Run</code> 是双轮设置的别名。</li>
+    <li><strong>第 70～71 行：</strong>前进给两轮同号正值，后退给两轮同号负值。底层的左右方向修正保证物理方向一致。</li>
+    <li><strong>第 72～73 行：</strong>普通左/右转让内侧轮为 0、外侧轮前进，车体绕靠近停止轮的位置转弯。</li>
+    <li><strong>第 74～75 行：</strong>原地旋转让两轮大小相同、方向相反，车体中心附近转动。</li>
+    <li><strong>第 76 行：</strong><code>Motor_Stop</code> 只是调用普通停止接口。</li>
+  </ol>
+
+  <h4>4.5 <code>Application/Control/PID.h</code>：一套 PID 的参数与记忆</h4>
+  <pre class="source-code"><code data-source="Application/Control/PID.h" data-lines="1-21">#ifndef APPLICATION_CONTROL_PID_H
+#define APPLICATION_CONTROL_PID_H
+
+typedef struct
+{
+    float Kp;
+    float Ki;
+    float Kd;
+    float integral;
+    float prevError;
+    float outMax;
+    float integralMax;
+} PID_t;
+
+void PID_Init(PID_t *pid, float kp, float ki, float kd,
+              float outMax, float integralMax);
+void PID_SetTunings(PID_t *pid, float kp, float ki, float kd);
+void PID_Reset(PID_t *pid);
+float PID_Update(PID_t *pid, float setpoint, float measure, float dt);
+
+#endif</code></pre>
+  <ol class="line-notes">
+    <li><strong>第 1～2、21 行：</strong>头文件保护。</li>
+    <li><strong>第 4～5、13 行：</strong>定义 <code>PID_t</code> 结构体；每个车轮各有一份，所以左右积分和历史误差不会混在一起。</li>
+    <li><strong>第 6 行：</strong><code>Kp</code> 乘当前误差；越大，立刻纠偏越强，也越容易振荡。</li>
+    <li><strong>第 7 行：</strong><code>Ki</code> 乘误差随时间的累积，用于消除长期小偏差，但过大会积累过头。</li>
+    <li><strong>第 8 行：</strong><code>Kd</code> 乘误差变化速度，用于抑制快速变化，但对噪声敏感。</li>
+    <li><strong>第 9～10 行：</strong><code>integral</code> 和 <code>prevError</code> 是控制器的“记忆”，每次 Update 都会改变。</li>
+    <li><strong>第 11～12 行：</strong>分别限制最终输出绝对值与积分状态绝对值。</li>
+    <li><strong>第 15～16 行：</strong>初始化一份 PID：通过指针填写参数并清空历史。</li>
+    <li><strong>第 17 行：</strong>运行中只更换 Kp/Ki/Kd，不自动清空历史状态。</li>
+    <li><strong>第 18 行：</strong>只清空积分和上次误差，不改变调参值。</li>
+    <li><strong>第 19 行：</strong>输入目标、测量和时间间隔，返回一次 PID 输出。</li>
+  </ol>
+
+  <h4>4.6 <code>Application/Control/PID.c</code>：P、I、D 的真实计算</h4>
+  <pre class="source-code"><code data-source="Application/Control/PID.c" data-lines="1-13">#include "PID.h"
+
+/* 通用位置式 PID —— 见 PID.h 接口说明 */
+
+static float PID_Clamp(float v, float limit)
+{
+    if (limit &gt; 0.0f)
+    {
+        if (v &gt; limit)  { return limit; }
+        if (v &lt; -limit) { return -limit; }
+    }
+    return v;
+}</code></pre>
+  <ol class="line-notes">
+    <li><strong>第 1 行：</strong>引入同目录 PID 接口；工程的头文件搜索路径使 <code>"PID.h"</code> 能被找到。</li>
+    <li><strong>第 3 行：</strong>这是通用“位置式”PID：每次直接算完整输出，而不是只算输出增量。</li>
+    <li><strong>第 5～6 行：</strong>文件私有浮点限幅函数。</li>
+    <li><strong>第 7～11 行：</strong>只有 limit 大于 0 才启用对称限幅；超过 +limit 返回 +limit，低于 -limit 返回 -limit。</li>
+    <li><strong>第 12～13 行：</strong>未越界或 limit≤0 时原值返回。也就是说 0 在这个通用函数中表示“不启用限幅”。</li>
+  </ol>
+
+  <pre class="source-code"><code data-source="Application/Control/PID.c" data-lines="15-37">void PID_Init(PID_t *pid, float kp, float ki, float kd, float outMax, float integralMax)
+{
+    pid-&gt;Kp = kp;
+    pid-&gt;Ki = ki;
+    pid-&gt;Kd = kd;
+    pid-&gt;outMax = outMax;
+    pid-&gt;integralMax = integralMax;
+    pid-&gt;integral = 0.0f;
+    pid-&gt;prevError = 0.0f;
+}
+
+void PID_SetTunings(PID_t *pid, float kp, float ki, float kd)
+{
+    pid-&gt;Kp = kp;
+    pid-&gt;Ki = ki;
+    pid-&gt;Kd = kd;
+}
+
+void PID_Reset(PID_t *pid)
+{
+    pid-&gt;integral = 0.0f;
+    pid-&gt;prevError = 0.0f;
+}</code></pre>
+  <ol class="line-notes">
+    <li><strong>第 15～16 行：</strong>调用者传入 PID 对象地址和六个配置值。此函数没有 NULL 检查，调用者必须保证指针有效。</li>
+    <li><strong>第 17～21 行：</strong>通过 <code>-&gt;</code> 把 P/I/D 增益、输出上限和积分上限写入这份结构体。</li>
+    <li><strong>第 22～24 行：</strong>新控制器从零积分、零历史误差开始。</li>
+    <li><strong>第 26～31 行：</strong>调参函数只更新三个增益；若希望避免沿用旧积分，应另外调用 <code>PID_Reset()</code>。</li>
+    <li><strong>第 33～37 行：</strong>Reset 清空控制记忆，但保留 Kp/Ki/Kd 和限幅设置。</li>
+  </ol>
+
+  <pre class="source-code"><code data-source="Application/Control/PID.c" data-lines="39-58">float PID_Update(PID_t *pid, float setpoint, float measure, float dt)
+{
+    float error = setpoint - measure;
+    float deriv = 0.0f;
+    float out;
+
+    /* 积分(带抗饱和限幅) */
+    pid-&gt;integral += error * dt;
+    pid-&gt;integral = PID_Clamp(pid-&gt;integral, pid-&gt;integralMax);
+
+    /* 微分 */
+    if (dt &gt; 0.0f)
+    {
+        deriv = (error - pid-&gt;prevError) / dt;
+    }
+    pid-&gt;prevError = error;
+
+    out = pid-&gt;Kp * error + pid-&gt;Ki * pid-&gt;integral + pid-&gt;Kd * deriv;
+    return PID_Clamp(out, pid-&gt;outMax);
+}</code></pre>
+  <ol class="line-notes">
+    <li><strong>第 39～43 行：</strong>误差定义为目标减实测；微分先设 0，<code>out</code> 稍后保存总和。若目标 200、实测 180，error=+20，控制器需要加力。</li>
+    <li><strong>第 45～47 行：</strong>积分按 <code>integral += error × dt</code> 累积，再限制历史总量。这是简单的积分抗饱和，防止长时间大误差把积分堆得过大。</li>
+    <li><strong>第 49～53 行：</strong>dt>0 才计算误差变化率，避免除以 0；公式是“本次误差－上次误差”除以经过秒数。</li>
+    <li><strong>第 54 行：</strong>保存本次误差，供下一次算 D。</li>
+    <li><strong>第 56 行：</strong>位置式 PID 总输出为 <code>Kp×error + Ki×integral + Kd×deriv</code>。</li>
+    <li><strong>第 57～58 行：</strong>最终输出再按 <code>outMax</code> 对称限幅后返回。</li>
+  </ol>
+  <p class="pitfall"><strong>当前轮速反馈部分实际上是 P 控制。</strong>MotionWheel 把左右 <code>Ki</code> 配成 0，也把 <code>Kd</code> 固定传成 0，所以 PID 的反馈修正只有 P 项；最终电机命令并不只是 P，还包含左右各自的前馈和静摩擦补偿。启用 Ki 时必须同时给正的积分上限；Kd 若要启用，还需给 MotionWheel 增加清晰的配置入口并重新实车调参。</p>
+
+  <h4>4.7 <code>Application/Control/MotionWheel.h</code>：双轮闭环的公共契约</h4>
+  <pre class="source-code"><code data-source="Application/Control/MotionWheel.h" data-lines="1-78">#ifndef APPLICATION_CONTROL_MOTION_WHEEL_H
+#define APPLICATION_CONTROL_MOTION_WHEEL_H
+
+#include &lt;stdint.h&gt;
+
+/* 双轮速度控制公共参考值：保留给兼容入口；实车默认值以下方 LEFT/RIGHT 为准。 */
+#define MOTION_WHEEL_KP                       0.6f     /* 左右 Kp 的公共参考值。 */
+#define MOTION_WHEEL_KI                       0.0f    /* 消除稳态轮速误差；当前关闭。 */
+#define MOTION_WHEEL_INTEGRAL_LIMIT           0.0f    /* KI 开启后限制积分累积。 */
+#define MOTION_WHEEL_FEEDFORWARD_PWM_PER_MMPS 0.43702f /* 左右前馈斜率的算术平均值。 */
+#define MOTION_WHEEL_STATIC_FRICTION_PWM      21.0445f /* 左右静摩擦补偿的算术平均值。 */
+#define MOTION_WHEEL_MAX_COMMAND_PWM          1000.0f /* 每侧车轮最终 PWM 上限。 */
+
+/* 2026-07-20 正向实测标定值：
+ * - 开环 PWM150~600 的 21 个升降稳态点分别拟合左右前馈与静摩擦；
+ * - Kp 0.5~0.9 细网格中左右均以 0.6 综合误差最低；
+ * - Ki 的小幅收益尚未通过重复交叉试验确认，因此安全默认继续关闭。
+ * 左右电机、减速箱和静摩擦不同，默认值必须分别固化。 */
+#define MOTION_WHEEL_LEFT_KP                       0.6f
+#define MOTION_WHEEL_LEFT_KI                       0.0f
+#define MOTION_WHEEL_LEFT_INTEGRAL_LIMIT           0.0f
+#define MOTION_WHEEL_LEFT_FEEDFORWARD_PWM_PER_MMPS 0.43114f
+#define MOTION_WHEEL_LEFT_STATIC_FRICTION_PWM      19.884f
+#define MOTION_WHEEL_RIGHT_KP                       0.6f
+#define MOTION_WHEEL_RIGHT_KI                       0.0f
+#define MOTION_WHEEL_RIGHT_INTEGRAL_LIMIT           0.0f
+#define MOTION_WHEEL_RIGHT_FEEDFORWARD_PWM_PER_MMPS 0.44289f
+#define MOTION_WHEEL_RIGHT_STATIC_FRICTION_PWM      22.205f
+
+/* 运行时可调参数：上电恢复左右各自的 #define 默认值，由 K 命令经 Param 模块读写。
+ * 左右 Kp/Ki/积分限幅写入后调用 MotionWheel_ApplyPidTunings() 进入对应 PID；
+ * 左右前馈与静摩擦每拍直接读取，写入即生效。调好后写回对应 LEFT/RIGHT 宏固化。 */
+extern float MotionWheel_TuneLeftKp;
+extern float MotionWheel_TuneLeftKi;
+extern float MotionWheel_TuneLeftIntegralLimit;
+extern float MotionWheel_TuneLeftFeedforwardPWMPerMMps;
+extern float MotionWheel_TuneLeftStaticFrictionPWM;
+extern float MotionWheel_TuneRightKp;
+extern float MotionWheel_TuneRightKi;
+extern float MotionWheel_TuneRightIntegralLimit;
+extern float MotionWheel_TuneRightFeedforwardPWMPerMMps;
+extern float MotionWheel_TuneRightStaticFrictionPWM;
+
+/* 上层控制器每个周期提交的左右轮目标和附加差速修正。 */
+typedef struct
+{
+    float targetSpeedLMMps;
+    float targetSpeedRMMps;
+    float trimLPWM;
+    float trimRPWM;
+} MotionWheel_Command_t;
+
+typedef enum
+{
+    MOTION_WHEEL_RESULT_OK = 0,
+    MOTION_WHEEL_RESULT_INVALID_ARGUMENT,
+    MOTION_WHEEL_RESULT_NOT_CONFIGURED,
+    MOTION_WHEEL_RESULT_ODOMETRY_INVALID
+} MotionWheel_Result_t;
+
+MotionWheel_Result_t MotionWheel_Init(void);
+MotionWheel_Result_t MotionWheel_Update(
+    const MotionWheel_Command_t *command, float dt);
+void MotionWheel_Reset(void);
+void MotionWheel_Stop(void);
+
+/* 把左右轮各自的 Tune 增益写入对应 PID，运行中调用也安全。 */
+void MotionWheel_ApplyPidTunings(void);
+
+uint8_t MotionWheel_IsConfigured(void);
+float MotionWheel_GetMaximumCommandPWM(void);
+float MotionWheel_GetLeftCommandPWM(void);
+float MotionWheel_GetRightCommandPWM(void);
+/* 最近一拍上层提交的目标轮速，供遥测输出目标 vs 实测曲线。 */
+float MotionWheel_GetTargetSpeedL(void);
+float MotionWheel_GetTargetSpeedR(void);
+
+#endif</code></pre>
+  <ol class="line-notes">
+    <li><strong>第 1～4、78 行：</strong>头文件保护和固定宽度整数类型。</li>
+    <li><strong>第 6～12 行：</strong>公共 Kp、Ki、积分限、前馈和静摩擦现在是兼容参考值；前馈 0.43702 与静摩擦 21.0445 是左右实测值的算术平均。真正初始化左右轮时使用下面的 LEFT/RIGHT 宏。第 12 行仍规定最终输出不得超过 ±1000。</li>
+    <li><strong>第 14～18 行：</strong>注释记录标定证据：21 个开环稳态点拟合前馈/静摩擦，Kp 在 0.5～0.9 中比较，Ki 因收益尚未重复确认而保持关闭。这些数字不是凭感觉填写。</li>
+    <li><strong>第 19～28 行：</strong>左右分别固化五项默认值。两侧 Kp 都是 0.6，但左前馈/静摩擦为 0.43114、19.884，右侧为 0.44289、22.205；同一目标速度下，两轮基础 PWM 可以不同。</li>
+    <li><strong>第 30～42 行：</strong>十个 <code>extern</code> 变量是本次上电的运行时参数。K17～K21 对应左轮 Kp、Ki、积分限、前馈、静摩擦，K22～K26 对应右轮五项。</li>
+    <li><strong>兼容入口：</strong>K1～K5 读取时返回左右均值，写入时同时覆盖左右对应参数；它们不是第三套参数。左右已分开调好后再写 K1～K5，会抹掉两侧差异。</li>
+    <li><strong>第 44～51 行：</strong>命令结构体同时携带左右目标速度（mm/s）与左右附加 PWM 修正。trim 已经是 PWM 单位，不参与速度换算。</li>
+    <li><strong>第 53～59 行：</strong><dfn data-term="enum">枚举</dfn>给成功、参数无效、尚未配置、里程标定无效分别命名。</li>
+    <li><strong>第 61～68 行：</strong>Init/Update/Reset/Stop 管理生命周期；Kp、Ki 和积分限改变后通过 <code>ApplyPidTunings</code> 灌入 PID。</li>
+    <li><strong>第 70～76 行：</strong>查询配置状态、最大 PWM、左右输出和左右目标速度，供遥测画出 TL/LV/PL 与 TR/RV/PR。</li>
+  </ol>
+
+  <h4>4.8 <code>MotionWheel.c</code>：私有状态和配置校验</h4>
+  <pre class="source-code"><code data-source="Application/Control/MotionWheel.c" data-lines="1-44">#include "Application/Control/MotionWheel.h"
+#include "Application/Control/PID.h"
+#include "Application/State/Odometry.h"
+#include "Hardware/Motor/Motor.h"
+#include "Hardware/Motor/PWM.h"
+#include &lt;math.h&gt;
+#include &lt;stddef.h&gt;
+
+/* 运行时可调参数：左右电机、减速箱和轮胎不完全一致，必须分开标定。 */
+float MotionWheel_TuneLeftKp = MOTION_WHEEL_LEFT_KP;
+float MotionWheel_TuneLeftKi = MOTION_WHEEL_LEFT_KI;
+float MotionWheel_TuneLeftIntegralLimit = MOTION_WHEEL_LEFT_INTEGRAL_LIMIT;
+float MotionWheel_TuneLeftFeedforwardPWMPerMMps =
+    MOTION_WHEEL_LEFT_FEEDFORWARD_PWM_PER_MMPS;
+float MotionWheel_TuneLeftStaticFrictionPWM =
+    MOTION_WHEEL_LEFT_STATIC_FRICTION_PWM;
+float MotionWheel_TuneRightKp = MOTION_WHEEL_RIGHT_KP;
+float MotionWheel_TuneRightKi = MOTION_WHEEL_RIGHT_KI;
+float MotionWheel_TuneRightIntegralLimit = MOTION_WHEEL_RIGHT_INTEGRAL_LIMIT;
+float MotionWheel_TuneRightFeedforwardPWMPerMMps =
+    MOTION_WHEEL_RIGHT_FEEDFORWARD_PWM_PER_MMPS;
+float MotionWheel_TuneRightStaticFrictionPWM =
+    MOTION_WHEEL_RIGHT_STATIC_FRICTION_PWM;
+
+static PID_t s_leftPID;
+static PID_t s_rightPID;
+static float s_leftCommandPWM;
+static float s_rightCommandPWM;
+static float s_targetSpeedLMMps;
+static float s_targetSpeedRMMps;
+static uint8_t s_configured;
+
+static float MotionWheel_Clamp(float value, float limit)
+{
+    if (value &gt; limit)
+    {
+        return limit;
+    }
+    if (value &lt; -limit)
+    {
+        return -limit;
+    }
+    return value;
+}</code></pre>
+  <ol class="line-notes">
+    <li><strong>第 1～5 行：</strong>依次引入公共接口、PID、里程反馈、带方向电机驱动和 PWM 最大值。</li>
+    <li><strong>第 6～7 行：</strong><code>math.h</code> 提供 <code>fabsf/isfinite</code>，<code>stddef.h</code> 提供 <code>NULL</code>。</li>
+    <li><strong>第 9～23 行：</strong>十个运行时变量分别从左右默认宏启动。在线调参改的是这些变量；掉电后重新从头文件宏恢复。</li>
+    <li><strong>第 25～26 行：</strong>左右轮各有一份文件私有 PID 状态，不能共用积分和上次误差。</li>
+    <li><strong>第 27～31 行：</strong>保存最近左右浮点 PWM、最近目标轮速和初始化成功标志；前两组供遥测，<code>s_configured</code> 阻止未初始化更新。</li>
+    <li><strong>第 33～44 行：</strong>浮点对称限幅：大于 +limit 返回 +limit，小于 -limit 返回 -limit，否则原样返回。</li>
+  </ol>
+
+  <pre class="source-code"><code data-source="Application/Control/MotionWheel.c" data-lines="46-92">static uint8_t MotionWheel_SideParametersAreValid(
+    float kp, float ki, float integralLimit,
+    float feedforwardPWMPerMMps, float staticFrictionPWM)
+{
+    if ((!isfinite(kp)) || (!isfinite(ki)) ||
+        (!isfinite(integralLimit)) || (!isfinite(feedforwardPWMPerMMps)) ||
+        (!isfinite(staticFrictionPWM)))
+    {
+        return 0U;
+    }
+    if ((kp &lt; 0.0f) || (ki &lt; 0.0f) || (integralLimit &lt; 0.0f) ||
+        ((ki &gt; 0.0f) &amp;&amp; (integralLimit &lt;= 0.0f)) ||
+        (feedforwardPWMPerMMps &lt; 0.0f) || (staticFrictionPWM &lt; 0.0f) ||
+        (staticFrictionPWM &gt; MOTION_WHEEL_MAX_COMMAND_PWM))
+    {
+        return 0U;
+    }
+    if ((kp == 0.0f) &amp;&amp; (ki == 0.0f) &amp;&amp;
+        (feedforwardPWMPerMMps == 0.0f))
+    {
+        return 0U;
+    }
+    return 1U;
+}
+
+static uint8_t MotionWheel_ParametersAreValid(void)
+{
+    if ((!isfinite(MOTION_WHEEL_MAX_COMMAND_PWM)) ||
+        (MOTION_WHEEL_MAX_COMMAND_PWM &lt;= 0.0f) ||
+        (MOTION_WHEEL_MAX_COMMAND_PWM &gt; (float)PWM_MAX_DUTY))
+    {
+        return 0U;
+    }
+    if (MotionWheel_SideParametersAreValid(
+            MotionWheel_TuneLeftKp, MotionWheel_TuneLeftKi,
+            MotionWheel_TuneLeftIntegralLimit,
+            MotionWheel_TuneLeftFeedforwardPWMPerMMps,
+            MotionWheel_TuneLeftStaticFrictionPWM) == 0U)
+    {
+        return 0U;
+    }
+    return MotionWheel_SideParametersAreValid(
+        MotionWheel_TuneRightKp, MotionWheel_TuneRightKi,
+        MotionWheel_TuneRightIntegralLimit,
+        MotionWheel_TuneRightFeedforwardPWMPerMMps,
+        MotionWheel_TuneRightStaticFrictionPWM);
+}</code></pre>
+  <ol class="line-notes">
+    <li><strong>第 46～55 行：</strong><code>MotionWheel_SideParametersAreValid</code> 一次只检查一侧，先拒绝 NaN 和无穷，避免左右任一侧带着坏参数运行。</li>
+    <li><strong>第 56～68 行：</strong>Kp、Ki、积分限、前馈和静摩擦必须满足范围关系；启用 Ki 时积分限必须为正，P/I/前馈也不能同时为零。</li>
+    <li><strong>第 71～78 行：</strong>公共的最终 PWM 上限单独检查，必须为有限正数且不能超过硬件 <code>PWM_MAX_DUTY</code>。</li>
+    <li><strong>第 79～86 行：</strong>把左轮的五个运行时参数送入同一侧校验器，任一失败就中止初始化。</li>
+    <li><strong>第 87～92 行：</strong>右轮用自己的五个参数再检查一次；只有两侧都有效，整个轮速层才可配置。</li>
+  </ol>
+
+  <h4>4.9 前馈、四舍五入与初始化</h4>
+  <pre class="source-code"><code data-source="Application/Control/MotionWheel.c" data-lines="94-116">static float MotionWheel_GetFeedforward(
+    float targetSpeedMMps, float feedforwardPWMPerMMps,
+    float staticFrictionPWM)
+{
+    float output;
+
+    if (fabsf(targetSpeedMMps) &lt; 0.001f)
+    {
+        return 0.0f;
+    }
+
+    output = targetSpeedMMps * feedforwardPWMPerMMps;
+    output += (targetSpeedMMps &gt; 0.0f) ?
+                  staticFrictionPWM : -staticFrictionPWM;
+    return output;
+}
+
+static int16_t MotionWheel_ToMotorCommand(float value)
+{
+    value = MotionWheel_Clamp(value, MOTION_WHEEL_MAX_COMMAND_PWM);
+    value += (value &gt;= 0.0f) ? 0.5f : -0.5f;
+    return (int16_t)value;
+}</code></pre>
+  <ol class="line-notes">
+    <li><strong>第 94～98 行：</strong>前馈函数输入目标速度、该侧速度斜率和该侧静摩擦补偿，<code>output</code> 保存浮点基础 PWM。</li>
+    <li><strong>第 100～103 行：</strong>目标绝对值小于 0.001mm/s 时视为零，直接输出 0，避免零速附近因浮点微小噪声加入静摩擦补偿。</li>
+    <li><strong>第 105 行：</strong>线性部分是 <code>目标速度 × 该侧 ff</code>。正速度得正 PWM，负速度自然得负 PWM。</li>
+    <li><strong>第 106～108 行：</strong>非零目标再加同方向静摩擦：正转加 <code>sf</code>，反转减 <code>sf</code>。当前左右分别为 19.884 与 22.205，并非 0。</li>
+    <li><strong>第 111～115 行：</strong>转成 Motor 整数命令前再次限幅；正数加 0.5、负数减 0.5，再利用 C 浮点转整数向 0 截断，实现正负对称的近似四舍五入。</li>
+    <li><strong>第 116 行：</strong>结束转换函数；返回类型 <code>int16_t</code> 能保留方向正负号。</li>
+  </ol>
+
+  <pre class="source-code"><code data-source="Application/Control/MotionWheel.c" data-lines="118-138">MotionWheel_Result_t MotionWheel_Init(void)
+{
+    Motor_StopAll();
+    s_configured = 0U;
+
+    if (MotionWheel_ParametersAreValid() == 0U)
+    {
+        return MOTION_WHEEL_RESULT_INVALID_ARGUMENT;
+    }
+
+    /* 用运行时参数初始化：同一次上电内重复 Init 不会丢掉已调好的增益。 */
+    PID_Init(&amp;s_leftPID, MotionWheel_TuneLeftKp, MotionWheel_TuneLeftKi, 0.0f,
+             MOTION_WHEEL_MAX_COMMAND_PWM,
+             MotionWheel_TuneLeftIntegralLimit);
+    PID_Init(&amp;s_rightPID, MotionWheel_TuneRightKp, MotionWheel_TuneRightKi, 0.0f,
+             MOTION_WHEEL_MAX_COMMAND_PWM,
+             MotionWheel_TuneRightIntegralLimit);
+    s_configured = 1U;
+    MotionWheel_Reset();
+    return MOTION_WHEEL_RESULT_OK;
+}</code></pre>
+  <ol class="line-notes">
+    <li><strong>第 118～121 行：</strong>初始化先停电机，并先标记“未配置”；后续任何失败都保持安全状态。</li>
+    <li><strong>第 123～126 行：</strong>参数体检失败就返回明确错误，不初始化 PID，也不允许 Update 工作。</li>
+    <li><strong>第 128～131 行：</strong><code>&amp;s_leftPID</code> 取得左 PID 地址；传入左 Kp、左 Ki，Kd 明确为 0，输出限幅 1000 和左积分限幅。</li>
+    <li><strong>第 132～134 行：</strong>右 PID 使用右侧独立参数，并拥有自己的结构体和历史状态。</li>
+    <li><strong>第 135～138 行：</strong>标记配置成功，清空左右 PID、最近 PWM 与最近目标，再返回 OK。</li>
+  </ol>
+
+  <h4>4.10 <code>MotionWheel_Update()</code>：mm/s 到 PWM 的完整闭环</h4>
+  <pre class="source-code"><code data-source="Application/Control/MotionWheel.c" data-lines="140-190">MotionWheel_Result_t MotionWheel_Update(
+    const MotionWheel_Command_t *command, float dt)
+{
+    float leftFeedbackPWM;
+    float rightFeedbackPWM;
+
+    if (s_configured == 0U)
+    {
+        return MOTION_WHEEL_RESULT_NOT_CONFIGURED;
+    }
+    if ((command == NULL) || (!isfinite(dt)) || (dt &lt;= 0.0f) ||
+        (!isfinite(command-&gt;targetSpeedLMMps)) ||
+        (!isfinite(command-&gt;targetSpeedRMMps)) ||
+        (!isfinite(command-&gt;trimLPWM)) || (!isfinite(command-&gt;trimRPWM)))
+    {
+        MotionWheel_Stop();
+        return MOTION_WHEEL_RESULT_INVALID_ARGUMENT;
+    }
+    if (Odometry_CountsPerMM &lt;= 0.001f)
+    {
+        MotionWheel_Stop();
+        return MOTION_WHEEL_RESULT_ODOMETRY_INVALID;
+    }
+
+    s_targetSpeedLMMps = command-&gt;targetSpeedLMMps;
+    s_targetSpeedRMMps = command-&gt;targetSpeedRMMps;
+
+    leftFeedbackPWM = PID_Update(
+        &amp;s_leftPID, command-&gt;targetSpeedLMMps, Odometry_GetSpeedL(), dt);
+    rightFeedbackPWM = PID_Update(
+        &amp;s_rightPID, command-&gt;targetSpeedRMMps, Odometry_GetSpeedR(), dt);
+
+    s_leftCommandPWM = MotionWheel_GetFeedforward(
+        command-&gt;targetSpeedLMMps,
+        MotionWheel_TuneLeftFeedforwardPWMPerMMps,
+        MotionWheel_TuneLeftStaticFrictionPWM) +
+        leftFeedbackPWM + command-&gt;trimLPWM;
+    s_rightCommandPWM = MotionWheel_GetFeedforward(
+        command-&gt;targetSpeedRMMps,
+        MotionWheel_TuneRightFeedforwardPWMPerMMps,
+        MotionWheel_TuneRightStaticFrictionPWM) +
+        rightFeedbackPWM + command-&gt;trimRPWM;
+    s_leftCommandPWM = MotionWheel_Clamp(
+        s_leftCommandPWM, MOTION_WHEEL_MAX_COMMAND_PWM);
+    s_rightCommandPWM = MotionWheel_Clamp(
+        s_rightCommandPWM, MOTION_WHEEL_MAX_COMMAND_PWM);
+
+    Motor_SetPWM(MotionWheel_ToMotorCommand(s_leftCommandPWM),
+                 MotionWheel_ToMotorCommand(s_rightCommandPWM));
+    return MOTION_WHEEL_RESULT_OK;
+}</code></pre>
+  <ol class="line-notes">
+    <li><strong>第 140～157 行：</strong>检查配置、空指针、dt 与四个命令字段；动态输入异常时主动停车并返回错误。</li>
+    <li><strong>第 158～162 行：</strong>编码器计数/mm 无效时，实测 mm/s 没有意义，因此同样停车。</li>
+    <li><strong>第 164～170 行：</strong>先保存左右目标供遥测使用，再让左 PID 对左实测、右 PID 对右实测，两个历史状态完全独立。</li>
+    <li><strong>第 172～181 行：</strong>左轮使用 <code>lwff/lwsf</code>，右轮使用 <code>rwff/rwsf</code>。每侧公式都是 <code>speed×ff + sign(speed)×sf + PI + trim</code>。</li>
+    <li><strong>第 182～189 行：</strong>两侧分别夹到 ±1000，再四舍五入交给 Motor；左右映射不会在此处混用。</li>
+    <li><strong>第 190 行：</strong>输出成功后返回 OK。</li>
+  </ol>
+
+  <div class="deep-dive">
+    <h4>用当前左右实测默认值把闭环算一遍</h4>
+    <p><strong>输入：</strong>左右目标都是 200mm/s，左实测 180mm/s，右实测 220mm/s，trim 都为 0；左右 Kp 都是 0.6，Ki=Kd=0。</p>
+    <p><strong>过程：</strong>左前馈为 <code>200×0.43114+19.884=106.112</code>，左 P 反馈为 <code>0.6×(200-180)=12</code>；右前馈为 <code>200×0.44289+22.205=110.783</code>，右 P 反馈为 <code>0.6×(200-220)=-12</code>。</p>
+    <p><strong>输出：</strong>左浮点命令约 <code>118.112</code>，四舍五入为 118；右浮点命令约 <code>98.783</code>，四舍五入为 99。同一目标速度的左右基础 PWM 本来就不同，反馈再根据各自误差增减。</p>
+    <p><strong>边界条件：</strong>任一总和超过 ±1000 会被限幅；目标、实测或 dt 异常会停机；Odometry 标定无效也会停机。</p>
+    <p><strong>设计原因：</strong>前馈承担大部分基础驱动力，反馈只需修正实际偏差，通常比完全依赖 PID 从零“追”目标更直接。</p>
+  </div>
+
+  <h4>4.11 Reset、Stop 与查询接口</h4>
+  <pre class="source-code"><code data-source="Application/Control/MotionWheel.c" data-lines="192-253">void MotionWheel_Reset(void)
+{
+    if (s_configured != 0U)
+    {
+        PID_Reset(&amp;s_leftPID);
+        PID_Reset(&amp;s_rightPID);
+    }
+    s_leftCommandPWM = 0.0f;
+    s_rightCommandPWM = 0.0f;
+    s_targetSpeedLMMps = 0.0f;
+    s_targetSpeedRMMps = 0.0f;
+}
+
+void MotionWheel_ApplyPidTunings(void)
+{
+    if (s_configured == 0U)
+    {
+        return;
+    }
+    PID_SetTunings(&amp;s_leftPID, MotionWheel_TuneLeftKp,
+                   MotionWheel_TuneLeftKi, 0.0f);
+    PID_SetTunings(&amp;s_rightPID, MotionWheel_TuneRightKp,
+                   MotionWheel_TuneRightKi, 0.0f);
+    s_leftPID.integralMax = MotionWheel_TuneLeftIntegralLimit;
+    s_rightPID.integralMax = MotionWheel_TuneRightIntegralLimit;
+}
+
+void MotionWheel_Stop(void)
+{
+    Motor_Brake();
+    MotionWheel_Reset();
+}
+
+uint8_t MotionWheel_IsConfigured(void)
+{
+    return s_configured;
+}
+
+float MotionWheel_GetMaximumCommandPWM(void)
+{
+    return (s_configured != 0U) ? MOTION_WHEEL_MAX_COMMAND_PWM : 0.0f;
+}
+
+float MotionWheel_GetLeftCommandPWM(void)
+{
+    return s_leftCommandPWM;
+}
+
+float MotionWheel_GetRightCommandPWM(void)
+{
+    return s_rightCommandPWM;
+}
+
+float MotionWheel_GetTargetSpeedL(void)
+{
+    return s_targetSpeedLMMps;
+}
+
+float MotionWheel_GetTargetSpeedR(void)
+{
+    return s_targetSpeedRMMps;
+}</code></pre>
+  <ol class="line-notes">
+    <li><strong>第 192～203 行：</strong>Reset 清左右 PID 历史、最近 PWM 和最近目标速度；它只清软件状态，不直接操作硬件。</li>
+    <li><strong>第 205～217 行：</strong><code>ApplyPidTunings</code> 把左、右 Kp/Ki 分别写入对应 PID，再分别更新积分上限。K17～K19、K22～K24 写入后会调用它；函数会刷新两只 PID，但未被修改一侧的运行时变量不会被覆盖。</li>
+    <li><strong>生效区别：</strong>K20/K21 与 K25/K26 修改前馈/静摩擦时不调用 apply，因为 Update 第 172～181 行每拍直接读取这些变量，下一拍自然生效。</li>
+    <li><strong>第 219～223 行：</strong>Stop 先真实关闭电机，再清控制记忆。</li>
+    <li><strong>第 225～243 行：</strong>查询配置、最大 PWM 以及最近左右输出，供安全判断和遥测。</li>
+    <li><strong>第 245～253 行：</strong>查询最近左右目标速度，使网页能把目标、实测和 PWM 放在同一时间轴比较。</li>
+  </ol>
+
+  <h3>5. 难点函数拆解</h3>
+  <div class="deep-dive">
+    <h4><code>PID_Update()</code> 的时间意义</h4>
+    <p><strong>输入：</strong>PID 对象、目标速度、实测速度和本周期 dt。</p>
+    <p><strong>过程：</strong>算误差 → 用 <code>error×dt</code> 更新积分 → 用 <code>误差变化/dt</code> 算微分 → P/I/D 加权 → 输出限幅。</p>
+    <p><strong>输出：</strong>一个反馈 PWM 修正，不是最终 PWM；MotionWheel 还会加前馈与 trim。</p>
+    <p><strong>边界条件：</strong>PID 内部只在 dt&gt;0 时算 D；MotionWheel 更严格，dt 非有限或≤0 会直接停车。PID 本身不检查空指针，调用者必须保证有效。</p>
+    <p><strong>设计原因：</strong>显式使用 dt，使循环偶尔累计多拍时 I/D 仍按真实经过时间计算。当前 Ki、Kd 为 0，dt 对 P 项数值没有影响，但接口为以后启用 I/D 保持正确。</p>
+  </div>
+  <div class="deep-dive">
+    <h4>为什么前馈、反馈和 trim 要分开</h4>
+    <p><strong>输入：</strong>目标轮速、编码器实测轮速、上层姿态/巡线修正。</p>
+    <p><strong>过程：</strong>前馈解决“想达到这个速度大概要多少 PWM”；PID 解决“实际还差多少”；trim 解决“为了车身方向，两轮需要额外制造多少差异”。</p>
+    <p><strong>输出：</strong><code>finalPWM = feedforward(target) + PID(target, actual, dt) + trim</code>。</p>
+    <p><strong>边界条件：</strong>三项相加后统一限幅。发生饱和时，外层 trim 或反馈的一部分会被截掉，因此长时间顶到 1000 通常意味着目标过高、机械阻力大或参数失配。</p>
+    <p><strong>设计原因：</strong>把职责分开后，速度标定、左右轮差异和航向/巡线修正可以独立理解与调试。</p>
+  </div>
+
+  <h3>6. 放回总体调用链</h3>
+  <div class="relation-chain">
+    <p><strong>直线：</strong>Mission → MotionManager → MotionStraight → 左右相同目标速度 + 航向 trim → MotionWheel</p>
+    <p><strong>巡线：</strong>Mission → MotionManager → MotionLine → 灰度误差换成左右不同目标速度 → MotionWheel</p>
+    <p><strong>转向：</strong>Mission → MotionManager → Nav → 左右大小相等、符号相反的目标速度 → MotionWheel</p>
+    <p><strong>共同闭环：</strong>MotionWheel 目标 mm/s ←→ Odometry 左右实测 mm/s → 左右 PID 修正；目标 mm/s → 前馈；三者加 trim → ±1000 PWM</p>
+    <p><strong>硬件输出：</strong>MotionWheel → Motor_SetPWM → 左轮 B/右轮 A 接线映射 → 方向 GPIO + PWM 绝对值 → PWM duty→compare → TIMG8 C0/C1 → TB6612 → 电机</p>
+  </div>
+  <p>App 每个有效系统周期先调用 <code>Odometry_Update()</code> 得到新的左右速度，再由 MotionManager 推进当前运动模块。因此 MotionWheel 本拍读取的是刚更新的反馈，并使用同一个真实 <code>dt</code> 计算控制。</p>
+  <p>停止也分层处理：<code>MotionWheel_Stop()</code> 立即关闭 PWM 并清 PID；需要更短停车距离时，MotionManager 第 35～67 行先释放 PWM，再短时间调用 <code>Motor_Brake()</code>，最后必须回到 <code>Motor_StopAll()</code>，避免 H 桥持续短刹导致电机或驱动器发热。</p>
+
+  <h3>7. 常见误解与调试提示</h3>
+  <div class="pitfall">
+    <ul>
+      <li><strong>“Motor_Forward(200) 是 200mm/s”：</strong>错，它是开环 PWM=200。要控制 mm/s，应通过 MotionWheel/上层运动模块。</li>
+      <li><strong>“两轮正 PWM 应对应相同方向引脚”：</strong>错。物理安装和接线相反，右轮在底层乘 -1；逻辑正号相同，硬件电平可以相反。</li>
+      <li><strong>“PWM_SetCompareA(500) 直接写寄存器 500”：</strong>错。500 是 50% 刻度，内部换算后当前恰好写 800；函数名容易让初学者混淆。</li>
+      <li><strong>“Stop 和 Brake 一样”：</strong>错。Stop 关闭 PWM/方向，倾向滑行；Brake 让 H 桥短接绕组以更快停止。</li>
+      <li><strong>“PID 当前三项都在工作”：</strong>错。当前 Ki=0、Kd=0，反馈项只有 P；最终命令还会叠加左右各自的前馈与静摩擦补偿。</li>
+      <li><strong>“积分上限 0 表示把积分锁死为 0”：</strong>在通用 <code>PID_Clamp</code> 中，limit≤0 表示不启用该限幅。不过当前 Ki=0，积分不参与输出；MotionWheel 禁止 Ki&gt;0 时仍使用非正积分上限。</li>
+      <li><strong>“Reset 已经让轮子停下”：</strong>错。Reset 只清软件状态；Stop 才同时调用 <code>Motor_StopAll()</code>。</li>
+    </ul>
+  </div>
+  <div class="ripple-effect">
+    <h4>调参数时的联动影响</h4>
+    <ul>
+      <li>真正决定上电默认行为的是 LEFT/RIGHT 五组宏。公共 <code>MOTION_WHEEL_KP</code>、<code>MOTION_WHEEL_FEEDFORWARD_PWM_PER_MMPS</code> 等只保留兼容参考；单独改公共宏不会覆盖当前写死的左右实测默认值。</li>
+      <li>修改左或右前馈/静摩擦都会影响直线、巡线和转向，因为三个行为共用 MotionWheel。应分别用两轮稳态数据标定 <code>lwff/lwsf</code> 与 <code>rwff/rwsf</code>，再调各侧 Kp。</li>
+      <li>提高 Kp 会增强纠偏，也可能让左右轮抖动；启用 Ki 前必须设置正的积分上限，并观察输出饱和和停车后的积分残留。</li>
+      <li>设置静摩擦补偿过大会导致低速目标一给出就突然窜动；过小则电机在低速区只响不转。</li>
+      <li>K1～K5 是兼容批量写入口，会让左右对应参数重新相等；已完成独立标定时应使用 K17～K26，避免误把两侧差异抹掉。</li>
+      <li>修改 <code>PWM_MAX_DUTY</code> 或定时器 period 时，要同步检查 MotionWheel 最大命令、duty 换算和 SysConfig 的 TIMG8 配置，不能只改一个宏。</li>
+      <li>左右轮方向或通道映射若改错，会让巡线修正、航向修正和 Nav 原地转向同时反常。排查时先做低 PWM 单轮测试，确认“软件左/右”和“逻辑正/负”。</li>
+      <li><code>Odometry_CountsPerMM</code> 标定影响实测 mm/s；它偏大/偏小会让 PID 误判轮速，不能仅靠改 Kp 掩盖编码器标定错误。</li>
+    </ul>
+  </div>
+
+  <h3>8. 学完自测</h3>
+  <details class="quiz"><summary>1. 为什么 PWM 强度可以是无符号数，而 Motor 命令必须有正负号？</summary><p>PWM 只表示输出有多强，方向由 H 桥 GPIO 单独表达；Motor 层用正负号同时表达逻辑方向，再把绝对值交给 PWM。</p></details>
+  <details class="quiz"><summary>2. 左轮目标 200mm/s、实测 180mm/s、trim=0，使用当前左轮默认值时最终整数 PWM 约是多少？</summary><p>前馈为 <code>200×0.43114+19.884=106.112</code>，P 反馈为 <code>0.6×20=12</code>，浮点总和 118.112，转换后约为 118。</p></details>
+  <details class="quiz"><summary>3. 左右轮为什么各自需要一份 PID_t？</summary><p>两轮的编码器速度、积分历史和上次误差不同；共用一份会让一侧的历史污染另一侧控制。</p></details>
+  <details class="quiz"><summary>4. Ki 当前为 0 时，积分代码为什么还保留？启用 Ki 还要做什么？</summary><p>PID 是通用实现，当前轮速配置暂时关闭 I。启用 Ki 时要给正的积分上限，实车调参并检查饱和、低速和停车切换。</p></details>
+  <details class="quiz"><summary>5. MotionWheel 收到 NULL、非法 dt 或无效里程标定时会怎样？</summary><p>未配置时直接返回 NOT_CONFIGURED；动态参数或里程异常时调用 MotionWheel_Stop，关闭电机并清 PID，再返回对应错误码。</p></details>
+
+  <h3>9. 覆盖清单</h3>
+  <ul class="coverage-list">
+    <li><code>Hardware/Motor/PWM.h</code>：第 1～14 行，完整覆盖占空比上限、初始化和 A/B 双通道接口。</li>
+    <li><code>Hardware/Motor/PWM.c</code>：第 1～31 行，完整覆盖 1600 周期、32 位中间乘法、duty→compare 反向换算、安全启动和 C0/C1 写入。</li>
+    <li><code>Hardware/Motor/Motor.h</code>：第 1～24 行，完整覆盖带符号 PWM、停止、主动刹车及便捷运动接口。</li>
+    <li><code>Hardware/Motor/Motor.c</code>：第 1～76 行，完整覆盖物理左 B/右 A 映射、右轮反号、±1000 限幅、方向 GPIO、绝对值 PWM、停止、刹车和所有便捷函数。</li>
+    <li><code>Application/Control/PID.h</code>：第 1～21 行，完整覆盖 PID 结构体七个字段及初始化、调参、复位、更新接口。</li>
+    <li><code>Application/Control/PID.c</code>：第 1～58 行，完整覆盖通用限幅、结构体指针写入、P/I/D 计算、dt、积分限幅和输出限幅。</li>
+    <li><code>Application/Control/MotionWheel.h</code>：第 1～78 行，完整覆盖公共兼容参考值、2026-07-20 左右实测默认值、十个运行时参数、命令结构体、结果枚举、控制及查询接口。</li>
+    <li><code>Application/Control/MotionWheel.c</code>：第 1～253 行，完整覆盖左右运行时参数与 PID 状态、逐侧校验、独立前馈/静摩擦、舍入、初始化、安全检查、左右实测反馈、三项合成、最终限幅、Motor 输出、运行时 apply、Reset/Stop 和遥测查询。</li>
+    <li><code>Application/Control/MotionStraight.c</code> 第 302～322 行、<code>MotionLine.c</code> 第 161～170 行、<code>Nav.c</code> 第 184～193 行、<code>MotionManager.c</code> 第 35～67、338～349 行、<code>Odometry.c</code> 速度接口及 <code>main.syscfg</code> 第 141～157 行仅用于核实总体数据链、制动时序与单位，不属于本模块要求逐行覆盖的八个目标文件。</li>
+  </ul>
+</section>

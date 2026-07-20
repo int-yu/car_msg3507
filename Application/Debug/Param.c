@@ -177,7 +177,7 @@ static void Param_SendList(void)
     {
         const Param_Entry_t *entry = &s_params[index];
 
-        Serial1_Printf("K%lu=%.4f %s [%g,%g]\r\n",
+        Serial1_Printf("K%lu=%.5f %s [%g,%g]\r\n",
                        (unsigned long)(index + 1U),
                        (double)entry->get(),
                        entry->name,
@@ -189,7 +189,7 @@ static void Param_SendList(void)
 
 static void Param_SendValue(uint32_t id)
 {
-    Serial1_Printf("OK K%lu=%.4f\r\n",
+    Serial1_Printf("OK K%lu=%.5f\r\n",
                    (unsigned long)id,
                    (double)s_params[id - 1U].get());
 }

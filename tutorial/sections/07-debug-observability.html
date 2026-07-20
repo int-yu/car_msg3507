@@ -1,0 +1,1630 @@
+<section class="lesson-section" id="module-07" data-title="OLED、调试显示与遥测" data-group="调试与可观测性">
+  <h2>模块 07：OLED、调试显示与遥测</h2>
+  <p class="lesson-lead">本模块提供两扇观察窗：OLED 显示现场状态，Telemetry 把数据整理成 CSV，经 UART1 交给 <code>car_debug.html</code> 画曲线。</p>
+
+  <div class="module-map">
+    <h3>1. 先看它在整车中的位置</h3>
+    <dl>
+      <dt>一句话职责</dt>
+      <dd>把系统内部状态转换成 OLED 像素和串口 CSV，让人能够观察、诊断和记录小车行为。</dd>
+      <dt>上游输入</dt>
+      <dd>Heading 航向、Odometry 左右路程/速度、Graydetect 五路位图、Key 按键位图、MotionManager 模式与错误、Mission 状态、K230 最近目标。</dd>
+      <dt>下游输出</dt>
+      <dd>SSD1306 的 128×64 显存数据、I2C 命令/数据帧，以及 UART1 的 <code>H,...</code> 表头和 <code>D,...</code> 数据行。</dd>
+      <dt>依赖模块</dt>
+      <dd>OLED 字模/位图、I2C DriverLib、Serial1、系统 100Hz Tick，以及各状态模块的只读查询接口。</dd>
+      <dt>被谁调用</dt>
+      <dd>App 初始化和更新流程调用 DebugDisplay 与 Telemetry；OLED 绘图函数也可被其他调试页面直接调用。</dd>
+      <dt>总体位置</dt>
+      <dd><code>State / Motion / Mission → DebugDisplay → OLED → I2C → 屏幕</code>，以及 <code>State / Motion / K230 → Telemetry → Serial1 → car_debug</code>。</dd>
+    </dl>
+  </div>
+
+  <h3>2. 初学者需要先知道</h3>
+  <ul>
+    <li><dfn data-term="framebuffer">显存/帧缓冲</dfn>：先在 RAM 里画完整画面，再统一发送到屏幕。像先在草稿纸上排版，最后整页复印；本项目缓冲区正好 1024 字节。</li>
+    <li><dfn data-term="page addressing">页寻址</dfn>：SSD1306 把竖直 8 个像素装进一个字节。64 行被分成 8 页，每页 128 列。</li>
+    <li><dfn data-term="I2C">I²C 总线</dfn>：用 SCL 时钟线和 SDA 数据线连接 MCU 与 OLED。设备地址为 <code>0x3C</code>，发送前还要用控制字节区分命令与图像数据。</li>
+    <li><dfn data-term="glyph / font bitmap">字模</dfn>：提前把字符的黑白像素编码成字节数组。显示字母不是让 OLED 理解“A”，而是从数组找到 A 的像素并复制到显存。</li>
+    <li><dfn data-term="bit mask">字段掩码</dfn>：用整数的每一位控制一组遥测字段是否启用；例如 <code>0x01</code> 开启 yaw，<code>0x03</code> 同时开启 yaw 与 sensor。</li>
+    <li><dfn data-term="CSV">逗号分隔值</dfn>：每列之间用逗号分隔。表头告诉接收端每一列是什么，数据行必须严格使用同一顺序和列数。</li>
+    <li><dfn data-term="baud rate">波特率</dfn>：串口每秒传输的位数。115200 8N1 中一个数据字节在线路上通常占 10 位，所以理论上约 11520 字节/秒。</li>
+  </ul>
+
+  <h3>3. 文件导读</h3>
+  <table>
+    <thead><tr><th>文件</th><th>作用</th><th>初学者阅读重点</th></tr></thead>
+    <tbody>
+      <tr><td><code>Hardware/Display/OLED.h/.c</code></td><td>屏幕驱动与绘图库。</td><td>I2C 命令/数据、1024 字节显存、坐标转 page/bit、文本数字和几何图形。</td></tr>
+      <tr><td><code>Hardware/Display/OLED_Data.h/.c</code></td><td>ASCII、中文和测试图片的只读像素数据。</td><td>数组的每个字节怎样对应纵向 8 点；大量十六进制值是数据，不是逐条业务逻辑。</td></tr>
+      <tr><td><code>Application/Debug/DebugDisplay.h/.c</code></td><td>把多个模块状态排成一张固定 OLED 调试页。</td><td>10Hz 限频、位图拆位、航向/里程/速度和运动状态汇总。</td></tr>
+      <tr><td><code>Application/Debug/Telemetry.h/.c</code></td><td>按字段掩码输出带表头的 CSV 遥测。</td><td>行长估算、动态安全频率、表头/数据一致、累计时间、K230 复合列。</td></tr>
+    </tbody>
+  </table>
+  <h3>4. 逐行讲解</h3>
+  <h4>4.1 <code>OLED.h</code>：128×64 绘图库公开接口</h4>
+  <pre class="source-code"><code data-source="Hardware/Display/OLED.h" data-lines="1-45">#ifndef OLED_H
+#define OLED_H
+
+#include &quot;Hardware/Display/OLED_Data.h&quot;
+#include &lt;stdint.h&gt;
+
+#define OLED_8X16     8U
+#define OLED_6X8      6U
+#define OLED_UNFILLED 0U
+#define OLED_FILLED   1U
+
+void OLED_Init(void);
+uint8_t OLED_IsReady(void);
+void OLED_Update(void);
+void OLED_UpdateArea(int16_t x, int16_t y, uint8_t width, uint8_t height);
+void OLED_Clear(void);
+void OLED_ClearArea(int16_t x, int16_t y, uint8_t width, uint8_t height);
+void OLED_Reverse(void);
+void OLED_ReverseArea(int16_t x, int16_t y, uint8_t width, uint8_t height);
+void OLED_ShowChar(int16_t x, int16_t y, char value, uint8_t fontSize);
+void OLED_ShowString(int16_t x, int16_t y, const char *string, uint8_t fontSize);
+void OLED_ShowNum(int16_t x, int16_t y, uint32_t number, uint8_t length, uint8_t fontSize);
+void OLED_ShowSignedNum(int16_t x, int16_t y, int32_t number, uint8_t length, uint8_t fontSize);
+void OLED_ShowHexNum(int16_t x, int16_t y, uint32_t number, uint8_t length, uint8_t fontSize);
+void OLED_ShowBinNum(int16_t x, int16_t y, uint32_t number, uint8_t length, uint8_t fontSize);
+void OLED_ShowFloatNum(int16_t x, int16_t y, double number,
+                       uint8_t intLength, uint8_t fraLength,
+                       uint8_t fontSize);
+void OLED_ShowImage(int16_t x, int16_t y, uint8_t width, uint8_t height, const uint8_t *image);
+void OLED_Printf(int16_t x, int16_t y, uint8_t fontSize, const char *format, ...);
+void OLED_DrawPoint(int16_t x, int16_t y);
+uint8_t OLED_GetPoint(int16_t x, int16_t y);
+void OLED_DrawLine(int16_t x0, int16_t y0, int16_t x1, int16_t y1);
+void OLED_DrawRectangle(int16_t x, int16_t y, uint8_t width, uint8_t height, uint8_t filled);
+void OLED_DrawTriangle(int16_t x0, int16_t y0,
+                       int16_t x1, int16_t y1,
+                       int16_t x2, int16_t y2,
+                       uint8_t filled);
+void OLED_DrawCircle(int16_t x, int16_t y, uint8_t radius, uint8_t filled);
+void OLED_DrawEllipse(int16_t x, int16_t y, uint8_t a, uint8_t b, uint8_t filled);
+void OLED_DrawArc(int16_t x, int16_t y, uint8_t radius,
+                  int16_t startAngle, int16_t endAngle,
+                  uint8_t filled);
+
+#endif</code></pre>
+  <ol class="line-notes">
+    <li><strong>第 1～5、45 行：</strong>头文件保护；引入字模声明和固定宽度整数。</li>
+    <li><strong>第 7～10 行：</strong><code>OLED_8X16</code> 与 <code>OLED_6X8</code> 同时代表字符宽度选择；filled/unfilled 用 1/0 选择实心或空心图形。</li>
+    <li><strong>第 12～13 行：</strong>初始化屏幕并查询 I2C 初始化/传输是否成功。</li>
+    <li><strong>第 14～19 行：</strong>全屏或局部把 RAM 显存发送到 OLED，以及清零/反色 RAM 中的全部或局部像素。画到缓冲区不等于已经显示，仍需 Update。</li>
+    <li><strong>第 20～25 行：</strong>显示 ASCII 字符、字符串、无符号十进制、有符号数、十六进制和二进制。</li>
+    <li><strong>第 26～28 行：</strong>浮点显示分别指定整数宽度、小数位数和字体。</li>
+    <li><strong>第 29 行：</strong>把按相同 page 格式保存的位图复制到任意坐标；调用者必须保证 image 指针和数据长度正确。</li>
+    <li><strong>第 30 行：</strong>提供类似 printf 的格式化显示入口。</li>
+    <li><strong>第 31～34 行：</strong>像素、读取像素、直线和矩形是基础图元。</li>
+    <li><strong>第 35～43 行：</strong>三角形、圆、椭圆和圆弧支持空心/实心；坐标用有符号数，允许图形中心在屏幕外并由像素级裁剪处理。</li>
+  </ol>
+
+  <h4>4.2 <code>OLED.c</code> 开头：I2C 参数与显存</h4>
+  <pre class="source-code"><code data-source="Hardware/Display/OLED.c" data-lines="1-16">#include &quot;Hardware/Display/OLED.h&quot;
+#include &quot;System/Delay.h&quot;
+#include &quot;ti_msp_dl_config.h&quot;
+#include &lt;math.h&gt;
+#include &lt;stdarg.h&gt;
+#include &lt;stdio.h&gt;
+#include &lt;stdlib.h&gt;
+#include &lt;string.h&gt;
+
+#define OLED_ADDRESS     0x3CU
+#define OLED_TIMEOUT     100000UL
+#define OLED_CHUNK_BYTES 7U
+
+static uint8_t s_buffer[8][128];
+static uint8_t s_ready;
+static uint8_t s_busError;</code></pre>
+  <ol class="line-notes">
+    <li><strong>第 1～3 行：</strong>取得 OLED 接口、阻塞延时和 SysConfig 生成的 I2C 实例/DriverLib。</li>
+    <li><strong>第 4～8 行：</strong>数学函数服务圆弧/图形；stdarg/stdio 服务格式化；stdlib 提供 abs；string 提供 memset。</li>
+    <li><strong>第 10 行：</strong>OLED 的 7 位 I2C 地址为 <code>0x3C</code>。</li>
+    <li><strong>第 11 行：</strong>轮询总线最多执行 100000 次，防止硬件异常时永久卡死。</li>
+    <li><strong>第 12 行：</strong>一次最多装 7 个有效数据字节；再加 1 个控制字节，正好组成 8 字节小包。</li>
+    <li><strong>第 14 行：</strong><code>s_buffer[8][128]</code> 是 8 页×128 列=1024 字节显存。<code>s_buffer[page][x]</code> 的 8 个 bit 对应该列的 8 个 y 像素。</li>
+    <li><strong>第 15～16 行：</strong><code>s_ready</code> 是对外可用状态；<code>s_busError</code> 在命令/数据发送失败时记错。两者都是文件私有静态状态。</li>
+  </ol>
+
+  <div class="deep-dive">
+    <h4>坐标如何落到一个字节的某一位</h4>
+    <p><strong>输入：</strong>像素坐标 <code>(x,y)</code>，其中 x=0～127、y=0～63。</p>
+    <p><strong>过程：</strong><code>page = y / 8</code> 找到第几组竖直 8 点；<code>bit = y &amp; 7</code> 得到组内第几位；字节位置是 <code>s_buffer[page][x]</code>。</p>
+    <p><strong>输出：</strong>点亮使用 <code>|= 1U&lt;&lt;bit</code>，熄灭使用 <code>&amp;= ~(1U&lt;&lt;bit)</code>，反色使用 <code>^= 1U&lt;&lt;bit</code>。</p>
+    <p><strong>边界条件：</strong>任何写像素操作都必须确认 x、y 在屏幕内，否则会访问显存数组之外。</p>
+    <p><strong>设计原因：</strong>这种布局与 SSD1306 的 page 写入格式一致，整页发送时无需重新排列每个像素。</p>
+  </div>
+
+  <h4>4.3 I2C 发送：等待、启动、超时和错误恢复</h4>
+  <pre class="source-code"><code data-source="Hardware/Display/OLED.c" data-lines="18-40">static uint8_t OLED_Transfer(const uint8_t *data, uint8_t length)
+{
+    uint32_t timeout = OLED_TIMEOUT;
+    while (((DL_I2C_getControllerStatus(OLED_I2C_INST) &amp; DL_I2C_CONTROLLER_STATUS_IDLE) == 0U) &amp;&amp;
+           (timeout-- &gt; 0U)) {}
+    if (timeout == 0U) return 0U;
+
+    DL_I2C_flushControllerTXFIFO(OLED_I2C_INST);
+    DL_I2C_fillControllerTXFIFO(OLED_I2C_INST, data, length);
+    DL_I2C_startControllerTransfer(OLED_I2C_INST, OLED_ADDRESS,
+                                   DL_I2C_CONTROLLER_DIRECTION_TX, length);
+    delay_cycles(16U);
+    timeout = OLED_TIMEOUT;
+    while (((DL_I2C_getControllerStatus(OLED_I2C_INST) &amp; DL_I2C_CONTROLLER_STATUS_BUSY) != 0U) &amp;&amp;
+           (timeout-- &gt; 0U)) {}
+    if ((timeout == 0U) || ((DL_I2C_getControllerStatus(OLED_I2C_INST) &amp;
+                             DL_I2C_CONTROLLER_STATUS_ERROR) != 0U))
+    {
+        DL_I2C_resetControllerTransfer(OLED_I2C_INST);
+        return 0U;
+    }
+    return 1U;
+}</code></pre>
+  <ol class="line-notes">
+    <li><strong>第 18～20 行：</strong>私有发送函数接收只读数据指针和字节数，创建超时计数。</li>
+    <li><strong>第 21～23 行：</strong>先等控制器进入 IDLE；每轮递减 timeout。耗尽就返回 0，避免死循环。</li>
+    <li><strong>第 25 行：</strong>清空旧的发送 FIFO，避免上一次残留字节混入本包。</li>
+    <li><strong>第 26 行：</strong>把 length 个字节填入控制器 TX FIFO。调用者必须确保 data 至少有这么长。</li>
+    <li><strong>第 27～28 行：</strong>向地址 0x3C 发起 TX 方向传输，并告诉硬件本包长度。</li>
+    <li><strong>第 29 行：</strong>短等 16 个 CPU 周期，让硬件状态有时间进入传输阶段。</li>
+    <li><strong>第 30～32 行：</strong>重置超时，再等待 BUSY 清除，也就是等待本包完成。</li>
+    <li><strong>第 33～35 行：</strong>超时或控制器 ERROR 任一发生都进入失败处理。</li>
+    <li><strong>第 36～37 行：</strong>复位当前控制器传输状态并返回 0。</li>
+    <li><strong>第 39～40 行：</strong>完整发送且无错误才返回 1。</li>
+  </ol>
+
+  <pre class="source-code"><code data-source="Hardware/Display/OLED.c" data-lines="42-73">static void OLED_Command(uint8_t command)
+{
+    uint8_t packet[2] = {0x00U, command};
+    if (OLED_Transfer(packet, 2U) == 0U) s_busError = 1U;
+}
+
+static void OLED_Data(const uint8_t *data, uint8_t count)
+{
+    uint8_t packet[OLED_CHUNK_BYTES + 1U];
+    uint8_t offset = 0U;
+    packet[0] = 0x40U;
+    while (offset &lt; count)
+    {
+        uint8_t i;
+        uint8_t chunk = (uint8_t)(count - offset);
+        if (chunk &gt; OLED_CHUNK_BYTES) chunk = OLED_CHUNK_BYTES;
+        for (i = 0U; i &lt; chunk; i++) packet[i + 1U] = data[offset + i];
+        if (OLED_Transfer(packet, (uint8_t)(chunk + 1U)) == 0U)
+        {
+            s_busError = 1U;
+            return;
+        }
+        offset = (uint8_t)(offset + chunk);
+    }
+}
+
+static void OLED_SetCursor(uint8_t page, uint8_t x)
+{
+    OLED_Command((uint8_t)(0xB0U | page));
+    OLED_Command((uint8_t)(0x10U | ((x &amp; 0xF0U) &gt;&gt; 4)));
+    OLED_Command((uint8_t)(x &amp; 0x0FU));
+}</code></pre>
+  <ol class="line-notes">
+    <li><strong>第 42～46 行：</strong>命令包固定两个字节：控制字节 <code>0x00</code> 表示后面是命令，第二字节是 SSD1306 命令；发送失败便锁存总线错误。</li>
+    <li><strong>第 48～52 行：</strong>数据发送准备 8 字节 packet，首字节 <code>0x40</code> 表示后续是显存数据，并从 offset=0 开始。</li>
+    <li><strong>第 53～57 行：</strong>剩余数据可能超过 7 字节，因此每轮取“剩余量”和 7 中较小者。</li>
+    <li><strong>第 58 行：</strong>把本块有效数据复制到 packet[1...]，保留 packet[0] 控制字节。</li>
+    <li><strong>第 59～63 行：</strong>发送 chunk+1 字节；失败就记录错误并立即停止后续块。</li>
+    <li><strong>第 64～66 行：</strong>offset 前进 chunk，直到 count 个数据全部发完。</li>
+    <li><strong>第 68～70 行：</strong>设置页地址：<code>0xB0 | page</code>，page 应为 0～7。</li>
+    <li><strong>第 71 行：</strong>取 x 的高 4 位，右移后并入列地址高半命令 <code>0x10</code>。</li>
+    <li><strong>第 72～73 行：</strong>取 x 的低 4 位作为列地址低半命令。三个命令共同把 OLED 写指针移动到指定 page/x。</li>
+  </ol>
+
+  <h4>4.4 初始化、全屏刷新与局部刷新</h4>
+  <pre class="source-code"><code data-source="Hardware/Display/OLED.c" data-lines="75-103">void OLED_Init(void)
+{
+    static const uint8_t commands[] = {
+        0xAE, 0xD5, 0x80, 0xA8, 0x3F, 0xD3, 0x00, 0x40,
+        0xA1, 0xC8, 0xDA, 0x12, 0x81, 0xCF, 0xD9, 0xF1,
+        0xDB, 0x30, 0xA4, 0xA6, 0x8D, 0x14, 0xAF
+    };
+    uint8_t i;
+    Delay_ms(100U);
+    s_busError = 0U;
+    for (i = 0U; i &lt; (uint8_t)sizeof(commands); i++) OLED_Command(commands[i]);
+    s_ready = (s_busError == 0U) ? 1U : 0U;
+    OLED_Clear();
+    if (s_ready != 0U) OLED_Update();
+}
+
+uint8_t OLED_IsReady(void) { return s_ready; }
+
+void OLED_Update(void)
+{
+    uint8_t page;
+    if (s_ready == 0U) return;
+    for (page = 0U; page &lt; 8U; page++)
+    {
+        OLED_SetCursor(page, 0U);
+        OLED_Data(s_buffer[page], 128U);
+    }
+    if (s_busError != 0U) s_ready = 0U;
+}</code></pre>
+  <ol class="line-notes">
+    <li><strong>第 75～81 行：</strong>初始化命令数组依次包含关显示、时钟、1/64 复用、偏移、起始行、段/COM 扫描方向、引脚配置、对比度、预充电、VCOM、正常显存显示、正常色、充电泵和开显示。</li>
+    <li><strong>第 82～84 行：</strong>等待屏幕上电 100ms，再清除旧总线错误。</li>
+    <li><strong>第 85 行：</strong><code>sizeof(commands)</code> 是命令数组总字节数；逐条用命令控制字节发送。</li>
+    <li><strong>第 86 行：</strong>只要初始化期间没有任何传输失败就标记 ready。</li>
+    <li><strong>第 87～88 行：</strong>无论 ready 与否先清 RAM 显存；只有屏幕可用时才把空白画面真正发出去。</li>
+    <li><strong>第 91 行：</strong>单行查询函数返回 ready。</li>
+    <li><strong>第 93～96 行：</strong>全屏更新先检查 ready，离线时直接返回，避免每次调试刷新都阻塞在坏总线上。</li>
+    <li><strong>第 97～101 行：</strong>遍历 8 页，每页把光标设到 x=0，再发送该页 128 字节。</li>
+    <li><strong>第 102～103 行：</strong>刷新中若任何分块传输报错，就把 ready 清零；之后的全屏 Update 将停止访问总线。</li>
+  </ol>
+
+  <pre class="source-code"><code data-source="Hardware/Display/OLED.c" data-lines="105-137">void OLED_UpdateArea(int16_t x, int16_t y, uint8_t width, uint8_t height)
+{
+    int16_t firstPage = y / 8;
+    int16_t lastPage = (y + height - 1) / 8;
+    int16_t page;
+    if ((x &lt; 0) || (x &gt; 127) || (width == 0U) || (height == 0U)) return;
+    if ((x + width) &gt; 128) width = (uint8_t)(128 - x);
+    if (firstPage &lt; 0) firstPage = 0;
+    if (lastPage &gt; 7) lastPage = 7;
+    for (page = firstPage; page &lt;= lastPage; page++)
+    {
+        OLED_SetCursor((uint8_t)page, (uint8_t)x);
+        OLED_Data(&amp;s_buffer[page][x], width);
+    }
+}
+
+void OLED_Clear(void) { memset(s_buffer, 0, sizeof(s_buffer)); }
+
+void OLED_ClearArea(int16_t x, int16_t y, uint8_t width, uint8_t height)
+{
+    int16_t px;
+    int16_t py;
+    for (py = y; py &lt; (int16_t)(y + height); py++)
+        for (px = x; px &lt; (int16_t)(x + width); px++)
+            if ((px &gt;= 0) &amp;&amp; (px &lt; 128) &amp;&amp; (py &gt;= 0) &amp;&amp; (py &lt; 64))
+                s_buffer[py / 8][px] &amp;= (uint8_t)~(1U &lt;&lt; (py &amp; 7));
+}
+
+void OLED_Reverse(void)
+{
+    uint16_t i;
+    for (i = 0U; i &lt; sizeof(s_buffer); i++) ((uint8_t *)s_buffer)[i] ^= 0xFFU;
+}</code></pre>
+  <ol class="line-notes">
+    <li><strong>第 105～109 行：</strong>局部更新把 y 范围换算成首尾 page。高度跨越页边界时，会发送涉及的每一整段 page 字节。</li>
+    <li><strong>第 110 行：</strong>x 越界、宽或高为 0 时不发送。</li>
+    <li><strong>第 111 行：</strong>右边超过 128 列时缩短 width，形成横向裁剪。</li>
+    <li><strong>第 112～113 行：</strong>页范围裁剪到 0～7。</li>
+    <li><strong>第 114～118 行：</strong>逐页移动光标，从 <code>&amp;s_buffer[page][x]</code> 取得该页第 x 列地址，只发送 width 字节。</li>
+    <li><strong>第 121 行：</strong><code>memset</code> 把 1024 字节全设 0，只修改 RAM；需要 Update 才能让屏幕变空。</li>
+    <li><strong>第 123～126 行：</strong>局部清除用 px/py 枚举矩形内每个像素。</li>
+    <li><strong>第 127～130 行：</strong>只有屏内像素才修改；定位 page/bit 后，用与取反掩码把对应位清 0。</li>
+    <li><strong>第 133～136 行：</strong>全屏反色把二维数组强制视为连续 <code>uint8_t *</code>，逐字节与 <code>0xFF</code> 异或。</li>
+    <li><strong>第 137 行：</strong>反色也只改缓冲区。</li>
+  </ol>
+  <h4>4.5 像素、反色区域与位图</h4>
+  <pre class="source-code"><code data-source="Hardware/Display/OLED.c" data-lines="139-171">void OLED_ReverseArea(int16_t x, int16_t y, uint8_t width, uint8_t height)
+{
+    int16_t px;
+    int16_t py;
+    for (py = y; py &lt; (int16_t)(y + height); py++)
+        for (px = x; px &lt; (int16_t)(x + width); px++)
+            if ((px &gt;= 0) &amp;&amp; (px &lt; 128) &amp;&amp; (py &gt;= 0) &amp;&amp; (py &lt; 64))
+                s_buffer[py / 8][px] ^= (uint8_t)(1U &lt;&lt; (py &amp; 7));
+}
+
+void OLED_DrawPoint(int16_t x, int16_t y)
+{
+    if ((x &gt;= 0) &amp;&amp; (x &lt; 128) &amp;&amp; (y &gt;= 0) &amp;&amp; (y &lt; 64))
+        s_buffer[y / 8][x] |= (uint8_t)(1U &lt;&lt; (y &amp; 7));
+}
+
+uint8_t OLED_GetPoint(int16_t x, int16_t y)
+{
+    if ((x &lt; 0) || (x &gt;= 128) || (y &lt; 0) || (y &gt;= 64)) return 0U;
+    return ((s_buffer[y / 8][x] &amp; (1U &lt;&lt; (y &amp; 7))) != 0U) ? 1U : 0U;
+}
+
+void OLED_ShowImage(int16_t x, int16_t y, uint8_t width, uint8_t height, const uint8_t *image)
+{
+    uint8_t px;
+    uint8_t py;
+    if (image == NULL) return;
+    OLED_ClearArea(x, y, width, height);
+    for (py = 0U; py &lt; height; py++)
+        for (px = 0U; px &lt; width; px++)
+            if ((image[(py / 8U) * width + px] &amp; (1U &lt;&lt; (py &amp; 7U))) != 0U)
+                OLED_DrawPoint((int16_t)(x + px), (int16_t)(y + py));
+}</code></pre>
+  <ol class="line-notes">
+    <li><strong>第 139～146 行：</strong>局部反色枚举矩形像素，先裁剪，再用异或翻转对应 bit：原 0 变 1，原 1 变 0。</li>
+    <li><strong>第 149～153 行：</strong>DrawPoint 检查坐标后，用按位或把目标 bit 设 1；重复画同一点不会熄灭。</li>
+    <li><strong>第 155～159 行：</strong>GetPoint 越界返回 0；屏内则用按位与测试目标 bit，并规范成 1/0。</li>
+    <li><strong>第 161～165 行：</strong>ShowImage 接收位置、尺寸和只读图片指针；NULL 直接返回。</li>
+    <li><strong>第 166 行：</strong>先清目标矩形，确保图片中为 0 的像素也能覆盖旧内容。</li>
+    <li><strong>第 167～170 行：</strong>枚举图片的每个像素；图片索引 <code>(py/8)*width+px</code> 与 OLED 页格式相同，bit <code>py&amp;7</code> 为 1 才调用 DrawPoint。</li>
+    <li><strong>第 170～171 行：</strong>目标坐标加 x/y 偏移；超出屏幕的点由 DrawPoint 自动裁剪。</li>
+  </ol>
+
+  <h4>4.6 ASCII 字符、UTF-8 处理与十次幂</h4>
+  <pre class="source-code"><code data-source="Hardware/Display/OLED.c" data-lines="173-204">void OLED_ShowChar(int16_t x, int16_t y, char value, uint8_t fontSize)
+{
+    uint8_t index = ((value &gt;= &#39; &#39;) &amp;&amp; (value &lt;= &#39;~&#39;)) ?
+                        (uint8_t)(value - &#39; &#39;) :
+                        (uint8_t)(&#39;?&#39; - &#39; &#39;);
+    if (fontSize == OLED_8X16) OLED_ShowImage(x, y, 8U, 16U, OLED_F8x16[index]);
+    else OLED_ShowImage(x, y, 6U, 8U, OLED_F6x8[index]);
+}
+
+void OLED_ShowString(int16_t x, int16_t y, const char *string, uint8_t fontSize)
+{
+    int16_t offset = 0;
+    if (string == NULL) return;
+    while (*string != &#39;\0&#39;)
+    {
+        if (((uint8_t)*string &amp; 0x80U) != 0U)
+        {
+            OLED_ShowChar((int16_t)(x + offset), y, &#39;?&#39;, fontSize);
+            while ((((uint8_t)string[1] &amp; 0xC0U) == 0x80U)) string++;
+        }
+        else OLED_ShowChar((int16_t)(x + offset), y, *string, fontSize);
+        offset = (int16_t)(offset + fontSize);
+        string++;
+    }
+}
+
+static uint32_t OLED_Pow10(uint8_t power)
+{
+    uint32_t value = 1U;
+    while (power-- &gt; 0U) value *= 10U;
+    return value;
+}</code></pre>
+  <ol class="line-notes">
+    <li><strong>第 173～177 行：</strong>ASCII 可打印范围是空格到 <code>~</code>；数组索引等于字符码减空格。范围外统一改查问号字模。</li>
+    <li><strong>第 178～180 行：</strong>fontSize 恰好为 8 时使用 8×16 字模，否则使用 6×8；最终仍由 ShowImage 复制像素。</li>
+    <li><strong>第 182～185 行：</strong>字符串函数保存横向 offset；NULL 字符串直接返回。</li>
+    <li><strong>第 186 行：</strong>C 字符串以 <code>'\0'</code> 结尾，循环逐个处理字节。</li>
+    <li><strong>第 188～192 行：</strong>最高位为 1 表示不是单字节 ASCII；当前实现画一个 <code>?</code>，再跳过后续形如 <code>10xxxxxx</code> 的 UTF-8 续字节。</li>
+    <li><strong>第 193 行：</strong>普通 ASCII 直接显示。</li>
+    <li><strong>第 194～196 行：</strong>每个逻辑字符横移 fontSize 像素，再移动字符串指针。</li>
+    <li><strong>第 199～204 行：</strong>私有 <code>OLED_Pow10()</code> 从 1 开始重复乘 10，用于按十进制位拆数字；power 太大可能让 32 位结果溢出，调用者应使用合理长度。</li>
+  </ol>
+  <p class="pitfall"><strong>有中文字模不等于当前能显示中文。</strong><code>OLED_Data.c</code> 确实存有“你好世界”等 16×16 数据，但 OLED.h 没有中文查表接口，当前 ShowString 对每个 UTF-8 字符只画一个问号。若要启用中文，需要新增按 Index 匹配 <code>OLED_CF16x16</code> 并调用 ShowImage 的逻辑。</p>
+
+  <h4>4.7 十进制、十六进制、二进制、浮点和 Printf</h4>
+  <pre class="source-code"><code data-source="Hardware/Display/OLED.c" data-lines="206-266">void OLED_ShowNum(int16_t x, int16_t y, uint32_t number, uint8_t length, uint8_t fontSize)
+{
+    uint8_t i;
+    for (i = 0U; i &lt; length; i++)
+        OLED_ShowChar(
+            (int16_t)(x + i * fontSize), y,
+            (char)(&#39;0&#39; +
+                   (number / OLED_Pow10((uint8_t)(length - i - 1U))) % 10U),
+            fontSize);
+}
+
+void OLED_ShowSignedNum(int16_t x, int16_t y, int32_t number, uint8_t length, uint8_t fontSize)
+{
+    uint32_t magnitude = (number &lt; 0) ?
+                             (uint32_t)(-(number + 1)) + 1U :
+                             (uint32_t)number;
+    OLED_ShowChar(x, y, (number &lt; 0) ? &#39;-&#39; : &#39;+&#39;, fontSize);
+    OLED_ShowNum((int16_t)(x + fontSize), y, magnitude, length, fontSize);
+}
+
+void OLED_ShowHexNum(int16_t x, int16_t y, uint32_t number, uint8_t length, uint8_t fontSize)
+{
+    int8_t i;
+    for (i = (int8_t)length - 1; i &gt;= 0; i--)
+    {
+        uint8_t digit = (uint8_t)((number &gt;&gt; (4U * i)) &amp; 0x0FU);
+        OLED_ShowChar((int16_t)(x + ((int8_t)length - 1 - i) * fontSize), y,
+                      (char)((digit &lt; 10U) ? (&#39;0&#39; + digit) : (&#39;A&#39; + digit - 10U)), fontSize);
+    }
+}
+
+void OLED_ShowBinNum(int16_t x, int16_t y, uint32_t number, uint8_t length, uint8_t fontSize)
+{
+    uint8_t i;
+    for (i = 0U; i &lt; length; i++)
+        OLED_ShowChar((int16_t)(x + i * fontSize), y,
+                      (char)(&#39;0&#39; + ((number &gt;&gt; (length - i - 1U)) &amp; 1U)), fontSize);
+}
+
+void OLED_ShowFloatNum(int16_t x, int16_t y, double number,
+                       uint8_t intLength, uint8_t fraLength,
+                       uint8_t fontSize)
+{
+    char format[12];
+    char value[32];
+    (void)snprintf(format, sizeof(format), &quot;%%+%u.%uf&quot;,
+                   (unsigned)(intLength + fraLength + 2U),
+                   (unsigned)fraLength);
+    (void)snprintf(value, sizeof(value), format, number);
+    OLED_ShowString(x, y, value, fontSize);
+}
+
+void OLED_Printf(int16_t x, int16_t y, uint8_t fontSize, const char *format, ...)
+{
+    char value[192];
+    va_list args;
+    va_start(args, format);
+    (void)vsnprintf(value, sizeof(value), format, args);
+    va_end(args);
+    OLED_ShowString(x, y, value, fontSize);
+}</code></pre>
+  <ol class="line-notes">
+    <li><strong>第 206～214 行：</strong>ShowNum 从最高十进制位开始：先除以对应 10 的幂，再模 10，最后加字符 <code>'0'</code>。固定 length 会显示前导 0。</li>
+    <li><strong>第 217～221 行：</strong>有符号数先算绝对值。<code>-(number+1)+1</code> 的写法能安全处理最小的 int32，避免直接对 -2147483648 取负溢出。</li>
+    <li><strong>第 222～224 行：</strong>先画明确的 <code>+</code> 或 <code>-</code>，再从下一字符位置显示 magnitude。</li>
+    <li><strong>第 226～231 行：</strong>十六进制从最高 nibble 开始，每位右移 <code>4*i</code> 后与 <code>0x0F</code>，得到 0～15。</li>
+    <li><strong>第 232～235 行：</strong>0～9 变成数字字符，10～15 变成 A～F。对 32 位 number，length 应不超过 8。</li>
+    <li><strong>第 237～243 行：</strong>二进制按从高到低的 bit 顺序右移并与 1；length 对 32 位 number 应不超过 32。</li>
+    <li><strong>第 245～250 行：</strong>浮点显示准备格式字符串和最终文本两个有限缓冲区。</li>
+    <li><strong>第 251～253 行：</strong>先生成类似 <code>%+8.1f</code> 的格式；总宽度包含符号、小数点、整数和小数位。</li>
+    <li><strong>第 254～256 行：</strong>再按动态格式把 double 写入 value；snprintf 会按数组长度截断，随后按普通 ASCII 字符串绘制。</li>
+    <li><strong>第 258～264 行：</strong>OLED_Printf 用 <code>va_start</code> 打开可变参数，<code>vsnprintf</code> 格式化到 192 字节缓冲，最后 <code>va_end</code> 收尾。</li>
+    <li><strong>第 265～266 行：</strong>格式化文本仍交给 ShowString，所以非 ASCII 内容仍显示为问号，超长内容会被安全截断。</li>
+  </ol>
+
+  <h4>4.8 直线与矩形</h4>
+  <pre class="source-code"><code data-source="Hardware/Display/OLED.c" data-lines="268-284">void OLED_DrawLine(int16_t x0, int16_t y0, int16_t x1, int16_t y1)
+{
+    int16_t dx = (int16_t)abs(x1 - x0);
+    int16_t sx = (x0 &lt; x1) ? 1 : -1;
+    int16_t dy = (int16_t)-abs(y1 - y0);
+    int16_t sy = (y0 &lt; y1) ? 1 : -1;
+    int16_t error = (int16_t)(dx + dy);
+    for (;;)
+    {
+        int16_t twice;
+        OLED_DrawPoint(x0, y0);
+        if ((x0 == x1) &amp;&amp; (y0 == y1)) break;
+        twice = (int16_t)(2 * error);
+        if (twice &gt;= dy) { error = (int16_t)(error + dy); x0 = (int16_t)(x0 + sx); }
+        if (twice &lt;= dx) { error = (int16_t)(error + dx); y0 = (int16_t)(y0 + sy); }
+    }
+}</code></pre>
+  <ol class="line-notes">
+    <li><strong>第 268～274 行：</strong>计算 x/y 距离绝对值、每次移动方向和累计误差；dy 存成负数是 Bresenham 的常见统一写法。</li>
+    <li><strong>第 275～279 行：</strong>无限循环每次先画当前点；到达终点后 break，保证起点和终点都被画出。</li>
+    <li><strong>第 280～282 行：</strong>用两倍误差决定本轮是否沿 x、y 或同时沿两轴前进，并同步更新误差。</li>
+    <li><strong>第 283～284 行：</strong>最终必然到终点后退出；每个像素仍由 DrawPoint 裁剪。</li>
+  </ol>
+
+  <pre class="source-code"><code data-source="Hardware/Display/OLED.c" data-lines="286-318">void OLED_DrawRectangle(int16_t x, int16_t y,
+                        uint8_t width, uint8_t height,
+                        uint8_t filled)
+{
+    uint8_t row;
+    if (filled != 0U)
+    {
+        for (row = 0U; row &lt; height; row++)
+        {
+            OLED_DrawLine(x, (int16_t)(y + row),
+                          (int16_t)(x + width - 1),
+                          (int16_t)(y + row));
+        }
+    }
+    else
+    {
+        OLED_DrawLine(x, y, (int16_t)(x + width - 1), y);
+        OLED_DrawLine(x, (int16_t)(y + height - 1),
+                      (int16_t)(x + width - 1),
+                      (int16_t)(y + height - 1));
+        OLED_DrawLine(x, y, x, (int16_t)(y + height - 1));
+        OLED_DrawLine((int16_t)(x + width - 1), y,
+                      (int16_t)(x + width - 1),
+                      (int16_t)(y + height - 1));
+    }
+}
+
+static int32_t OLED_Edge(int16_t ax, int16_t ay,
+                         int16_t bx, int16_t by,
+                         int16_t px, int16_t py)
+{
+    return (int32_t)(px - ax) * (by - ay) - (int32_t)(py - ay) * (bx - ax);
+}</code></pre>
+  <ol class="line-notes">
+    <li><strong>第 286～290 行：</strong>矩形接收左上角、宽高和 filled，准备逐行变量。</li>
+    <li><strong>第 291～299 行：</strong>实心矩形对每个 row 画一条从左到右的水平线。</li>
+    <li><strong>第 300～310 行：</strong>空心矩形画上、下、左、右四条边。width/height 应至少为 1，否则减 1 会产生不符合预期的坐标。</li>
+    <li><strong>第 313～318 行：</strong><code>OLED_Edge</code> 计算二维叉积符号，用来判断点 P 位于有向边 AB 的哪一侧；使用 int32 降低乘法溢出风险。</li>
+  </ol>
+
+  <h4>4.9 三角形、圆、椭圆与圆弧</h4>
+  <pre class="source-code"><code data-source="Hardware/Display/OLED.c" data-lines="320-351">void OLED_DrawTriangle(int16_t x0, int16_t y0,
+                       int16_t x1, int16_t y1,
+                       int16_t x2, int16_t y2,
+                       uint8_t filled)
+{
+    if (filled == 0U)
+    {
+        OLED_DrawLine(x0, y0, x1, y1);
+        OLED_DrawLine(x1, y1, x2, y2);
+        OLED_DrawLine(x2, y2, x0, y0);
+    }
+    else
+    {
+        int16_t x;
+        int16_t y;
+        int16_t minX = (int16_t)fminf((float)x0, fminf((float)x1, (float)x2));
+        int16_t maxX = (int16_t)fmaxf((float)x0, fmaxf((float)x1, (float)x2));
+        int16_t minY = (int16_t)fminf((float)y0, fminf((float)y1, (float)y2));
+        int16_t maxY = (int16_t)fmaxf((float)y0, fmaxf((float)y1, (float)y2));
+        for (y = minY; y &lt;= maxY; y++) for (x = minX; x &lt;= maxX; x++)
+        {
+            int32_t a = OLED_Edge(x0, y0, x1, y1, x, y);
+            int32_t b = OLED_Edge(x1, y1, x2, y2, x, y);
+            int32_t c = OLED_Edge(x2, y2, x0, y0, x, y);
+            if (((a &gt;= 0) &amp;&amp; (b &gt;= 0) &amp;&amp; (c &gt;= 0)) ||
+                ((a &lt;= 0) &amp;&amp; (b &lt;= 0) &amp;&amp; (c &lt;= 0)))
+            {
+                OLED_DrawPoint(x, y);
+            }
+        }
+    }
+}</code></pre>
+  <ol class="line-notes">
+    <li><strong>第 320～324 行：</strong>三角形由三个顶点和 filled 参数定义。</li>
+    <li><strong>第 325～330 行：</strong>空心模式直接画三条边。</li>
+    <li><strong>第 331～338 行：</strong>实心模式先用 fminf/fmaxf 找包含三角形的最小矩形。</li>
+    <li><strong>第 339～343 行：</strong>枚举包围框内每个点，分别计算它相对三条边的叉积 a/b/c。</li>
+    <li><strong>第 344～348 行：</strong>三个符号全非负或全非正，说明点在三角形内部或边界上，便点亮。</li>
+    <li><strong>第 349～351 行：</strong>完成所有候选点。算法直观但耗时与包围框面积有关。</li>
+  </ol>
+
+  <pre class="source-code"><code data-source="Hardware/Display/OLED.c" data-lines="353-395">void OLED_DrawCircle(int16_t x, int16_t y, uint8_t radius, uint8_t filled)
+{
+    int16_t px;
+    int16_t py;
+    int16_t rr = (int16_t)(radius * radius);
+    for (py = -(int16_t)radius; py &lt;= radius; py++) for (px = -(int16_t)radius; px &lt;= radius; px++)
+    {
+        int16_t d = (int16_t)(px * px + py * py);
+        if ((filled != 0U &amp;&amp; d &lt;= rr) || (filled == 0U &amp;&amp; (d &gt;= rr - radius) &amp;&amp; (d &lt;= rr + radius)))
+            OLED_DrawPoint((int16_t)(x + px), (int16_t)(y + py));
+    }
+}
+
+void OLED_DrawEllipse(int16_t x, int16_t y, uint8_t a, uint8_t b, uint8_t filled)
+{
+    int16_t px;
+    int16_t py;
+    float aa = (float)a * a;
+    float bb = (float)b * b;
+    for (py = -(int16_t)b; py &lt;= b; py++) for (px = -(int16_t)a; px &lt;= a; px++)
+    {
+        float d = ((float)px * px) / aa + ((float)py * py) / bb;
+        if (((filled != 0U) &amp;&amp; (d &lt;= 1.0f)) ||
+            ((filled == 0U) &amp;&amp; (d &gt;= 0.90f) &amp;&amp; (d &lt;= 1.10f)))
+            OLED_DrawPoint((int16_t)(x + px), (int16_t)(y + py));
+    }
+}
+
+void OLED_DrawArc(int16_t x, int16_t y, uint8_t radius,
+                  int16_t startAngle, int16_t endAngle,
+                  uint8_t filled)
+{
+    int16_t angle;
+    if (endAngle &lt; startAngle) endAngle = (int16_t)(endAngle + 360);
+    for (angle = startAngle; angle &lt;= endAngle; angle++)
+    {
+        float rad = (float)angle * 3.1415926f / 180.0f;
+        int16_t px = (int16_t)(x + cosf(rad) * radius);
+        int16_t py = (int16_t)(y + sinf(rad) * radius);
+        if (filled != 0U) OLED_DrawLine(x, y, px, py);
+        else OLED_DrawPoint(px, py);
+    }
+}</code></pre>
+  <ol class="line-notes">
+    <li><strong>第 353～360 行：</strong>圆在半径包围正方形内枚举 px/py，并计算平方距离 <code>d=px²+py²</code>。</li>
+    <li><strong>第 361～364 行：</strong>实心圆取 d≤r²；空心圆取 r²±r 的薄环。radius 很大时 int16 平方可能溢出，实际应限制在屏幕尺度内。</li>
+    <li><strong>第 366～371 行：</strong>椭圆准备横纵半轴及其平方浮点值；a、b 必须非零，否则后面会除以 0。</li>
+    <li><strong>第 372～378 行：</strong>用标准椭圆方程 <code>px²/a²+py²/b²</code>；实心取≤1，空心取 0.90～1.10 的近似边带。</li>
+    <li><strong>第 381～386 行：</strong>圆弧接收角度范围；终止角小于起始角时加 360，让跨过 0° 的弧能向前遍历。</li>
+    <li><strong>第 387～391 行：</strong>每 1° 转成弧度，用 cos/sin 得到圆周点。角度采样和浮点转整数会造成少量重复点或小间隙。</li>
+    <li><strong>第 392～395 行：</strong>filled 非零时从圆心画到每个弧点，形成扇形；否则只画弧线点。</li>
+  </ol>
+
+  <h4>4.10 <code>OLED_Data.h</code>：字模结构与外部声明</h4>
+  <pre class="source-code"><code data-source="Hardware/Display/OLED_Data.h" data-lines="1-44">#ifndef __OLED_DATA_H
+#define __OLED_DATA_H
+
+/* OLED 字模和位图数据表；除非重新生成字模，否则不要手工修改。 */
+
+#include &lt;stdint.h&gt;
+
+/*字符集定义*/
+/*以下两个宏定义只可解除其中一个的注释*/
+#define OLED_CHARSET_UTF8			//定义字符集为UTF8
+//#define OLED_CHARSET_GB2312		//定义字符集为GB2312
+
+/*字模基本单元*/
+typedef struct
+{
+
+#ifdef OLED_CHARSET_UTF8			//定义字符集为UTF8
+	char Index[5];					//汉字索引，空间为5字节
+#endif
+
+#ifdef OLED_CHARSET_GB2312			//定义字符集为GB2312
+	char Index[3];					//汉字索引，空间为3字节
+#endif
+
+	uint8_t Data[32];				//字模数据
+} ChineseCell_t;
+
+/*ASCII字模数据声明*/
+extern const uint8_t OLED_F8x16[][16];
+extern const uint8_t OLED_F6x8[][6];
+
+/*汉字字模数据声明*/
+extern const ChineseCell_t OLED_CF16x16[];
+
+/*图像数据声明*/
+extern const uint8_t Diode[];
+/*按照上面的格式，在这个位置加入新的图像数据声明*/
+//...
+
+#endif
+
+
+/*****************江协科技|版权所有****************/
+/*****************jiangxiekeji.com*****************/</code></pre>
+  <ol class="line-notes">
+    <li><strong>第 1～6、40 行：</strong>头文件保护、维护警告和 uint8_t。</li>
+    <li><strong>第 8～11 行：</strong>UTF-8 与 GB2312 只能启用一个；当前启用 UTF-8。</li>
+    <li><strong>第 13～16、26 行：</strong>每个中文单元由索引字符串与 32 字节 16×16 像素组成。</li>
+    <li><strong>第 17～19 行：</strong>UTF-8 常用汉字 3 字节，再加字符串结尾和余量，索引数组为 5 字节。</li>
+    <li><strong>第 21～23 行：</strong>若改用 GB2312，双字节编码加结尾需要 3 字节。</li>
+    <li><strong>第 25 行：</strong>16×16 图形有 256 bit，正好 32 字节。</li>
+    <li><strong>第 28～33 行：</strong><code>extern const</code> 只声明数据在别处定义且只读；两套 ASCII 字模分别每字符 16/6 字节，中文为结构体数组。</li>
+    <li><strong>第 35～38 行：</strong>声明测试图片 Diode，并标出新增图片声明位置。</li>
+    <li><strong>第 43～44 行：</strong>保留原字模来源版权说明。</li>
+  </ol>
+
+  <h4>4.11 <code>OLED_Data.c</code>：怎样读字模，而不是背十六进制</h4>
+  <pre class="source-code"><code data-source="Hardware/Display/OLED_Data.c" data-lines="1-37">#include &quot;OLED_Data.h&quot;
+
+#if defined(__clang__)
+#pragma clang diagnostic push
+#pragma clang diagnostic ignored &quot;-Wmissing-braces&quot;
+#endif
+
+/**
+  * 数据存储格式：
+  * 纵向8点，高位在下，先从左到右，再从上到下
+  * 每一位对应一个像素点
+  *
+  *      B0 B0                  B0 B0
+  *      B1 B1                  B1 B1
+  *      B2 B2                  B2 B2
+  *      B3 B3  -------------&gt;  B3 B3 --
+  *      B4 B4                  B4 B4  |
+  *      B5 B5                  B5 B5  |
+  *      B6 B6                  B6 B6  |
+  *      B7 B7                  B7 B7  |
+  *                                    |
+  *  -----------------------------------
+  *  |
+  *  |   B0 B0                  B0 B0
+  *  |   B1 B1                  B1 B1
+  *  |   B2 B2                  B2 B2
+  *  --&gt; B3 B3  -------------&gt;  B3 B3
+  *      B4 B4                  B4 B4
+  *      B5 B5                  B5 B5
+  *      B6 B6                  B6 B6
+  *      B7 B7                  B7 B7
+  *
+  */
+
+/*ASCII字模数据*********************/
+
+/*宽8像素，高16像素*/</code></pre>
+  <ol class="line-notes">
+    <li><strong>第 1 行：</strong>引入字模类型和 extern 声明。</li>
+    <li><strong>第 3～6 行：</strong>仅在 clang 编译器下临时忽略 missing-braces 警告；这些扁平初始化数据省略了部分嵌套花括号。</li>
+    <li><strong>第 8～11 行：</strong>说明一个字节纵向控制 8 点，高位在下；每一位就是一个像素。</li>
+    <li><strong>第 13～31 行：</strong>示意读取顺序：先从左到右读完上方一页，再移动到下一组纵向 8 点继续从左到右。</li>
+    <li><strong>第 35～37 行：</strong>开始 ASCII 字模区，并说明第一张表是 8×16。</li>
+  </ol>
+
+  <pre class="source-code"><code data-source="Hardware/Display/OLED_Data.c" data-lines="38-47">const uint8_t OLED_F8x16[][16] =
+{
+	0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,
+	0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,//   0
+	0x00,0x00,0x00,0xF8,0x00,0x00,0x00,0x00,
+	0x00,0x00,0x00,0x33,0x30,0x00,0x00,0x00,// ! 1
+	0x00,0x16,0x0E,0x00,0x16,0x0E,0x00,0x00,
+	0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,// &quot; 2
+	0x40,0xC0,0x78,0x40,0xC0,0x78,0x40,0x00,
+	0x04,0x3F,0x04,0x04,0x3F,0x04,0x04,0x00,// # 3</code></pre>
+  <ol class="line-notes">
+    <li><strong>第 38～39 行：</strong><code>[][16]</code> 让编译器自动推断字符数量，每个字符固定 16 字节。</li>
+    <li><strong>第 40～41 行：</strong>索引 0 对应空格，16 个字节全 0，因此显示为空白。</li>
+    <li><strong>第 42～43 行：</strong>索引 1 对应 <code>!</code>；前 8 字节是上半页八列，后 8 字节是下半页八列。</li>
+    <li><strong>第 44～47 行：</strong>后续依 ASCII 顺序继续保存双引号、井号等。源码第 48～229 行一直使用同一格式覆盖到 <code>~</code>，无需机械背诵每个值。</li>
+  </ol>
+  <pre class="source-code"><code data-source="Hardware/Display/OLED_Data.c" data-lines="230-251">};
+
+/*宽6像素，高8像素*/
+const uint8_t OLED_F6x8[][6] =
+{
+	0x00,0x00,0x00,0x00,0x00,0x00,//   0
+	0x00,0x00,0x00,0x2F,0x00,0x00,// ! 1
+	0x00,0x00,0x07,0x00,0x07,0x00,// &quot; 2
+	0x00,0x14,0x7F,0x14,0x7F,0x14,// # 3
+	0x00,0x24,0x2A,0x7F,0x2A,0x12,// $ 4
+	0x00,0x23,0x13,0x08,0x64,0x62,// % 5
+	0x00,0x36,0x49,0x55,0x22,0x50,// &amp; 6
+	0x00,0x00,0x00,0x07,0x00,0x00,// &#39; 7
+	0x00,0x00,0x1C,0x22,0x41,0x00,// ( 8
+	0x00,0x00,0x41,0x22,0x1C,0x00,// ) 9
+	0x00,0x14,0x08,0x3E,0x08,0x14,// * 10
+	0x00,0x08,0x08,0x3E,0x08,0x08,// + 11
+	0x00,0x00,0x00,0xA0,0x60,0x00,// , 12
+	0x00,0x08,0x08,0x08,0x08,0x08,// - 13
+	0x00,0x00,0x60,0x60,0x00,0x00,// . 14
+	0x00,0x20,0x10,0x08,0x04,0x02,// / 15
+	0x00,0x3E,0x51,0x49,0x45,0x3E,// 0 16</code></pre>
+  <ol class="line-notes">
+    <li><strong>第 230 行：</strong>结束 8×16 ASCII 表；第 48～229 行是其余可打印 ASCII 的同构数据。</li>
+    <li><strong>第 232～234 行：</strong>开始 6×8 表，每个字符只有 6 字节，恰好一页高。</li>
+    <li><strong>第 235 行：</strong>空格的 6 列全 0。</li>
+    <li><strong>第 236～250 行：</strong>感叹号到斜杠依 ASCII 顺序排列，每行尾注释给字符与索引。</li>
+    <li><strong>第 251 行：</strong>数字 0 位于索引 16，与 8×16 表使用同一 ASCII 偏移规则。</li>
+  </ol>
+  <pre class="source-code"><code data-source="Hardware/Display/OLED_Data.c" data-lines="329-399">	0x00,0x08,0x04,0x08,0x10,0x08,// ~ 94
+};
+/*********************ASCII字模数据*/
+
+
+/*汉字字模数据*********************/
+
+/*相同的汉字只需要定义一次，汉字不分先后顺序*/
+/*必须全部为汉字或者全角字符，不要加入任何半角字符*/
+
+/*宽16像素，高16像素*/
+const ChineseCell_t OLED_CF16x16[] = {
+
+	&quot;，&quot;,
+	0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,
+	0x00,0x00,0x58,0x38,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,
+
+	&quot;。&quot;,
+	0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,
+	0x00,0x00,0x18,0x24,0x24,0x18,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,
+
+	&quot;你&quot;,
+	0x00,0x80,0x60,0xF8,0x07,0x40,0x20,0x18,0x0F,0x08,0xC8,0x08,0x08,0x28,0x18,0x00,
+	0x01,0x00,0x00,0xFF,0x00,0x10,0x0C,0x03,0x40,0x80,0x7F,0x00,0x01,0x06,0x18,0x00,
+
+	&quot;好&quot;,
+	0x10,0x10,0xF0,0x1F,0x10,0xF0,0x00,0x80,0x82,0x82,0xE2,0x92,0x8A,0x86,0x80,0x00,
+	0x40,0x22,0x15,0x08,0x16,0x61,0x00,0x00,0x40,0x80,0x7F,0x00,0x00,0x00,0x00,0x00,
+
+	&quot;世&quot;,
+	0x20,0x20,0x20,0xFE,0x20,0x20,0xFF,0x20,0x20,0x20,0xFF,0x20,0x20,0x20,0x20,0x00,
+	0x00,0x00,0x00,0x7F,0x40,0x40,0x47,0x44,0x44,0x44,0x47,0x40,0x40,0x40,0x00,0x00,
+
+	&quot;界&quot;,
+	0x00,0x00,0x00,0xFE,0x92,0x92,0x92,0xFE,0x92,0x92,0x92,0xFE,0x00,0x00,0x00,0x00,
+	0x08,0x08,0x04,0x84,0x62,0x1E,0x01,0x00,0x01,0xFE,0x02,0x04,0x04,0x08,0x08,0x00,
+
+	/*按照上面的格式，在这个位置加入新的汉字数据*/
+	//...
+
+
+	/*未找到指定汉字时显示的默认图形（一个方框，内部一个问号），请确保其位于数组最末尾*/
+	&quot;&quot;,
+	0xFF,0x01,0x01,0x01,0x31,0x09,0x09,0x09,0x09,0x89,0x71,0x01,0x01,0x01,0x01,0xFF,
+	0xFF,0x80,0x80,0x80,0x80,0x80,0x80,0x96,0x81,0x80,0x80,0x80,0x80,0x80,0x80,0xFF,
+
+};
+
+/*********************汉字字模数据*/
+
+
+/*图像数据*********************/
+
+/*测试图像（一个方框，内部一个二极管符号），宽16像素，高16像素*/
+const uint8_t Diode[] = {
+	0xFF,0x01,0x81,0x81,0x81,0xFD,0x89,0x91,0xA1,0xC1,0xFD,0x81,0x81,0x81,0x01,0xFF,
+	0xFF,0x80,0x80,0x80,0x80,0x9F,0x88,0x84,0x82,0x81,0x9F,0x80,0x80,0x80,0x80,0xFF,
+};
+
+/*按照上面的格式，在这个位置加入新的图像数据*/
+//...
+
+/*********************图像数据*/
+
+
+/*****************江协科技|版权所有****************/
+/*****************jiangxiekeji.com*****************/
+
+#if defined(__clang__)
+#pragma clang diagnostic pop
+#endif</code></pre>
+  <ol class="line-notes">
+    <li><strong>第 329～331 行：</strong>波浪号是最后一个可打印 ASCII，随后结束 6×8 表。</li>
+    <li><strong>第 334～340 行：</strong>进入 16×16 中文表；相同汉字只定义一次，表项次序可任意，但索引必须是全角字符。</li>
+    <li><strong>第 342～364 行：</strong>每个表项先写 UTF-8 索引字符串，再跟 32 字节像素；示例依次是中文标点和“你好世界”。上 16 字节为上页 16 列，下 16 字节为下页。</li>
+    <li><strong>第 366～367 行：</strong>标出新增中文字模的位置。</li>
+    <li><strong>第 370～375 行：</strong>空索引的默认问号框必须放数组末尾，供查找失败时回退；当前 OLED.c 尚未实现这套查找。</li>
+    <li><strong>第 380～386 行：</strong>图片区的 Diode 同样是 16×16、32 字节，可直接传给 ShowImage。</li>
+    <li><strong>第 388～395 行：</strong>保留新增图片位置和来源版权。</li>
+    <li><strong>第 397～399 行：</strong>若使用 clang，恢复进入文件前的诊断设置，避免忽略警告影响其他源码。</li>
+  </ol>
+
+  <h4>4.12 <code>DebugDisplay.h</code>：10Hz 页面接口</h4>
+  <pre class="source-code"><code data-source="Application/Debug/DebugDisplay.h" data-lines="1-12">#ifndef APPLICATION_DEBUG_DEBUG_DISPLAY_H
+#define APPLICATION_DEBUG_DEBUG_DISPLAY_H
+
+#include &lt;stdint.h&gt;
+
+#define DEBUG_DISPLAY_REFRESH_TICKS 10U
+
+void DebugDisplay_Init(void);
+void DebugDisplay_ShowHeadingCalibration(uint8_t mpuReady);
+void DebugDisplay_Update(uint8_t elapsedTicks);
+
+#endif</code></pre>
+  <ol class="line-notes">
+    <li><strong>第 1～4、12 行：</strong>头文件保护与 uint8_t。</li>
+    <li><strong>第 6 行：</strong>每累计 10 个 100Hz 系统节拍刷新一次，即正常情况下 100ms 一次、10Hz。</li>
+    <li><strong>第 8 行：</strong>初始化刷新计数并初始化 OLED。</li>
+    <li><strong>第 9 行：</strong>在陀螺仪标定阶段显示专用提示页。</li>
+    <li><strong>第 10 行：</strong>接收本次实际累计节拍，决定是否刷新综合状态页。</li>
+  </ol>
+
+  <h4>4.13 灰度位图、按键位图和数值行</h4>
+  <pre class="source-code"><code data-source="Application/Debug/DebugDisplay.c" data-lines="1-23">#include &quot;Application/Debug/DebugDisplay.h&quot;
+#include &quot;Application/Control/MotionManager.h&quot;
+#include &quot;Application/Mission/Mission.h&quot;
+#include &quot;Application/State/Heading.h&quot;
+#include &quot;Application/State/Odometry.h&quot;
+#include &quot;Hardware/Board/Key.h&quot;
+#include &quot;Hardware/Display/OLED.h&quot;
+#include &quot;Hardware/Sensors/Graydetect.h&quot;
+
+static uint8_t s_refreshTicks;
+
+static void DebugDisplay_ShowGrayState(uint8_t state)
+{
+    uint8_t index;
+
+    OLED_ShowString(0, 8, &quot;GRAY:&quot;, OLED_6X8);
+    for (index = 0U; index &lt; 5U; index++)
+    {
+        OLED_ShowChar((int16_t)(30 + index * OLED_6X8), 8,
+                      ((state &gt;&gt; index) &amp; 1U) != 0U ? &#39;1&#39; : &#39;0&#39;,
+                      OLED_6X8);
+    }
+}</code></pre>
+  <ol class="line-notes">
+    <li><strong>第 1～8 行：</strong>综合页只依赖各模块公开查询接口：运动/Mission、航向/里程、按键、OLED 和灰度。</li>
+    <li><strong>第 10 行：</strong>文件私有 <code>s_refreshTicks</code> 累计距离上次刷屏经过几拍。</li>
+    <li><strong>第 12～14 行：</strong>灰度显示辅助函数接收五路位图并准备索引。</li>
+    <li><strong>第 16 行：</strong>在 y=8 的第二个 8 像素文本行写标签 <code>GRAY:</code>。</li>
+    <li><strong>第 17～18 行：</strong>循环检查 bit0～bit4。</li>
+    <li><strong>第 19 行：</strong>标签宽 5×6=30 像素，因此第一个状态字符从 x=30 开始，之后每个字符右移 6。</li>
+    <li><strong>第 20～21 行：</strong><code>state&gt;&gt;index</code> 把目标 bit 移到最低位，再与 1；非零显示字符 1，否则显示 0。</li>
+    <li><strong>第 22～23 行：</strong>完成五路显示。</li>
+  </ol>
+
+  <pre class="source-code"><code data-source="Application/Debug/DebugDisplay.c" data-lines="25-46">static void DebugDisplay_ShowKeyState(uint8_t pressedMask)
+{
+    uint8_t index;
+
+    OLED_ShowString(0, 16, &quot;KEY:&quot;, OLED_6X8);
+    for (index = 0U; index &lt; 4U; index++)
+    {
+        OLED_ShowChar((int16_t)(24 + index * OLED_6X8), 16,
+                      ((pressedMask &gt;&gt; index) &amp; 1U) != 0U ? &#39;1&#39; : &#39;0&#39;,
+                      OLED_6X8);
+    }
+}
+
+static void DebugDisplay_ShowMotionValue(int16_t y,
+                                         const char *label,
+                                         float value,
+                                         const char *unit)
+{
+    OLED_ShowString(0, y, label, OLED_6X8);
+    OLED_ShowFloatNum(18, y, value, 5U, 1U, OLED_6X8);
+    OLED_ShowString(72, y, unit, OLED_6X8);
+}</code></pre>
+  <ol class="line-notes">
+    <li><strong>第 25～27 行：</strong>按键显示函数与灰度函数结构相同，但只有四个按键位。</li>
+    <li><strong>第 29 行：</strong>在 y=16 的第三行写 <code>KEY:</code>。</li>
+    <li><strong>第 30～35 行：</strong>bit0～bit3 依次显示，标签 4 个字符宽 24 像素，所以状态从 x=24 开始。</li>
+    <li><strong>第 38～42 行：</strong>通用运动数值行接收 y、标签、浮点值和单位字符串；两个字符串都通过只读指针传入。</li>
+    <li><strong>第 43 行：</strong>标签从 x=0 开始。</li>
+    <li><strong>第 44 行：</strong>数值从 x=18 开始，总是显示符号、5 位整数宽度和 1 位小数。</li>
+    <li><strong>第 45～46 行：</strong>单位固定从 x=72 开始，形成对齐的 LD/LV/RD/RV 四行。</li>
+  </ol>
+
+  <h4>4.14 运动状态汇总</h4>
+  <pre class="source-code"><code data-source="Application/Debug/DebugDisplay.c" data-lines="48-73">static void DebugDisplay_ShowMotionState(void)
+{
+    MotionManager_Mode_t mode = MotionManager_GetMode();
+
+    if ((MotionManager_GetError() != MOTION_MANAGER_ERROR_NONE) ||
+        (Mission_GetStatus() == MISSION_STATUS_ERROR))
+    {
+        OLED_ShowString(0, 56, &quot;M:ERROR&quot;, OLED_6X8);
+    }
+    else if (mode == MOTION_MANAGER_MODE_STRAIGHT)
+    {
+        OLED_ShowString(0, 56, &quot;M:STRAIGHT&quot;, OLED_6X8);
+    }
+    else if (mode == MOTION_MANAGER_MODE_LINE)
+    {
+        OLED_ShowString(0, 56, &quot;M:LINE&quot;, OLED_6X8);
+    }
+    else if (mode == MOTION_MANAGER_MODE_TURN)
+    {
+        OLED_ShowString(0, 56, &quot;M:TURN&quot;, OLED_6X8);
+    }
+    else
+    {
+        OLED_ShowString(0, 56, &quot;M:IDLE&quot;, OLED_6X8);
+    }
+}</code></pre>
+  <ol class="line-notes">
+    <li><strong>第 48～50 行：</strong>读取 MotionManager 当前枚举模式。</li>
+    <li><strong>第 52～56 行：</strong>运动错误或 Mission 错误任一存在，错误优先级最高，底行显示 <code>M:ERROR</code>。</li>
+    <li><strong>第 57～60 行：</strong>定距/直线模式显示 <code>M:STRAIGHT</code>。</li>
+    <li><strong>第 61～64 行：</strong>巡线模式显示 <code>M:LINE</code>。</li>
+    <li><strong>第 65～68 行：</strong>转向模式显示 <code>M:TURN</code>。</li>
+    <li><strong>第 69～72 行：</strong>其余模式统一显示 <code>M:IDLE</code>。这意味着当前 BRAKE 模式在 OLED 上也会落入 IDLE；Telemetry 则会明确输出 BRAKE。</li>
+    <li><strong>第 73 行：</strong>状态行完成。</li>
+  </ol>
+
+  <h4>4.15 初始化与陀螺仪标定提示页</h4>
+  <pre class="source-code"><code data-source="Application/Debug/DebugDisplay.c" data-lines="75-98">void DebugDisplay_Init(void)
+{
+    s_refreshTicks = DEBUG_DISPLAY_REFRESH_TICKS;
+    OLED_Init();
+}
+
+void DebugDisplay_ShowHeadingCalibration(uint8_t mpuReady)
+{
+    OLED_Clear();
+    OLED_ShowString(0, 0, &quot;MPU6050 Z ANGLE&quot;, OLED_6X8);
+
+    if (mpuReady != 0U)
+    {
+        OLED_ShowString(0, 16, &quot;ZERO CALIBRATING...&quot;, OLED_6X8);
+        OLED_ShowString(0, 32, &quot;KEEP CAR STILL&quot;, OLED_6X8);
+    }
+    else
+    {
+        OLED_ShowString(0, 16, &quot;MPU6050 OFFLINE&quot;, OLED_6X8);
+        OLED_ShowString(0, 32, &quot;CHECK PA10/PA11&quot;, OLED_6X8);
+    }
+
+    OLED_Update();
+}</code></pre>
+  <ol class="line-notes">
+    <li><strong>第 75～79 行：</strong>初始化时把刷新计数直接设为门槛 10，使第一次 Update 立即刷新，然后初始化 OLED。</li>
+    <li><strong>第 81～84 行：</strong>标定提示函数先清显存，并在首行写 <code>MPU6050 Z ANGLE</code>。</li>
+    <li><strong>第 86～90 行：</strong>MPU 在线时提示正在零偏标定和保持小车静止。</li>
+    <li><strong>第 91～95 行：</strong>MPU 离线时显示错误与 PA10/PA11 接线提示。</li>
+    <li><strong>第 97～98 行：</strong>统一调用全屏 Update；若 OLED 自身未 ready，底层会直接返回。</li>
+  </ol>
+
+  <h4>4.16 10Hz 综合页面刷新</h4>
+  <pre class="source-code"><code data-source="Application/Debug/DebugDisplay.c" data-lines="100-137">void DebugDisplay_Update(uint8_t elapsedTicks)
+{
+    uint8_t grayState;
+    uint8_t keyMask;
+
+    if ((uint16_t)s_refreshTicks + elapsedTicks &lt;
+        DEBUG_DISPLAY_REFRESH_TICKS)
+    {
+        s_refreshTicks = (uint8_t)(s_refreshTicks + elapsedTicks);
+        return;
+    }
+    s_refreshTicks = 0U;
+
+    grayState = Graydetect_GetState();
+    keyMask = Key_GetPressedMask();
+
+    OLED_Clear();
+    OLED_ShowString(0, 0, &quot;Z:&quot;, OLED_6X8);
+    if (Heading_IsReady() != 0U)
+    {
+        OLED_ShowFloatNum(12, 0, Heading_GetYaw(), 6U, 1U, OLED_6X8);
+        OLED_ShowString(72, 0, &quot;deg&quot;, OLED_6X8);
+    }
+    else
+    {
+        OLED_ShowString(12, 0, &quot;OFFLINE&quot;, OLED_6X8);
+    }
+
+    DebugDisplay_ShowGrayState(grayState);
+    DebugDisplay_ShowKeyState(keyMask);
+    DebugDisplay_ShowMotionValue(24, &quot;LD:&quot;, Odometry_GetDistanceLMM(), &quot;mm&quot;);
+    DebugDisplay_ShowMotionValue(32, &quot;LV:&quot;, Odometry_GetSpeedL(), &quot;mm/s&quot;);
+    DebugDisplay_ShowMotionValue(40, &quot;RD:&quot;, Odometry_GetDistanceRMM(), &quot;mm&quot;);
+    DebugDisplay_ShowMotionValue(48, &quot;RV:&quot;, Odometry_GetSpeedR(), &quot;mm/s&quot;);
+
+    DebugDisplay_ShowMotionState();
+    OLED_Update();
+}</code></pre>
+  <ol class="line-notes">
+    <li><strong>第 100～103 行：</strong>接收实际 elapsedTicks，并准备灰度与按键快照。</li>
+    <li><strong>第 105～106 行：</strong>先转成 uint16_t 再相加，避免 8 位加法先溢出；累计值仍小于 10 时不刷新。</li>
+    <li><strong>第 107～110 行：</strong>保存累计拍数并返回，让 OLED 刷新从 100Hz 降到约 10Hz，减少 I2C 阻塞和闪烁。</li>
+    <li><strong>第 111 行：</strong>达到门槛后清零。若一次跨过很多拍，当前实现只刷一帧并舍弃余数，不追赶多帧。</li>
+    <li><strong>第 113～114 行：</strong>在同一帧开始时读取灰度和按键，减少页面各行时间不一致。</li>
+    <li><strong>第 116～117 行：</strong>清 RAM 显存并写航向标签。</li>
+    <li><strong>第 118～122 行：</strong>MPU 在线就显示连续航向，整数宽 6、小数 1 位，并追加 deg。</li>
+    <li><strong>第 123～126 行：</strong>离线则直接显示 OFFLINE。</li>
+    <li><strong>第 128～129 行：</strong>写五路灰度与四个按键位。</li>
+    <li><strong>第 130～133 行：</strong>依次写左路程、左速度、右路程、右速度，单位为 mm 或 mm/s。</li>
+    <li><strong>第 135～137 行：</strong>写底部运动状态，最后一次性把完整 1024 字节画面更新到 OLED。</li>
+  </ol>
+
+  <h4>4.17 <code>Telemetry.h</code>：字段掩码和公开配置</h4>
+  <pre class="source-code"><code data-source="Application/Debug/Telemetry.h" data-lines="1-34">#ifndef APPLICATION_DEBUG_TELEMETRY_H
+#define APPLICATION_DEBUG_TELEMETRY_H
+
+#include &lt;stdint.h&gt;
+
+/* CSV 遥测输出。数据全部通过各模块公共接口读取，本模块不采集也不缓存历史。 */
+
+#define TELEMETRY_DEFAULT_RATE_HZ        20U  /* 默认频率；115200 下约占 13% 带宽。 */
+
+/* 频率硬上限，等于主循环频率。实际可用上限还要按字段掩码算，见 Telemetry_GetMaxRateHz()。 */
+#define TELEMETRY_RATE_HARD_LIMIT_HZ       100U
+
+/* 字段掩码位定义（16 位）。改变掩码会立即重发一行表头。 */
+#define TELEMETRY_FIELD_YAW      0x01U   /* 连续累计航向角。 */
+#define TELEMETRY_FIELD_SENSOR   0x02U   /* 五路灰度位图与按键位图。 */
+#define TELEMETRY_FIELD_DISTANCE 0x04U   /* 左右轮累计路程 mm。 */
+#define TELEMETRY_FIELD_SPEED    0x08U   /* 左右轮实测速度 mm/s。 */
+#define TELEMETRY_FIELD_MODE     0x10U   /* 运动模式文本。 */
+#define TELEMETRY_FIELD_K230     0x20U   /* 最近一次 K230 TARGET。 */
+#define TELEMETRY_FIELD_TARGET   0x40U   /* TL,TR 本拍目标轮速 mm/s。 */
+#define TELEMETRY_FIELD_PWM      0x80U   /* PL,PR 双轮最终输出 PWM。 */
+#define TELEMETRY_FIELD_NAV      0x100U  /* navT,navE 转向目标角与角误差。 */
+#define TELEMETRY_FIELD_LINE     0x200U  /* lerr 巡线离散权重误差。 */
+
+/* 单侧字段：调单个轮子时只传该侧，行长减半、可用频率翻倍。
+ * 与上方成对字段并存——成对位保持原语义不变，避免既有掩码失效；
+ * 同时置位成对与单侧时，同一列会输出两次，由上位机自行避免。 */
+#define TELEMETRY_FIELD_SPEED_L  0x400U  /* 只输出 LV。 */
+#define TELEMETRY_FIELD_SPEED_R  0x800U  /* 只输出 RV。 */
+#define TELEMETRY_FIELD_TARGET_L 0x1000U /* 只输出 TL。 */
+#define TELEMETRY_FIELD_TARGET_R 0x2000U /* 只输出 TR。 */
+#define TELEMETRY_FIELD_PWM_L    0x4000U /* 只输出 PL。 */
+#define TELEMETRY_FIELD_PWM_R    0x8000U /* 只输出 PR。 */
+#define TELEMETRY_FIELD_ALL      0xFFFFU</code></pre>
+  <ol class="line-notes">
+    <li><strong>第 1～4、30 行：</strong>头文件保护和 uint8_t。</li>
+    <li><strong>第 6 行：</strong>Telemetry 不采集、不保存传感器历史；每次发数据时通过公共接口读取当前状态。</li>
+    <li><strong>第 8 行：</strong>默认 20Hz；在全字段和 115200 波特率下，设计估算约占 13% 串口理论带宽。</li>
+    <li><strong>第 10～11 行：</strong>硬上限 100Hz，等于主循环频率；动态上限还会按本行启用多少字段计算。</li>
+    <li><strong>第 13～20 行：</strong>六个 bit 分别控制 yaw、传感器、路程、速度、模式和 K230。<code>0x3F</code> 的低六位全 1，表示全部字段。</li>
+    <li><strong>第 22～23 行：</strong>初始化状态；每次 App 更新传入累计拍数和当前按键位图。</li>
+    <li><strong>第 24～25 行：</strong>设置频率或字段掩码，返回 1/0 表示接受/拒绝。</li>
+    <li><strong>第 26～28 行：</strong>读取当前频率、掩码和当前掩码对应的动态安全上限。</li>
+  </ol>
+
+  <h4>4.18 遥测时间、带宽常量与私有状态</h4>
+  <pre class="source-code"><code data-source="Application/Debug/Telemetry.c" data-lines="1-30">#include "Application/Debug/Telemetry.h"
+#include "Application/Comms/K230Link.h"
+#include "Application/Control/MotionLine.h"
+#include "Application/Control/MotionManager.h"
+#include "Application/Control/MotionWheel.h"
+#include "Application/Control/Nav.h"
+#include "Application/State/Heading.h"
+#include "Application/State/Odometry.h"
+#include "Hardware/Comms/Serial.h"
+#include "Hardware/Sensors/Graydetect.h"
+#include "ti_msp_dl_config.h"
+
+/* 100 Hz 主循环下，每 (100 / rateHz) 拍输出一行。 */
+#define TELEMETRY_TICK_HZ 100U
+
+/* 每秒可发送的字节数。8N1 每字节含起始位和停止位共 10 个位时，故除以 10。
+ * 直接取 SysConfig 生成的波特率，不写死数值——否则改了 UART1 波特率而漏改
+ * 这里，限流就会按错误的带宽计算：波特率调低时会严重超发，阻塞发送会把
+ * 100 Hz 主循环连同运动控制一起拖垮，且这种失配没有任何编译期提示。 */
+#define TELEMETRY_UART_BYTES_PER_SECOND  ((uint32_t)BLUETOOTH_UART_BAUD_RATE / 10U)
+
+/* 允许遥测阻塞占用的主循环时间上限百分比。 */
+#define TELEMETRY_MAX_BLOCKING_PERCENT   20U
+
+static uint8_t s_rateHz;
+static uint16_t s_fieldMask;
+static uint8_t s_tickAccumulator;
+static uint8_t s_headerPending;
+static uint32_t s_elapsedMs;</code></pre>
+  <ol class="line-notes">
+    <li><strong>第 1～8 行：</strong>引入遥测接口、K230、运动模式、航向/里程、UART1、灰度和 SysConfig 波特率宏。</li>
+    <li><strong>第 10～11 行：</strong>调度公式明确假设系统 Tick 为 100Hz。</li>
+    <li><strong>第 13～17 行：</strong>8N1 每个有效字节包含 1 起始+8 数据+1 停止位，因此用生成的 UART 波特率除 10，得到每秒理论字节数。直接引用生成宏能随串口配置同步。</li>
+    <li><strong>第 19～20 行：</strong>允许遥测阻塞发送最多占理论串口时间的 20%，给命令应答和 100Hz 运动控制留余量。</li>
+    <li><strong>第 22 行：</strong>当前请求频率，0 表示关闭。</li>
+    <li><strong>第 23 行：</strong>当前低六位字段掩码。</li>
+    <li><strong>第 24 行：</strong>累计距离下一行还差的系统拍数。</li>
+    <li><strong>第 25 行：</strong>标记下次发数据前需要先发新表头。</li>
+    <li><strong>第 26 行：</strong>自遥测初始化起累计毫秒，关闭输出期间也继续走时。</li>
+  </ol>
+
+  <h4>4.19 估算一行最坏长度</h4>
+  <pre class="source-code"><code data-source="Application/Debug/Telemetry.c" data-lines="31-79">/* 估算当前掩码下数据行的最坏情况字节数（含行尾 \r\n）。
+ * 各字段宽度为 115200 8N1 格式下实际可能输出的最大字符数，含前导逗号。
+ * 全字段约 160 字节，必须用 uint16_t 累加。 */
+static uint16_t Telemetry_EstimateRowBytes(void)
+{
+    uint16_t bytes = 14U;  /* 行基座：'D,' + 最长 10 位 ms + '\r\n' */
+
+    if ((s_fieldMask &amp; TELEMETRY_FIELD_YAW) != 0U)
+    {
+        bytes = (uint16_t)(bytes + 11U);  /* ',-999999.99' */
+    }
+    if ((s_fieldMask &amp; TELEMETRY_FIELD_SENSOR) != 0U)
+    {
+        bytes = (uint16_t)(bytes + 8U);   /* ',FF,255' 实为 7 字节，多留 1 字节余量 */
+    }
+    if ((s_fieldMask &amp; TELEMETRY_FIELD_DISTANCE) != 0U)
+    {
+        bytes = (uint16_t)(bytes + 20U);  /* ',-999999.9,-999999.9' */
+    }
+    if ((s_fieldMask &amp; TELEMETRY_FIELD_SPEED) != 0U)
+    {
+        bytes = (uint16_t)(bytes + 20U);  /* ',-999999.9,-999999.9' */
+    }
+    if ((s_fieldMask &amp; TELEMETRY_FIELD_MODE) != 0U)
+    {
+        bytes = (uint16_t)(bytes + 9U);   /* ',STRAIGHT' */
+    }
+    if ((s_fieldMask &amp; TELEMETRY_FIELD_K230) != 0U)
+    {
+        bytes = (uint16_t)(bytes + 16U);  /* ',1:-32768:-32768' */
+    }
+    if ((s_fieldMask &amp; TELEMETRY_FIELD_TARGET) != 0U)
+    {
+        bytes = (uint16_t)(bytes + 20U);  /* ',-999999.9,-999999.9' */
+    }
+    if ((s_fieldMask &amp; TELEMETRY_FIELD_PWM) != 0U)
+    {
+        bytes = (uint16_t)(bytes + 12U);  /* ',-1000,-1000' */
+    }
+    if ((s_fieldMask &amp; TELEMETRY_FIELD_NAV) != 0U)
+    {
+        bytes = (uint16_t)(bytes + 22U);  /* ',-999999.99,-999999.99' */
+    }
+    if ((s_fieldMask &amp; TELEMETRY_FIELD_LINE) != 0U)
+    {
+        bytes = (uint16_t)(bytes + 6U);   /* ',-6.0' 加 1 字节余量 */
+    }
+    /* 单侧字段各占一列，宽度与成对字段的一半相同。 */
+    if ((s_fieldMask &amp; TELEMETRY_FIELD_SPEED_L) != 0U)</code></pre>
+  <ol class="line-notes">
+    <li><strong>第 28～30 行：</strong>估算包含换行的最坏数据行长度；最大 98，可安全装入 uint8_t。</li>
+    <li><strong>第 31～33 行：</strong>基础 14 字节包含 <code>D,</code>、最长 10 位毫秒和 <code>\r\n</code>。</li>
+    <li><strong>第 35～38 行：</strong>yaw 最坏预留 11 字节，例如逗号、负号、六位整数、小数点和两位小数。</li>
+    <li><strong>第 39～42 行：</strong>sensor 实际包含 gray 与 keys 两列，按 <code>,FF,255</code> 再留 1 字节余量。</li>
+    <li><strong>第 43～46 行：</strong>distance 一个位控制 LD、RD 两列，共预留 20 字节。</li>
+    <li><strong>第 47～50 行：</strong>speed 同样控制 LV、RV 两列，预留 20 字节。</li>
+    <li><strong>第 51～54 行：</strong>模式最长按 <code>,STRAIGHT</code> 9 字节。</li>
+    <li><strong>第 55～58 行：</strong>K230 虽是一个 CSV 列，内部有 <code>valid:x:y</code> 三段，最坏预留 16 字节。</li>
+    <li><strong>第 59～60 行：</strong>返回当前掩码合计后的估算长度。</li>
+  </ol>
+  <h4>4.20 动态安全频率与模式文本</h4>
+  <pre class="source-code"><code data-source="Application/Debug/Telemetry.c" data-lines="106-151">/* 根据当前字段掩码计算安全频率上限。
+ * 纯整数运算，避免在 MCU 上引入浮点。
+ * 公式：maxRate = (BYTES_PER_SEC * MAX_PERCENT) / (rowBytes * 100)
+ * 结果夹紧到 1..TELEMETRY_RATE_HARD_LIMIT_HZ。 */
+uint8_t Telemetry_GetMaxRateHz(void)
+{
+    uint32_t rowBytes = (uint32_t)Telemetry_EstimateRowBytes();
+    uint32_t maxRate;
+
+    maxRate = (TELEMETRY_UART_BYTES_PER_SECOND * TELEMETRY_MAX_BLOCKING_PERCENT)
+              / (rowBytes * 100U);
+
+    if (maxRate &lt; 1U)
+    {
+        maxRate = 1U;
+    }
+    if (maxRate &gt; (uint32_t)TELEMETRY_RATE_HARD_LIMIT_HZ)
+    {
+        maxRate = (uint32_t)TELEMETRY_RATE_HARD_LIMIT_HZ;
+    }
+    return (uint8_t)maxRate;
+}
+
+static const char *Telemetry_ModeText(void)
+{
+    MotionManager_Mode_t mode = MotionManager_GetMode();
+
+    /* 模式在动作完成后仍保留（例如 F 走完 mode 停在 STRAIGHT），
+     * 上位机需要一个明确的"动作已结束"信号来自动收尾一次调参试验。 */
+    if ((mode != MOTION_MANAGER_MODE_IDLE) &amp;&amp;
+        (MotionManager_IsBusy() == 0U))
+    {
+        return "DONE";
+    }
+
+    switch (mode)
+    {
+        case MOTION_MANAGER_MODE_STRAIGHT: return "STRAIGHT";
+        case MOTION_MANAGER_MODE_LINE:     return "LINE";
+        case MOTION_MANAGER_MODE_TURN:     return "TURN";
+        case MOTION_MANAGER_MODE_BRAKE:    return "BRAKE";
+        case MOTION_MANAGER_MODE_SPEED:    return "SPEED";
+        case MOTION_MANAGER_MODE_IDLE:     return "IDLE";
+        default:                           return "ERROR";
+    }
+}</code></pre>
+  <ol class="line-notes">
+    <li><strong>第 62～65 行：</strong>动态上限公式是“可用于遥测的字节/秒 ÷ 每行字节”，全部使用整数运算。</li>
+    <li><strong>第 66～69 行：</strong>取得当前行长并准备 32 位 maxRate，避免乘法中间值溢出。</li>
+    <li><strong>第 71～72 行：</strong>115200 8N1 时每秒约 11520 字节，取 20% 得 2304；全字段 98 字节得到整数上限 <code>2304/98=23</code>。</li>
+    <li><strong>第 74～77 行：</strong>结果至少为 1Hz。</li>
+    <li><strong>第 78～81 行：</strong>再夹到 100Hz 硬上限，任何字段组合都不允许请求超过主循环更新频率。</li>
+    <li><strong>第 82～83 行：</strong>最终缩成 uint8_t 返回。</li>
+    <li><strong>第 85～87 行：</strong>模式文本函数读取 MotionManager 当前枚举并进入 switch。</li>
+    <li><strong>第 89～93 行：</strong>直线、巡线、转向、刹车、空闲分别返回固定字符串。</li>
+    <li><strong>第 94～96 行：</strong>未知枚举返回 ERROR；返回值是指向只读字符串常量的指针。</li>
+  </ol>
+
+  <div class="deep-dive">
+    <h4>动态带宽上限：设计公式与当前调度量化</h4>
+    <p><strong>输入：</strong>UART 波特率、20% 阻塞预算、当前字段掩码估算出的 rowBytes。</p>
+    <p><strong>过程：</strong><code>maxRate=(baud/10×20)/(rowBytes×100)</code>。全字段 98 字节得到 23Hz；只开 yaw 时行长约 25 字节，得到 92Hz。</p>
+    <p><strong>输出：</strong>SetRateHz 用该值拒绝明显超带宽的请求，SetFieldMask 在行变长后会自动把旧频率降到新上限。</p>
+    <p><strong>边界条件：</strong>真正调度间隔是后文的整数 <code>100/rateHz</code>。整数除法向下取整，因此请求 23Hz 得 interval=4，实际约 25Hz；全字段最坏行长下实际占用约为 <code>25×98/11520≈21.3%</code>，已经超过代码声称的 20% 安全预算。请求 92Hz 也会量化成 100Hz。也就是说，当前 <code>Telemetry_GetMaxRateHz()</code> 只能过滤明显超限值，不能对不能整除 100 的频率提供严格预算保证；20Hz、25Hz、50Hz、100Hz 等能整除 100 的频率没有该偏差。</p>
+    <p><strong>设计原因：</strong>当前实现追求简单、无浮点；若要精确任意频率并严格守住预算，可改用相位累加器，例如每拍累加 rateHz，达到 100 时减 100 并发送。</p>
+  </div>
+
+  <h4>4.21 表头：字段顺序的唯一说明书</h4>
+  <pre class="source-code"><code data-source="Application/Debug/Telemetry.c" data-lines="153-198">/* 表头与数据行的字段顺序必须完全一致，网页据表头解析后续数据行。 */
+static void Telemetry_SendHeader(void)
+{
+    Serial1_SendString("H,ms");
+    if ((s_fieldMask &amp; TELEMETRY_FIELD_YAW) != 0U)
+    {
+        Serial1_SendString(",yaw");
+    }
+    if ((s_fieldMask &amp; TELEMETRY_FIELD_SENSOR) != 0U)
+    {
+        Serial1_SendString(",gray,keys");
+    }
+    if ((s_fieldMask &amp; TELEMETRY_FIELD_DISTANCE) != 0U)
+    {
+        Serial1_SendString(",LD,RD");
+    }
+    if ((s_fieldMask &amp; TELEMETRY_FIELD_SPEED) != 0U)
+    {
+        Serial1_SendString(",LV,RV");
+    }
+    if ((s_fieldMask &amp; TELEMETRY_FIELD_MODE) != 0U)
+    {
+        Serial1_SendString(",mode");
+    }
+    if ((s_fieldMask &amp; TELEMETRY_FIELD_K230) != 0U)
+    {
+        Serial1_SendString(",k230");
+    }
+    if ((s_fieldMask &amp; TELEMETRY_FIELD_TARGET) != 0U)
+    {
+        Serial1_SendString(",TL,TR");
+    }
+    if ((s_fieldMask &amp; TELEMETRY_FIELD_PWM) != 0U)
+    {
+        Serial1_SendString(",PL,PR");
+    }
+    if ((s_fieldMask &amp; TELEMETRY_FIELD_NAV) != 0U)
+    {
+        Serial1_SendString(",navT,navE");
+    }
+    if ((s_fieldMask &amp; TELEMETRY_FIELD_LINE) != 0U)
+    {
+        Serial1_SendString(",lerr");
+    }
+    if ((s_fieldMask &amp; TELEMETRY_FIELD_SPEED_L) != 0U)
+    {</code></pre>
+  <ol class="line-notes">
+    <li><strong>第 98～101 行：</strong>表头以 <code>H,ms</code> 开始；网页见 H 便把后续名称当成当前列定义。</li>
+    <li><strong>第 102～105 行：</strong>YAW 位开启才追加 yaw。</li>
+    <li><strong>第 106～109 行：</strong>SENSOR 一个位追加两列 gray、keys，说明“一个掩码位不一定只是一列”。</li>
+    <li><strong>第 110～113 行：</strong>DISTANCE 追加 LD、RD。</li>
+    <li><strong>第 114～117 行：</strong>SPEED 追加 LV、RV。</li>
+    <li><strong>第 118～121 行：</strong>MODE 追加 mode。</li>
+    <li><strong>第 122～125 行：</strong>K230 追加一个名为 k230 的复合列。</li>
+    <li><strong>第 126～127 行：</strong>用 CRLF 结束表头。每个条件和顺序必须与 SendRow 完全相同。</li>
+  </ol>
+
+  <h4>4.22 数据行：读取当前状态并保持列一致</h4>
+  <pre class="source-code"><code data-source="Application/Debug/Telemetry.c" data-lines="224-293">static void Telemetry_SendRow(uint8_t pressedKeys)
+{
+    Serial1_Printf("D,%lu", (unsigned long)s_elapsedMs);
+
+    if ((s_fieldMask &amp; TELEMETRY_FIELD_YAW) != 0U)
+    {
+        Serial1_Printf(",%.2f", (double)Heading_GetYaw());
+    }
+    if ((s_fieldMask &amp; TELEMETRY_FIELD_SENSOR) != 0U)
+    {
+        Serial1_Printf(",%02X,%u",
+                       (unsigned)Graydetect_GetState(),
+                       (unsigned)pressedKeys);
+    }
+    if ((s_fieldMask &amp; TELEMETRY_FIELD_DISTANCE) != 0U)
+    {
+        Serial1_Printf(",%.1f,%.1f",
+                       (double)Odometry_GetDistanceLMM(),
+                       (double)Odometry_GetDistanceRMM());
+    }
+    if ((s_fieldMask &amp; TELEMETRY_FIELD_SPEED) != 0U)
+    {
+        Serial1_Printf(",%.1f,%.1f",
+                       (double)Odometry_GetSpeedL(),
+                       (double)Odometry_GetSpeedR());
+    }
+    if ((s_fieldMask &amp; TELEMETRY_FIELD_MODE) != 0U)
+    {
+        Serial1_Printf(",%s", Telemetry_ModeText());
+    }
+    if ((s_fieldMask &amp; TELEMETRY_FIELD_K230) != 0U)
+    {
+        K230Link_Target_t target;
+
+        if (K230Link_GetTarget(&amp;target) != 0U)
+        {
+            Serial1_Printf(",%u:%d:%d",
+                           (unsigned)target.valid,
+                           (int)target.offsetX,
+                           (int)target.offsetY);
+        }
+        else
+        {
+            Serial1_SendString(",0:0:0");
+        }
+    }
+    if ((s_fieldMask &amp; TELEMETRY_FIELD_TARGET) != 0U)
+    {
+        Serial1_Printf(",%.1f,%.1f",
+                       (double)MotionWheel_GetTargetSpeedL(),
+                       (double)MotionWheel_GetTargetSpeedR());
+    }
+    if ((s_fieldMask &amp; TELEMETRY_FIELD_PWM) != 0U)
+    {
+        Serial1_Printf(",%.0f,%.0f",
+                       (double)MotionWheel_GetLeftCommandPWM(),
+                       (double)MotionWheel_GetRightCommandPWM());
+    }
+    if ((s_fieldMask &amp; TELEMETRY_FIELD_NAV) != 0U)
+    {
+        Serial1_Printf(",%.2f,%.2f",
+                       (double)Nav_GetTargetYawDeg(),
+                       (double)Nav_GetAngleErrorDeg());
+    }
+    if ((s_fieldMask &amp; TELEMETRY_FIELD_LINE) != 0U)
+    {
+        Serial1_Printf(",%.1f", (double)MotionLine_GetLineError());
+    }
+    if ((s_fieldMask &amp; TELEMETRY_FIELD_SPEED_L) != 0U)
+    {</code></pre>
+  <ol class="line-notes">
+    <li><strong>第 129～131 行：</strong>数据行固定以 <code>D,</code> 开始，再输出累计毫秒；<code>%lu</code> 配合显式 unsigned long 转换。</li>
+    <li><strong>第 133～136 行：</strong>YAW 开启时输出两位小数。可变参数中 float 会提升为 double，显式转换使意图清楚。</li>
+    <li><strong>第 137～142 行：</strong>SENSOR 输出两列：gray 用两位大写十六进制，keys 用十进制。两者与表头顺序一致。</li>
+    <li><strong>第 143～148 行：</strong>DISTANCE 从 Odometry 读取左右累计路程，各保留一位小数。</li>
+    <li><strong>第 149～154 行：</strong>SPEED 从 Odometry 读取左右实测速度，各保留一位小数。</li>
+    <li><strong>第 155～158 行：</strong>MODE 输出 switch 生成的文本。</li>
+    <li><strong>第 159～162 行：</strong>K230 开启时创建一份目标结构体快照。</li>
+    <li><strong>第 163～169 行：</strong>能取得目标就输出一个 CSV 单元格 <code>valid:x:y</code>；冒号而不是逗号保证它仍只占一列。</li>
+    <li><strong>第 170～173 行：</strong>尚无目标时输出 <code>0:0:0</code>，保持列数不变。</li>
+    <li><strong>第 175～176 行：</strong>CRLF 结束数据行。</li>
+  </ol>
+  <p><code>car_debug.html</code> 不猜掩码，而是按最近一行 H 的列名逐列解析；gray 按十六进制转换，mode 保留文本，k230 再按冒号展开成 <code>k230_valid/k230_x/k230_y</code>。若表头和数据条件顺序不一致，网页会把数值放到错误曲线甚至因列数不符丢掉整行。</p>
+
+  <h4>4.23 初始化：默认全字段 20Hz</h4>
+  <pre class="source-code"><code data-source="Application/Debug/Telemetry.c" data-lines="319-338">void Telemetry_Init(void)
+{
+    uint8_t maxRate;
+
+    s_fieldMask = TELEMETRY_FIELD_ALL;
+    s_rateHz = TELEMETRY_DEFAULT_RATE_HZ;
+
+    /* 默认频率也要服从当前掩码的安全上限。默认值现在合规（全字段 23 Hz &gt; 20 Hz），
+     * 但默认频率、默认掩码和波特率三者中任意一个被改动都可能让它越界，而 Init
+     * 不经 SetRateHz()，越界不会有任何提示。这里显式夹一次，让上限只有一处定义。 */
+    maxRate = Telemetry_GetMaxRateHz();
+    if (s_rateHz &gt; maxRate)
+    {
+        s_rateHz = maxRate;
+    }
+
+    s_tickAccumulator = 0U;
+    s_headerPending = 1U;
+    s_elapsedMs = 0U;
+}</code></pre>
+  <ol class="line-notes">
+    <li><strong>第 178～180 行：</strong>初始化准备保存动态上限。</li>
+    <li><strong>第 182 行：</strong>默认打开低六位全部字段。</li>
+    <li><strong>第 183 行：</strong>默认请求 20Hz。</li>
+    <li><strong>第 185～187 行：</strong>注释解释为什么默认值也不能被盲信：掩码、波特率或默认频率未来都可能改变。</li>
+    <li><strong>第 188～192 行：</strong>计算当前全字段上限；若默认频率过高就自动夹低。当前估算 23&gt;20，因此仍为 20Hz。</li>
+    <li><strong>第 194 行：</strong>清发送节拍累计。</li>
+    <li><strong>第 195 行：</strong>标记下一次输出前必须先发表头。</li>
+    <li><strong>第 196～197 行：</strong>毫秒时间从 0 开始。</li>
+  </ol>
+
+  <h4>4.24 更新：累计毫秒、间隔和表头门控</h4>
+  <pre class="source-code"><code data-source="Application/Debug/Telemetry.c" data-lines="340-368">void Telemetry_Update(uint8_t elapsedTicks, uint8_t pressedKeys)
+{
+    uint8_t interval;
+
+    s_elapsedMs += (uint32_t)elapsedTicks * 10U;
+
+    if (s_rateHz == 0U)
+    {
+        return;
+    }
+
+    /* s_rateHz 由 SetRateHz 限制在 1..TELEMETRY_RATE_HARD_LIMIT_HZ（== TICK_HZ），
+     * TICK_HZ / s_rateHz 最小为 1，interval == 0 分支不可能触发，已删除。 */
+    interval = (uint8_t)(TELEMETRY_TICK_HZ / s_rateHz);
+
+    s_tickAccumulator = (uint8_t)(s_tickAccumulator + elapsedTicks);
+    if (s_tickAccumulator &lt; interval)
+    {
+        return;
+    }
+    s_tickAccumulator = 0U;
+
+    if (s_headerPending != 0U)
+    {
+        Telemetry_SendHeader();
+        s_headerPending = 0U;
+    }
+    Telemetry_SendRow(pressedKeys);
+}</code></pre>
+  <ol class="line-notes">
+    <li><strong>第 199～201 行：</strong>每次 App 有效更新都传入实际累计拍数和当前按键。</li>
+    <li><strong>第 203 行：</strong>100Hz 下每拍 10ms，所以 elapsedTicks×10 加到 32 位时间戳；即使遥测关闭也先累计。uint32 最终约 49.7 天回绕。</li>
+    <li><strong>第 205～208 行：</strong>rate=0 只关闭发送，不冻结时间。</li>
+    <li><strong>第 210～212 行：</strong>用整数 <code>100/rate</code> 得到拍间隔；因为 rate 被限制到 1～100，interval 至少为 1。</li>
+    <li><strong>第 214 行：</strong>把 App 报告的真实 elapsedTicks 加入累计，而不是假定每次一定一拍。</li>
+    <li><strong>第 215～218 行：</strong>未达到间隔就返回。</li>
+    <li><strong>第 219 行：</strong>达到后直接清零；超过门槛的余数不会保留，也不会在一次 Update 内补发多行。</li>
+    <li><strong>第 221～225 行：</strong>若掩码刚改变或刚初始化，先发 H 表头并清 pending。</li>
+    <li><strong>第 226～227 行：</strong>紧接着发送一行与该表头匹配的 D 数据。</li>
+  </ol>
+
+  <h4>4.25 运行时设置与查询</h4>
+  <pre class="source-code"><code data-source="Application/Debug/Telemetry.c" data-lines="370-412">uint8_t Telemetry_SetRateHz(uint8_t rateHz)
+{
+    /* 0 表示关闭遥测，合法；非零时不得超过当前掩码对应的安全上限。 */
+    if ((rateHz != 0U) &amp;&amp; (rateHz &gt; Telemetry_GetMaxRateHz()))
+    {
+        return 0U;
+    }
+    s_rateHz = rateHz;
+    s_tickAccumulator = 0U;
+    return 1U;
+}
+
+uint8_t Telemetry_SetFieldMask(uint16_t mask)
+{
+    uint8_t maxRate;
+
+    if ((mask == 0U) || (mask &gt; TELEMETRY_FIELD_ALL))
+    {
+        return 0U;
+    }
+    s_fieldMask = mask;
+    s_headerPending = 1U;  /* 掩码变化后必须重发表头。 */
+
+    /* 掩码变化后行长可能增加，安全上限随之降低。若当前频率已超过新上限，
+     * 自动降频而非报错——否则用户先设高频率再新增字段时会静默超限。
+     * 先更新 s_fieldMask 再调用 GetMaxRateHz，确保上限基于新掩码计算。 */
+    maxRate = Telemetry_GetMaxRateHz();
+    if (s_rateHz &gt; maxRate)
+    {
+        s_rateHz = maxRate;
+    }
+    return 1U;
+}
+
+uint8_t Telemetry_GetRateHz(void)
+{
+    return s_rateHz;
+}
+
+uint16_t Telemetry_GetFieldMask(void)
+{
+    return s_fieldMask;
+}</code></pre>
+  <ol class="line-notes">
+    <li><strong>第 229～235 行：</strong>设置频率时，0 合法并代表关闭；非零超过当前掩码动态上限则拒绝并返回 0。</li>
+    <li><strong>第 236～239 行：</strong>接受后保存新频率、清节拍累计，让新周期从现在开始，并返回 1。</li>
+    <li><strong>第 241～243 行：</strong>设置字段掩码时准备重新计算上限。</li>
+    <li><strong>第 245～248 行：</strong>掩码不能为 0，也不能大于 0x3F，确保至少有一个已知字段组。</li>
+    <li><strong>第 249～250 行：</strong>先保存新掩码，并标记必须重发表头；否则网页仍会按旧列解释新数据。</li>
+    <li><strong>第 252～255 行：</strong>新增字段会让行变长，所以必须基于新掩码重新计算上限。</li>
+    <li><strong>第 256～259 行：</strong>当前频率若超过新上限就自动降频；删减字段时不会自动升频。</li>
+    <li><strong>第 260～261 行：</strong>合法掩码完成后返回 1。</li>
+    <li><strong>第 263～266 行：</strong>返回当前 rate。</li>
+    <li><strong>第 268～271 行：</strong>返回当前 field mask。</li>
+  </ol>
+
+  <h3>5. 难点函数拆解</h3>
+  <div class="deep-dive">
+    <h4><code>OLED_Update()</code>：为什么先画 RAM 再发屏幕</h4>
+    <p><strong>输入：</strong>已经由 Clear、ShowString、DrawPoint 等函数修改好的 1024 字节 <code>s_buffer</code>。</p>
+    <p><strong>过程：</strong>检查 ready → 逐 page 设置列 0 → 每页 128 字节按 7 字节分块通过 I2C 发送 → 汇总总线错误。</p>
+    <p><strong>输出：</strong>屏幕显示一帧与 RAM 相同的画面。</p>
+    <p><strong>边界条件：</strong>OLED 离线时不发送；任一 I2C 包失败会使后续全屏更新停止。绘图函数本身通常不自动 Update。</p>
+    <p><strong>设计原因：</strong>多个文字和图形先在内存合成，最后统一刷新，避免用户看到“先清屏、再一行行出现”的撕裂过程。</p>
+  </div>
+  <div class="deep-dive">
+    <h4>字段掩码如何保证 H 与 D 一致</h4>
+    <p><strong>输入：</strong><code>s_fieldMask</code> 的低六位。</p>
+    <p><strong>过程：</strong>SendHeader 与 SendRow 按完全相同的位判断、完全相同的 YAW→SENSOR→DISTANCE→SPEED→MODE→K230 顺序追加内容。</p>
+    <p><strong>输出：</strong>每个 H 列名都能与 D 中同位置的值一一对应。</p>
+    <p><strong>边界条件：</strong>一个位可能展开两列，K230 又把三个数压进一列；接收端不能按“掩码位数量”猜列数。掩码改变后必须重发 H。</p>
+    <p><strong>设计原因：</strong>网页以表头为协议事实，可在不修改解析器主流程的情况下选择不同字段组合。</p>
+  </div>
+  <h3>6. 放回总体调用链</h3>
+  <div class="relation-chain">
+    <p><strong>OLED 现场链：</strong>App_Update → DebugDisplay_Update(elapsedTicks) → Heading / Odometry / Graydetect / Key / MotionManager / Mission 查询 → OLED 显存绘制 → OLED_Update → I2C0 → SSD1306</p>
+    <p><strong>遥测串口链：</strong>App_Update → Telemetry_Update(elapsedTicks, pressedKeys) → State / Motion / K230 查询 → H/D CSV → Serial1 阻塞发送 → 无线 DAPLink 串口 → car_debug.html</p>
+    <p><strong>网页解析链：</strong>串口任意分片 → car_debug 缓冲到完整行 → H 更新 columns 并清旧样本 → D 按 columns 解析 → gray 十六进制转换 / mode 文本保留 / k230 冒号展开 → 曲线与 CSV 导出</p>
+  </div>
+  <h3>7. 常见误解与调试提示</h3>
+  <div class="pitfall">
+    <ul>
+      <li><strong>“调用 ShowString 后屏幕马上变”：</strong>错。它只改 RAM 显存；还要调用 OLED_Update 或 OLED_UpdateArea。</li>
+      <li><strong>“字模里的一个字节是一横行”：</strong>错。当前格式是纵向 8 点，一个字节是一列中的 8 个像素。</li>
+      <li><strong>“OLED_Data 有汉字，所以 ShowString 能显示汉字”：</strong>错。当前 UTF-8 分支只显示问号，中文查表尚未接入。</li>
+      <li><strong>“OLED 上 M:IDLE 一定表示没有刹车”：</strong>错。DebugDisplay 没有单独处理 BRAKE，它会落入 IDLE；可结合 Telemetry mode 判断。</li>
+      <li><strong>“请求 23Hz 就精确每秒 23 行，而且仍严格低于 20% 带宽”：</strong>错。当前整数间隔使它约为 25Hz，全字段时约占 21.3%；建议优先使用能整除 100 的频率，或修正调度算法。</li>
+      <li><strong>“字段掩码一个 bit 就对应一列”：</strong>错。sensor/distance/speed 各展开两列，k230 是一个复合列。</li>
+      <li><strong>“提高遥测频率只影响串口”：</strong>错。Serial1 是阻塞发送，行太长或频率太高会拖慢 App、运动控制和 OLED 更新。</li>
+    </ul>
+  </div>
+  <div class="ripple-effect">
+    <h4>修改时需要同步检查</h4>
+    <ul>
+      <li>更改 OLED 分辨率、寻址模式或控制器型号时，要同步修改显存尺寸、8 页循环、坐标裁剪、初始化命令和字模布局。</li>
+      <li>新增 Telemetry 字段必须同时修改字段宏、最坏行长估算、SendHeader、SendRow 和 car_debug 解析/显示；缺一处就会列错位或安全上限失真。</li>
+      <li>修改 UART1 波特率应通过 SysConfig，让 <code>BLUETOOTH_UART_BAUD_RATE</code> 自动同步；仍需重新核对网页串口设置和实际阻塞占比。</li>
+      <li>修改系统 Tick 频率时，要同步修改 <code>TELEMETRY_TICK_HZ</code>、elapsedMs 每拍换算、DebugDisplay 刷新拍数和所有超时常量。</li>
+      <li>若实现中文显示，要决定 UTF-8/GB2312 编码、查表终止规则和未命中回退，并确保 16×16 字符横移 16 像素而非现有 fontSize 6/8。</li>
+    </ul>
+  </div>
+
+  <h3>8. 学完自测</h3>
+  <details class="quiz"><summary>1. 像素 (37,19) 位于显存哪一页、哪一列、哪个 bit？</summary><p><code>page=19/8=2</code>，列为 x=37，组内 bit 为 <code>19&amp;7=3</code>，所以位置是 <code>s_buffer[2][37]</code> 的 bit3。</p></details>
+  <details class="quiz"><summary>2. 为什么 OLED_Data 的 8×16 字符恰好需要 16 字节？</summary><p>每字节纵向表示 8 点；字符宽 8 列、高 16 点，需要上下两页，每页 8 列，所以是 8×2=16 字节。</p></details>
+  <details class="quiz"><summary>3. 为什么字段掩码改变后必须先发 H 表头？</summary><p>掩码会改变数据列的数量和顺序；car_debug 按最近表头解释 D 行。若不重发表头，数据会进入错误列或因列数不匹配被丢弃。</p></details>
+  <details class="quiz"><summary>4. 115200 8N1、20% 预算、全字段 98 字节时，公式为什么给 23Hz，而当前实现为什么仍可能超预算？</summary><p>理论字节率为 115200/10=11520B/s，20% 是 2304B/s，<code>2304/98</code> 整数结果为 23。但发送间隔使用 <code>100/23=4</code>，实际变成约 25Hz，占用约 <code>25×98/11520=21.3%</code>。因此公式与整数拍调度没有形成严格闭环。</p></details>
+  <details class="quiz"><summary>5. ShowString 遇到“你”会怎样？</summary><p>当前实现识别到 UTF-8 高位字节后画一个问号，并跳过该字符的续字节；虽然数据文件含“你”的字模，但尚无查表调用。</p></details>
+
+  <h3>9. 覆盖清单</h3>
+  <ul class="coverage-list">
+    <li><code>Hardware/Display/OLED.h</code>：第 1～45 行完整覆盖，解释全部常量、刷新、文本、数字、位图和几何图形接口。</li>
+    <li><code>Hardware/Display/OLED.c</code>：第 1～395 行完整覆盖所有手写逻辑，包括 I2C 超时/分块、命令与数据控制字节、显存 page/bit、初始化、全屏/局部刷新、裁剪、ASCII/UTF-8、整数/浮点/Printf 和全部图元算法。</li>
+    <li><code>Hardware/Display/OLED_Data.h</code>：第 1～44 行完整覆盖字符集选择、ChineseCell 结构、ASCII/中文/图片外部声明和维护约定。</li>
+    <li><code>Hardware/Display/OLED_Data.c</code>：第 1～399 行按数据文件规则覆盖。逐行展示格式说明、两套 ASCII 表头与代表字符、中文表、默认字形、Diode 和 clang 诊断；第 48～229、252～328 为同构字模数值，不机械复述每字节，已说明索引、页布局、读取和验证方法。</li>
+    <li><code>Application/Debug/DebugDisplay.h</code>：第 1～12 行完整覆盖 10Hz 门槛和三个入口。</li>
+    <li><code>Application/Debug/DebugDisplay.c</code>：第 1～137 行完整覆盖灰度/按键拆位、对齐数值、错误优先状态、标定页、累计节拍和综合页面所有八行内容。</li>
+    <li><code>Application/Debug/Telemetry.h</code>：第 1～30 行完整覆盖默认/硬上限、六组字段掩码和全部设置/查询接口。</li>
+    <li><code>Application/Debug/Telemetry.c</code>：第 1～271 行完整覆盖带宽估算、动态上限、模式文本、表头/数据一致、K230 复合字段、默认初始化、累计毫秒、整数拍调度、运行时设置和查询。</li>
+    <li><code>car_debug.html</code> 第 190～335 行仅作为接收链交叉核对：确认 H/D 行、按表头列名解析、gray 十六进制、mode 文本、k230 冒号展开和导出逻辑；它不是本模块要求逐行覆盖的八个固件文件。</li>
+  </ul>
+</section>

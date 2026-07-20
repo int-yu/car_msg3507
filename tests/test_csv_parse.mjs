@@ -29,13 +29,14 @@ const {
     computeStepMetrics, computeTurnMetrics, analyzeRun, suggestFeedforward,
     downsampleForPlot, computeWheelSteadyStats,
     parseCapabilityReply, estimateRowBytes, estimateMaxRateHz,
-    countCaptureChannels,
+    countCaptureChannels, segmentByMark, summarizeSession,
 } = new Function(
     parserSource + '\nreturn { TelemetryParser, samplesToCsv, buildAiPack,' +
     ' estimateWheelBasePwm, computeStepMetrics, computeTurnMetrics,' +
     ' analyzeRun, suggestFeedforward, downsampleForPlot,' +
     ' computeWheelSteadyStats, parseCapabilityReply, estimateRowBytes,' +
-    ' estimateMaxRateHz, countCaptureChannels };'
+    ' estimateMaxRateHz, countCaptureChannels, segmentByMark,' +
+    ' summarizeSession };'
 )();
 
 let passed = 0;
@@ -510,6 +511,77 @@ check('40. AI 包在使用捕获数据时明确标注采样率与同频事实', 
     const pack = buildAiPack(meta, [{ ms: 0, TL: 0 }, { ms: 10, TL: 300 }]);
     eq(pack.includes('100 Hz'), true, '应标注采样率');
     eq(pack.includes('同频'), true, '应说明与控制环同频');
+});
+
+/* ---- 遥控采集：标记分段与会话摘要 ---- */
+
+check('41. segmentByMark 按标记切分，连续同标记归为一段', () => {
+    const samples = [
+        { ms: 0, mark: 0 }, { ms: 10, mark: 0 },
+        { ms: 20, mark: 1 }, { ms: 30, mark: 1 }, { ms: 40, mark: 1 },
+        { ms: 50, mark: 2 },
+        { ms: 60, mark: 0 },
+    ];
+    const segments = segmentByMark(samples);
+    eq(segments.length, 4, '段数');
+    eq(segments[0].mark, 0, '第一段标记');
+    eq(segments[0].samples.length, 2, '第一段样本数');
+    eq(segments[1].mark, 1, '第二段标记');
+    eq(segments[1].samples.length, 3, '第二段样本数');
+    eq(segments[1].startMs, 20, '第二段起点');
+    eq(segments[1].endMs, 40, '第二段终点');
+    eq(segments[3].mark, 0, '标记归零后另起一段');
+});
+
+check('42. segmentByMark 处理无标记列与空输入', () => {
+    eq(segmentByMark([]).length, 0, '空输入');
+    /* 没有 mark 字段时按 0 处理，全部归一段。 */
+    const noMark = segmentByMark([{ ms: 0 }, { ms: 10 }, { ms: 20 }]);
+    eq(noMark.length, 1, '无标记列时只有一段');
+    eq(noMark[0].mark, 0, '缺省标记为 0');
+});
+
+check('43. summarizeSession 统计时长、实际频率与各标记样本数', () => {
+    /* 20ms 一拍 = 50 Hz，共 6 个样本跨 100ms。 */
+    const samples = [
+        { ms: 0, mark: 0 }, { ms: 20, mark: 1 }, { ms: 40, mark: 1 },
+        { ms: 60, mark: 1 }, { ms: 80, mark: 2 }, { ms: 100, mark: 0 },
+    ];
+    const s = summarizeSession(samples);
+    eq(s.count, 6, '样本数');
+    eq(s.durationMs, 100, '时长');
+    eq(s.rateHz, 50, '实际频率按间隔数而非样本数计算');
+    eq(s.markCounts[1], 3, '标记 1 的样本数');
+    eq(s.markCounts[2], 1, '标记 2 的样本数');
+    eq(s.markCounts[0], 2, '未标记样本数');
+});
+
+check('44. summarizeSession 处理空输入与单样本，不produce NaN', () => {
+    const empty = summarizeSession([]);
+    eq(empty.count, 0, '空输入样本数');
+    eq(empty.rateHz, 0, '空输入频率');
+    eq(empty.durationMs, 0, '空输入时长');
+
+    /* 单样本时长为 0，不能除零得到 Infinity。 */
+    const single = summarizeSession([{ ms: 500, mark: 0 }]);
+    eq(single.count, 1, '单样本数');
+    eq(single.durationMs, 0, '单样本时长');
+    eq(single.rateHz, 0, '单样本频率应为 0 而不是 Infinity');
+    eq(Number.isFinite(single.rateHz), true, '频率必须是有限值');
+
+    eq(summarizeSession(null).count, 0, 'null 输入');
+    eq(summarizeSession(undefined).count, 0, 'undefined 输入');
+});
+
+check('45. 采集数据导出的 CSV 保留 mark 列', () => {
+    const csv = samplesToCsv([
+        { ms: 0, LV: 100, mark: 0 },
+        { ms: 10, LV: 120, mark: 2 },
+    ]);
+    const head = csv.split('\n')[0];
+    eq(head.includes('mark'), true, '表头应含 mark 列');
+    eq(csv.split('\n')[1], '0,100,0', '第一行');
+    eq(csv.split('\n')[2], '10,120,2', '第二行含标记值');
 });
 
 console.log(`\n通过 ${passed}，失败 ${failed}`);

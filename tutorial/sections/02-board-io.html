@@ -1,0 +1,732 @@
+<section class="lesson-section" id="module-02" data-title="板级输入输出与 SysConfig：按键、灯、蜂鸣器、舵机和引脚" data-group="硬件基础">
+  <h2>模块 02：板级输入输出与 SysConfig——让程序真正碰到硬件</h2>
+
+  <div class="module-map">
+    <p><strong>一句话职责：</strong>把“按键是否按下、灯是否点亮、蜂鸣几次、舵机转多少度”翻译成 MSPM0G3507 能执行的 GPIO 与 PWM 操作。</p>
+    <p><strong>上游输入：</strong>实体按键电平、App 的声光提示请求、串口舵机角度命令、100 Hz 系统节拍。</p>
+    <p><strong>下游输出：</strong>KEY1～KEY4 位掩码，LED1/LED2 电平，PB17 蜂鸣器电平，PB8/PB9 两路舵机 PWM。</p>
+    <p><strong>依赖：</strong>SysConfig 生成的 ti_msp_dl_config.h/.c、TI DriverLib、System/Tick。</p>
+    <p><strong>调用者：</strong>Application/Core/App.c 统一初始化和轮询；BluetoothDebug 调舵机；Mission/题目层读取 App 生成的按下沿。</p>
+    <p><strong>总体位置：</strong>main → App → Mission/任务条件；App → Board/Servo → GPIO/TIMA0 → 实体硬件。</p>
+  </div>
+
+  <h3>1. 先看它在整车中的位置</h3>
+  <div class="relation-chain">main() → App_Init() → SYSCFG_DL_init() → LED_Init() / Beep_Init() / Key_Init() / Servo_Init() → GPIO 与 TIMA0</div>
+  <div class="relation-chain">实体按键 → Key_GetPressedMask() → App_Update().pressedEdges → Mission 条件 → 任务状态切换</div>
+  <div class="relation-chain">运动错误 / 初始化错误 → Beep_Long() → App 每 10 ms 调 Beep_Tick() → 蜂鸣器 + LED2</div>
+  <div class="relation-chain">串口 O/D 命令 → Servo_SetVerticalAngle() / Servo_SetHorizontalAngle() → TIMA0 CCP1/CCP0 → 舵机</div>
+  <p>这一层的价值是“隔离硬件细节”。任务层不需要记住 KEY1 在 PA30、蜂鸣器是低电平有效，也不需要自己计算 PWM 比较值；它只面对“键位掩码”“鸣叫次数”和“角度”这些更接近业务的概念。</p>
+
+  <h3>2. 初学者需要先知道</h3>
+  <p><dfn data-term="GPIO">通用输入输出</dfn>可以把芯片引脚当作只有高、低两种状态的开关。输入模式读取外部电平，输出模式则由程序写电平。</p>
+  <p><dfn data-term="SysConfig">外设配置生成工具</dfn>把“这个功能使用哪个定时器、哪根引脚、什么频率”保存到 <code>main.syscfg</code>，构建时再生成 <code>ti_msp_dl_config.h/.c</code>。手写代码使用生成出来的名字，而不是自己填写寄存器地址。</p>
+  <p><dfn data-term="IOMUX">引脚复用器</dfn>像芯片引脚前的“功能选择开关”：同一根物理引脚可能支持 GPIO、串口或定时器输出，IOMUX 决定此刻把哪项内部外设接到它上面。</p>
+  <p><dfn data-term="active-low">低电平有效</dfn>表示逻辑动作发生在电压为低时。本项目按键按下后读到低，蜂鸣器写低后发声；LED 相反，写高点亮。</p>
+  <p><dfn data-term="pull-up">上拉电阻</dfn>像一根很弱的“弹簧”，按键松开时把输入稳定拉到高电平；按下时开关把它接地成为低电平。没有上拉或下拉的输入可能悬空乱跳。</p>
+  <p><dfn data-term="hysteresis">滞回</dfn>让输入从低变高与从高变低采用略有差别的阈值，可增强抗噪能力。当前 <code>Key_Init</code> 明确关闭数字输入滞回，它也没有实现机械按键的时间去抖。</p>
+  <p><dfn data-term="bit-mask">位掩码</dfn>用一个整数的不同二进制位同时保存多个开关状态。本项目 bit0～bit3 分别代表 KEY1～KEY4。</p>
+  <p><dfn data-term="edge">边沿</dfn>不是“现在是否按着”，而是“这一拍是否刚从松开变成按下”。按住不放时电平状态一直为 1，但按下沿只应出现一次。</p>
+  <p><dfn data-term="debounce">去抖</dfn>用于过滤机械触点在几毫秒内反复接通、断开的现象。本项目按键驱动和 App 的边沿公式都没有时间确认式去抖，因此真实按键抖动仍可能制造多个按下沿。</p>
+  <p><dfn data-term="PWM">脉宽调制</dfn>是在固定周期内改变高电平持续时间。舵机通常每 20 ms 接收一个脉冲，用约 500～2500 μs 的脉宽表达目标角度。</p>
+  <p><dfn data-term="static">文件内私有</dfn>修饰函数或全局变量时，使名字只在当前 .c 文件可见。这样别的模块不能绕过公开接口直接改蜂鸣状态或舵机缓存角度。</p>
+  <p>数字后的 U 表示无符号常量，例如 10U。这里的计数、位移和角度都不需要负数，明确无符号类型可以减少隐式有符号转换。</p>
+
+  <h3>3. 文件导读</h3>
+  <ul>
+    <li>Hardware/Board/Key.h 与 Key.c：公开初始化、掩码读取和键号读取；内部统一处理“低电平就是按下”。</li>
+    <li>Hardware/Board/LED.h 与 LED.c：封装 LED 电平逻辑；旧的 RGB 接口兼容映射到 LED2。</li>
+    <li>Hardware/Board/Beep.h 与 Beep.c：以状态机非阻塞地完成短鸣、间隔和长鸣，并同步闪烁 LED2。</li>
+    <li>Application/Servo/Servo.h 与 Servo.c：定义角度、脉宽、机械限位，完成角度到 TIMA0 比较值的换算。</li>
+    <li>main.syscfg：工程的硬件接线表和外设参数源，构建时生成 ti_msp_dl_config.h/.c。</li>
+  </ul>
+
+  <h3>4. 逐行讲解手写代码</h3>
+
+  <h4>4.1 Hardware/Board/Key.h：按键模块公开说明书</h4>
+  <pre class="source-code"><code data-source="Hardware/Board/Key.h" data-lines="1-12">#ifndef __KEY_H
+#define __KEY_H
+
+/* 非阻塞板级按键 GPIO 驱动；按下时读取为低电平。 */
+
+#include &lt;stdint.h&gt;
+
+void Key_Init(void);
+uint8_t Key_GetPressedMask(void);
+uint8_t Key_GetNum(void);
+
+#endif</code></pre>
+  <ol class="line-notes">
+    <li><strong>第 1～2 行：</strong>头文件保护宏，防止同一头文件被重复展开。双下划线开头的名字按 C 规范通常保留给实现，新代码更宜写成 HARDWARE_BOARD_KEY_H。</li>
+    <li><strong>第 4 行：</strong>“非阻塞”说明读取后立即返回，不会在函数里等待用户松手；“低电平按下”是本模块最重要的硬件约定。</li>
+    <li><strong>第 6 行：</strong>引入 uint8_t，它是明确占 8 位的无符号整数，刚好容纳四个按键位。</li>
+    <li><strong>第 8 行：</strong>声明初始化接口，它配置四个输入引脚的上拉特性。</li>
+    <li><strong>第 9 行：</strong>声明多键掩码接口，允许多个键同时为 1。</li>
+    <li><strong>第 10 行：</strong>声明单键号接口；它只返回最小键号，不适合表达组合键。</li>
+    <li><strong>第 12 行：</strong>结束第 1 行的条件编译区域。</li>
+  </ol>
+
+  <h4>4.2 Hardware/Board/Key.c：电平归一化、位掩码与优先键号</h4>
+  <pre class="source-code"><code data-source="Hardware/Board/Key.c" data-lines="1-73">#include "Hardware/Board/Key.h"
+#include "ti_msp_dl_config.h"
+
+static uint8_t Key_ReadPin(uint8_t index)
+{
+    switch (index)
+    {
+        case 1U:
+            return (DL_GPIO_readPins(BUTTON_INPUTS_KEY1_PORT,
+                                     BUTTON_INPUTS_KEY1_PIN) == 0U) ? 1U : 0U;
+        case 2U:
+            return (DL_GPIO_readPins(BUTTON_INPUTS_KEY2_PORT,
+                                     BUTTON_INPUTS_KEY2_PIN) == 0U) ? 1U : 0U;
+        case 3U:
+            return (DL_GPIO_readPins(BUTTON_INPUTS_KEY3_PORT,
+                                     BUTTON_INPUTS_KEY3_PIN) == 0U) ? 1U : 0U;
+        case 4U:
+            return (DL_GPIO_readPins(BUTTON_INPUTS_KEY4_PORT,
+                                     BUTTON_INPUTS_KEY4_PIN) == 0U) ? 1U : 0U;
+        default:
+            return 0U;
+    }
+}
+
+void Key_Init(void)
+{
+    DL_GPIO_initDigitalInputFeatures(
+        BUTTON_INPUTS_KEY1_IOMUX, DL_GPIO_INVERSION_DISABLE,
+        DL_GPIO_RESISTOR_PULL_UP, DL_GPIO_HYSTERESIS_DISABLE,
+        DL_GPIO_WAKEUP_DISABLE);
+    DL_GPIO_initDigitalInputFeatures(
+        BUTTON_INPUTS_KEY2_IOMUX, DL_GPIO_INVERSION_DISABLE,
+        DL_GPIO_RESISTOR_PULL_UP, DL_GPIO_HYSTERESIS_DISABLE,
+        DL_GPIO_WAKEUP_DISABLE);
+    DL_GPIO_initDigitalInputFeatures(
+        BUTTON_INPUTS_KEY3_IOMUX, DL_GPIO_INVERSION_DISABLE,
+        DL_GPIO_RESISTOR_PULL_UP, DL_GPIO_HYSTERESIS_DISABLE,
+        DL_GPIO_WAKEUP_DISABLE);
+    DL_GPIO_initDigitalInputFeatures(
+        BUTTON_INPUTS_KEY4_IOMUX, DL_GPIO_INVERSION_DISABLE,
+        DL_GPIO_RESISTOR_PULL_UP, DL_GPIO_HYSTERESIS_DISABLE,
+        DL_GPIO_WAKEUP_DISABLE);
+}
+
+uint8_t Key_GetPressedMask(void)
+{
+    uint8_t index;
+    uint8_t pressedMask = 0U;
+
+    for (index = 1U; index &lt;= 4U; index++)
+    {
+        if (Key_ReadPin(index) != 0U)
+        {
+            pressedMask |= (uint8_t)(1U &lt;&lt; (index - 1U));
+        }
+    }
+    return pressedMask;
+}
+
+uint8_t Key_GetNum(void)
+{
+    uint8_t index;
+    uint8_t pressedMask = Key_GetPressedMask();
+
+    for (index = 1U; index &lt;= 4U; index++)
+    {
+        if ((pressedMask &amp; (1U &lt;&lt; (index - 1U))) != 0U)
+        {
+            return index;
+        }
+    }
+    return 0U;
+}</code></pre>
+  <ol class="line-notes">
+    <li><strong>第 1～2 行：</strong>先取得本模块声明，再取得 SysConfig 生成的端口、引脚和 IOMUX 宏；源码因此不写死 GPIOA、GPIOB 的寄存器地址。</li>
+    <li><strong>第 4～6 行：</strong>Key_ReadPin 是文件私有辅助函数，输入键号；switch 根据键号选择实际引脚。</li>
+    <li><strong>第 8～10 行：</strong>键号 1 读取 KEY1。DriverLib 返回的是被掩码后的原始引脚位；等于 0 说明低电平，三目运算符把它转换成统一的“按下为 1、松开为 0”。</li>
+    <li><strong>第 11～13 行：</strong>KEY2 完成完全相同的归一化，差别只在 SysConfig 宏所指向的引脚。</li>
+    <li><strong>第 14～16 行：</strong>KEY3 仍保持同一逻辑，因此上层不必知道各键分属哪个 GPIO 端口。</li>
+    <li><strong>第 17～19 行：</strong>KEY4 的处理与前三键一致。</li>
+    <li><strong>第 20～22 行：</strong>传入 1～4 之外的键号时安全返回 0，表示“没有按下”，避免读到未知引脚。</li>
+    <li><strong>第 25～30 行：</strong>初始化 KEY1：不反相、启用内部上拉、关闭施密特滞回、关闭唤醒。这里再次配置是有意的，因为 main.syscfg 的按键段只声明 INPUT，没有声明上拉。</li>
+    <li><strong>第 31～34 行：</strong>给 KEY2 应用相同输入特性。</li>
+    <li><strong>第 35～38 行：</strong>给 KEY3 应用相同输入特性。</li>
+    <li><strong>第 39～42 行：</strong>给 KEY4 应用相同输入特性。四个键松开时都由上拉保持高电平。</li>
+    <li><strong>第 45～48 行：</strong>开始构造按键掩码；index 是循环键号，pressedMask 从全 0 开始累积。</li>
+    <li><strong>第 50～52 行：</strong>循环读取 1、2、3、4 号键；非 0 表示当前键被按下。</li>
+    <li><strong>第 54 行：</strong>1U 左移 index-1 位：KEY1 得到 0001，KEY2 得到 0010，KEY3 得到 0100，KEY4 得到 1000；|= 只把对应位置 1，不会擦掉先前按键。</li>
+    <li><strong>第 56～57 行：</strong>四键扫描完成后返回整个掩码，例如 KEY1+KEY3 同按返回十进制 5。</li>
+    <li><strong>第 60～63 行：</strong>Key_GetNum 先完整读取一次掩码，保证本次选择使用同一份快照。</li>
+    <li><strong>第 65～67 行：</strong>从 KEY1 向 KEY4 测试相应位；&amp; 是按位与，只保留当前关注的那一位。</li>
+    <li><strong>第 69 行：</strong>遇到第一个置位便返回，所以多键同按时键号小的优先。</li>
+    <li><strong>第 72 行：</strong>四位都没置位时返回 0，0 因而是“无键”的约定值。</li>
+  </ol>
+
+  <div class="deep-dive">
+    <h4>难点拆解：电平、按下状态、按下沿不是一回事</h4>
+    <p><strong>输入：</strong>引脚原始电平。上拉结构下，松开为高、按下为低。</p>
+    <p><strong>过程：</strong>Key_ReadPin 先把低电平翻译成逻辑 1；Key_GetPressedMask 再把四个逻辑值装进 bit0～bit3；App 用 current &amp; ~previous 找出 0→1 的新按下位。</p>
+    <p><strong>输出：</strong>pressedKeys 表示“现在按着”，pressedEdges 表示“这一拍刚按下”。</p>
+    <p><strong>边界：</strong>启动时 App 先保存一次当前掩码，所以开机前就按住 KEY1 不会立刻制造启动沿，必须松开再按。</p>
+    <p><strong>设计原因：</strong>Mission 使用边沿可避免长按每 10 ms 都重复触发；但边沿检测不是去抖，触点抖动造成的 1→0→1 仍可能再次成为边沿。</p>
+  </div>
+
+  <div class="deep-dive">
+    <h4>难点拆解：如果要真正去抖，应该在哪一层做</h4>
+    <p><strong>输入：</strong>每 10 ms 读取一次的原始按键掩码。机械触点刚压下时，采样序列可能不是干净的 <code>0,1,1,1</code>，而是 <code>0,1,0,1,1</code>。</p>
+    <p><strong>过程：</strong>为每个键保存“候选状态”和“连续稳定拍数”；只有同一候选状态连续出现例如 2～3 拍，才把它更新为正式状态。随后再用正式状态与上一拍正式状态计算 <code>current &amp; ~previous</code>。</p>
+    <p><strong>输出：</strong>短暂的 1→0→1 抖动不会直接进入 <code>pressedEdges</code>，一次真实按压只产生一个稳定按下沿。</p>
+    <p><strong>边界：</strong>稳定拍数越多，抗抖越强，但按键响应也越慢；100 Hz 下确认 3 拍约增加 20～30 ms 延迟。当前项目没有这些候选值和计数器，因此不能声称已经软件去抖。</p>
+    <p><strong>设计原因：</strong>去抖最好放在 Key 层或 App 的统一采样边界，让 Mission、调试显示等所有调用者拿到同一份稳定按键状态，而不是每个任务各写一套等待逻辑。</p>
+  </div>
+
+  <h4>4.3 Hardware/Board/LED.h：把硬件电平藏在接口后面</h4>
+  <pre class="source-code"><code data-source="Hardware/Board/LED.h" data-lines="1-16">#ifndef __LED_H
+#define __LED_H
+
+/* 板级 LED GPIO 驱动，硬件电平逻辑只在本模块维护。 */
+
+void LED_Init(void);
+void LED1_ON(void);
+void LED1_OFF(void);
+void LED1_Turn(void);
+void LED2_ON(void);
+void LED2_OFF(void);
+void LED2_Turn(void);
+void LED_RGB_ON(void);
+void LED_RGB_OFF(void);
+
+#endif</code></pre>
+  <ol class="line-notes">
+    <li><strong>第 1～2 行：</strong>防止重复包含；同样要知道双下划线保护宏是旧写法，不建议在新模块照抄。</li>
+    <li><strong>第 4 行：</strong>接口使用“ON/OFF”而不是“SET/CLEAR”，调用者无需知道 LED 是高电平还是低电平有效。</li>
+    <li><strong>第 6 行：</strong>初始化后把两个灯置为灭，建立确定的开机状态。</li>
+    <li><strong>第 7～9 行：</strong>LED1 的点亮、熄灭、翻转接口；Turn 表示把当前状态反过来。</li>
+    <li><strong>第 10～12 行：</strong>LED2 的同组三个接口。</li>
+    <li><strong>第 13～14 行：</strong>保留旧 RGB 名称，让旧代码仍能编译，但实际没有独立 RGB 灯。</li>
+    <li><strong>第 16 行：</strong>结束头文件保护。</li>
+  </ol>
+
+  <h4>4.4 Hardware/Board/LED.c：高电平点灯与兼容映射</h4>
+  <pre class="source-code"><code data-source="Hardware/Board/LED.c" data-lines="1-19">#include "Hardware/Board/LED.h"
+#include "ti_msp_dl_config.h"
+
+void LED_Init(void)
+{
+    LED1_OFF();
+    LED2_OFF();
+}
+
+void LED1_ON(void)  { DL_GPIO_setPins(BOARD_OUTPUTS_LED1_PORT, BOARD_OUTPUTS_LED1_PIN); }
+void LED1_OFF(void) { DL_GPIO_clearPins(BOARD_OUTPUTS_LED1_PORT, BOARD_OUTPUTS_LED1_PIN); }
+void LED1_Turn(void) { DL_GPIO_togglePins(BOARD_OUTPUTS_LED1_PORT, BOARD_OUTPUTS_LED1_PIN); }
+void LED2_ON(void)  { DL_GPIO_setPins(BOARD_OUTPUTS_LED2_PORT, BOARD_OUTPUTS_LED2_PIN); }
+void LED2_OFF(void) { DL_GPIO_clearPins(BOARD_OUTPUTS_LED2_PORT, BOARD_OUTPUTS_LED2_PIN); }
+void LED2_Turn(void) { DL_GPIO_togglePins(BOARD_OUTPUTS_LED2_PORT, BOARD_OUTPUTS_LED2_PIN); }
+
+/* 兼容旧接口：本板只有两个独立状态 LED，RGB 接口映射到 LED2。 */
+void LED_RGB_ON(void)  { LED2_ON(); }
+void LED_RGB_OFF(void) { LED2_OFF(); }</code></pre>
+  <ol class="line-notes">
+    <li><strong>第 1～2 行：</strong>本模块接口加上 SysConfig 生成的 LED 端口/引脚宏。</li>
+    <li><strong>第 4～8 行：</strong>初始化只是调用公开的 OFF 接口，避免在两个地方重复维护有效电平规则。</li>
+    <li><strong>第 10 行：</strong>setPins 把 LED1 对应输出位置高，因此可以判断本板 LED1 是高电平点亮。</li>
+    <li><strong>第 11 行：</strong>clearPins 把同一位置低，LED1 熄灭。</li>
+    <li><strong>第 12 行：</strong>togglePins 读取输出锁存状态并翻转，常用于心跳灯；它不是“保证点亮”。</li>
+    <li><strong>第 13～15 行：</strong>LED2 同样是置高亮、清零灭、翻转状态。</li>
+    <li><strong>第 17～19 行：</strong>注释说明硬件只有两个状态灯；RGB_ON/OFF 只是转调 LED2，旧调用者不会报错，但也不会得到彩色效果。</li>
+  </ol>
+
+  <div class="pitfall">
+    <h4>常见误解：LED2 有两个“主人”</h4>
+    <p>Beep_On/Off 会同步调用 LED2_ON/OFF，而 LED_RGB_ON/OFF 也映射到 LED2。若任务代码在鸣叫期间直接控制 LED2，最后状态取决于谁后执行。需要长期独立状态灯时，应分配另一引脚或在更高层统一仲裁，不能把兼容接口误认为第三只灯。</p>
+  </div>
+
+  <h4>4.5 Hardware/Board/Beep.h：非阻塞声光提示契约</h4>
+  <pre class="source-code"><code data-source="Hardware/Board/Beep.h" data-lines="1-19">#ifndef __BEEP_H
+#define __BEEP_H
+
+/* 蜂鸣器与 LED 提示驱动；每个 100 Hz 系统节拍调用一次 Beep_Tick。 */
+
+#include &lt;stdint.h&gt;
+
+/* 声光提示 —— PB17 低电平驱动蜂鸣器，并同步控制 LED2。
+ * 非阻塞：Beep_Notify() 触发后由 Beep_Tick()(100 Hz)推进，不阻塞控制循环。
+ */
+void Beep_Init(void);
+void Beep_On(void);
+void Beep_Off(void);
+
+void Beep_Notify(uint8_t times); /* 触发 times 次短鸣并同步闪烁 LED2 */
+void Beep_Long(void);            /* 停车长鸣 */
+void Beep_Tick(void);            /* 100Hz 节拍调用，推进鸣叫状态机 */
+
+#endif</code></pre>
+  <ol class="line-notes">
+    <li><strong>第 1～2 行：</strong>蜂鸣头文件保护宏。</li>
+    <li><strong>第 4 行：</strong>声明时间基准：Beep_Tick 每秒调用 100 次，也就是每次代表 10 ms。</li>
+    <li><strong>第 6 行：</strong>引入 uint8_t，鸣叫次数最大可表达 255。</li>
+    <li><strong>第 8～10 行：</strong>明确 PB17 低电平有效，并说明“触发”和“推进”分离；发起鸣叫不会用延时卡住电机、姿态和任务更新。</li>
+    <li><strong>第 11～13 行：</strong>初始化、立即打开硬件、立即关闭硬件三个基础接口。On/Off 只改引脚，不代表清除整个状态机。</li>
+    <li><strong>第 15 行：</strong>请求 times 次短鸣；times 是次数，不是毫秒。</li>
+    <li><strong>第 16 行：</strong>请求一次停车长鸣。</li>
+    <li><strong>第 17 行：</strong>节拍推进函数必须由周期调用者持续调用。</li>
+    <li><strong>第 19 行：</strong>结束头文件保护。</li>
+  </ol>
+
+  <h4>4.6 Hardware/Board/Beep.c：三个状态和三个计数器</h4>
+  <pre class="source-code"><code data-source="Hardware/Board/Beep.c" data-lines="1-74">#include "Hardware/Board/Beep.h"
+#include "Hardware/Board/LED.h"
+#include "ti_msp_dl_config.h"
+
+#define BEEP_SHORT_TICKS 10U
+#define BEEP_GAP_TICKS   8U
+#define BEEP_LONG_TICKS  60U
+
+typedef enum { BEEP_IDLE = 0, BEEP_ON, BEEP_GAP } BeepState_t;
+
+static BeepState_t s_state;
+static uint8_t s_remaining;
+static uint16_t s_ticks;
+static uint16_t s_onTicks;
+
+void Beep_On(void)
+{
+    DL_GPIO_clearPins(BOARD_OUTPUTS_BEEP_PORT, BOARD_OUTPUTS_BEEP_PIN);
+    LED2_ON();
+}
+
+void Beep_Off(void)
+{
+    DL_GPIO_setPins(BOARD_OUTPUTS_BEEP_PORT, BOARD_OUTPUTS_BEEP_PIN);
+    LED2_OFF();
+}
+
+void Beep_Init(void)
+{
+    s_state = BEEP_IDLE;
+    s_remaining = 0U;
+    s_ticks = 0U;
+    s_onTicks = BEEP_SHORT_TICKS;
+    Beep_Off();
+}
+
+void Beep_Notify(uint8_t times)
+{
+    if (times == 0U) return;
+    s_remaining = times;
+    s_onTicks = BEEP_SHORT_TICKS;
+    s_ticks = s_onTicks;
+    s_state = BEEP_ON;
+    Beep_On();
+}
+
+void Beep_Long(void)
+{
+    s_remaining = 1U;
+    s_onTicks = BEEP_LONG_TICKS;
+    s_ticks = s_onTicks;
+    s_state = BEEP_ON;
+    Beep_On();
+}
+
+void Beep_Tick(void)
+{
+    if (s_state == BEEP_IDLE) return;
+    if ((s_ticks &gt; 0U) &amp;&amp; (--s_ticks &gt; 0U)) return;
+
+    if (s_state == BEEP_ON)
+    {
+        Beep_Off();
+        if (s_remaining &gt; 0U) s_remaining--;
+        if (s_remaining == 0U) s_state = BEEP_IDLE;
+        else { s_ticks = BEEP_GAP_TICKS; s_state = BEEP_GAP; }
+    }
+    else
+    {
+        s_ticks = s_onTicks;
+        s_state = BEEP_ON;
+        Beep_On();
+    }
+}</code></pre>
+  <ol class="line-notes">
+    <li><strong>第 1～3 行：</strong>分别取得蜂鸣接口、LED2 接口和 SysConfig 引脚宏。</li>
+    <li><strong>第 5～7 行：</strong>时间参数是节拍数。100 Hz 下，短鸣 10×10 ms=100 ms，间隔 8×10 ms=80 ms，长鸣 60×10 ms=600 ms。</li>
+    <li><strong>第 9 行：</strong>枚举定义状态机：IDLE 空闲、ON 正在鸣、GAP 两次鸣叫间静音。后两个值自动依次为 1、2。</li>
+    <li><strong>第 11 行：</strong>s_state 保存当前状态；static 使其仅本文件可见，并具有整个程序运行期寿命。</li>
+    <li><strong>第 12 行：</strong>s_remaining 是还未完成的鸣叫段数，包含当前正在响的一段。</li>
+    <li><strong>第 13 行：</strong>s_ticks 是当前 ON 或 GAP 阶段还剩多少个 10 ms。</li>
+    <li><strong>第 14 行：</strong>s_onTicks 记住“每一段响多久”，短鸣为 10，长鸣为 60。</li>
+    <li><strong>第 16～20 行：</strong>Beep_On 清零 PB17。因为蜂鸣器低有效，clear 才是发声；随后点亮 LED2，形成同步声光提示。</li>
+    <li><strong>第 22～26 行：</strong>Beep_Off 把 PB17 置高使其静音，再熄灭 LED2。蜂鸣器与 LED 的有效电平恰好相反。</li>
+    <li><strong>第 28～34 行：</strong>初始化清空状态、次数、倒计时，设置默认短鸣长度，并实际关闭硬件，避免上电误响。</li>
+    <li><strong>第 37～39 行：</strong>请求 0 次直接返回。注意它不是“取消鸣叫”；已有序列不会被清除。</li>
+    <li><strong>第 40～44 行：</strong>保存次数和短鸣长度，装载第一段倒计时，进入 ON 并立即发声。若当前已有序列，这组赋值会从头覆盖它。</li>
+    <li><strong>第 47～53 行：</strong>长鸣被表示成“只剩 1 段、每段 60 tick”的特殊序列，复用了同一状态机。</li>
+    <li><strong>第 56～58 行：</strong>空闲时立即返回，绝大多数正常节拍只付出一次比较成本。</li>
+    <li><strong>第 59 行：</strong>若倒计时仍大于 0，先 --s_ticks 再判断。减完仍大于 0 就继续等待；减到 0 则在本次调用处理状态转换。前置 s_ticks&gt;0 还防止无符号数从 0 下溢到 65535。</li>
+    <li><strong>第 61～63 行：</strong>ON 到期时先关闭声光输出。</li>
+    <li><strong>第 64 行：</strong>一段鸣叫完成后，把剩余段数减 1；额外的 &gt;0 检查避免下溢。</li>
+    <li><strong>第 65 行：</strong>没有剩余段便回到 IDLE，序列完成。</li>
+    <li><strong>第 66 行：</strong>还有段数就装载 8 tick 静音间隔并进入 GAP。花括号内两条语句属于同一 else。</li>
+    <li><strong>第 68～72 行：</strong>这里实际处理 GAP 到期：重新装载 s_onTicks，切回 ON，再打开蜂鸣器和 LED2。</li>
+    <li><strong>第 73～74 行：</strong>结束分支和函数；下一拍继续从顶部按新状态推进。</li>
+  </ol>
+
+  <div class="deep-dive">
+    <h4>难点拆解：Beep_Notify(3) 的完整时间线</h4>
+    <p><strong>输入：</strong>times=3。</p>
+    <p><strong>过程：</strong>立即响第 1 段 100 ms → 静音 80 ms → 第 2 段 100 ms → 静音 80 ms → 第 3 段 100 ms → IDLE。</p>
+    <p><strong>输出：</strong>蜂鸣器响三次，LED2 同步闪三次，总时长约 460 ms。</p>
+    <p><strong>边界：</strong>期间再次调用 Beep_Notify 或 Beep_Long 会覆盖剩余计数；只调用 Beep_Off 只会暂时关硬件，状态机下一次转换仍可能再次打开。</p>
+    <p><strong>设计原因：</strong>把“等待”拆成每 10 ms 一步，主循环可以继续执行姿态、里程计、运动控制和 Mission。</p>
+  </div>
+
+  <h4>4.7 Application/Servo/Servo.h：角度、脉宽和两个轴的约定</h4>
+  <pre class="source-code"><code data-source="Application/Servo/Servo.h" data-lines="1-32">#ifndef APPLICATION_SERVO_SERVO_H
+#define APPLICATION_SERVO_SERVO_H
+
+#include &lt;stdint.h&gt;
+
+/*
+ * TIMA0 舵机 PWM 映射：
+ *   PB8 / CCP0 -&gt; 横向舵机
+ *   PB9 / CCP1 -&gt; 纵向舵机
+ */
+#define SERVO_PHYSICAL_RANGE_DEG          270U
+#define SERVO_MIN_PULSE_US                500U
+#define SERVO_MAX_PULSE_US                2500U
+#define SERVO_FRAME_US                    20000U
+
+/* 两个轴分别定义限位，便于按实测机械行程独立调整。 */
+#define SERVO_VERTICAL_MIN_ANGLE          0U
+#define SERVO_VERTICAL_MAX_ANGLE          270U
+#define SERVO_VERTICAL_DEFAULT_ANGLE      135U
+
+#define SERVO_HORIZONTAL_MIN_ANGLE        0U
+#define SERVO_HORIZONTAL_MAX_ANGLE        270U
+#define SERVO_HORIZONTAL_DEFAULT_ANGLE    135U
+
+void Servo_Init(void);
+void Servo_SetVerticalAngle(uint16_t angle);
+void Servo_SetHorizontalAngle(uint16_t angle);
+uint16_t Servo_GetVerticalAngle(void);
+uint16_t Servo_GetHorizontalAngle(void);
+void Servo_Reset(void);
+
+#endif</code></pre>
+  <ol class="line-notes">
+    <li><strong>第 1～2 行：</strong>使用包含目录的长保护宏，名字冲突概率比 __SERVO_H 更低。</li>
+    <li><strong>第 4 行：</strong>角度接口使用 uint16_t，可表达 0～65535；实际有效范围由限幅函数收窄。</li>
+    <li><strong>第 6～10 行：</strong>注释固定两个物理通道：TIMA0 CCP0/PB8 横向，CCP1/PB9 纵向。CCP 是定时器捕获/比较通道。</li>
+    <li><strong>第 11 行：</strong>舵机物理标称范围 270°，是角度线性换算的分母。</li>
+    <li><strong>第 12～13 行：</strong>0° 对应 500 μs，270° 对应 2500 μs，中间角度线性插值。</li>
+    <li><strong>第 14 行：</strong>每帧 20000 μs，即 20 ms；频率为 1/0.02 s=50 Hz。</li>
+    <li><strong>第 16～19 行：</strong>纵向轴独立的最小、最大、默认角。默认 135° 正好位于 0～270°中点。</li>
+    <li><strong>第 21～23 行：</strong>横向轴有另一组独立限位；当前数值相同，但以后可以按机械干涉分别改成不同范围。</li>
+    <li><strong>第 25 行：</strong>初始化默认角并启动 TIMA0 计数器。</li>
+    <li><strong>第 26～27 行：</strong>两个设置接口都接受“角度”，而不是要求调用者计算微秒或寄存器值。</li>
+    <li><strong>第 28～29 行：</strong>读取的是软件最后接受的目标角，不是舵机真实位置；本系统没有舵机位置反馈。</li>
+    <li><strong>第 30 行：</strong>复位接口把两个轴恢复默认角。</li>
+    <li><strong>第 32 行：</strong>结束头文件保护。</li>
+  </ol>
+
+  <h4>4.8 Application/Servo/Servo.c：编译期护栏、限幅和线性换算</h4>
+  <pre class="source-code"><code data-source="Application/Servo/Servo.c" data-lines="1-84">#include "Application/Servo/Servo.h"
+#include "ti_msp_dl_config.h"
+
+#if (GPIO_SERVO_PWM_C0_PIN != DL_GPIO_PIN_8) || \
+    (GPIO_SERVO_PWM_C1_PIN != DL_GPIO_PIN_9)
+#error "SERVO_PWM must use TIMA0 CCP0/PB8 and CCP1/PB9"
+#endif
+
+#if (SERVO_PWM_INST_CLK_FREQ != 1000000)
+#error "Servo pulse conversion requires a 1 MHz TIMA0 clock"
+#endif
+
+static uint16_t s_verticalAngle = SERVO_VERTICAL_DEFAULT_ANGLE;
+static uint16_t s_horizontalAngle = SERVO_HORIZONTAL_DEFAULT_ANGLE;
+
+static uint16_t Servo_ClampAngle(uint16_t angle,
+                                 uint16_t minimum,
+                                 uint16_t maximum)
+{
+    if (angle &lt; minimum)
+    {
+        return minimum;
+    }
+    if (angle &gt; maximum)
+    {
+        return maximum;
+    }
+    return angle;
+}
+
+static uint16_t Servo_AngleToCompare(uint16_t angle)
+{
+    uint32_t pulseWidthUs = SERVO_MIN_PULSE_US;
+
+    pulseWidthUs += ((uint32_t)angle *
+                     (SERVO_MAX_PULSE_US - SERVO_MIN_PULSE_US)) /
+                    SERVO_PHYSICAL_RANGE_DEG;
+
+    return (uint16_t)(SERVO_FRAME_US - pulseWidthUs);
+}
+
+static void Servo_WriteCompare(uint16_t angle, DL_TIMER_CC_INDEX channel)
+{
+    DL_TimerA_setCaptureCompareValue(
+        SERVO_PWM_INST, Servo_AngleToCompare(angle), channel);
+}
+
+void Servo_Init(void)
+{
+    Servo_Reset();
+    DL_TimerA_startCounter(SERVO_PWM_INST);
+}
+
+void Servo_SetVerticalAngle(uint16_t angle)
+{
+    s_verticalAngle = Servo_ClampAngle(angle,
+                                       SERVO_VERTICAL_MIN_ANGLE,
+                                       SERVO_VERTICAL_MAX_ANGLE);
+    Servo_WriteCompare(s_verticalAngle, GPIO_SERVO_PWM_C1_IDX);
+}
+
+void Servo_SetHorizontalAngle(uint16_t angle)
+{
+    s_horizontalAngle = Servo_ClampAngle(angle,
+                                         SERVO_HORIZONTAL_MIN_ANGLE,
+                                         SERVO_HORIZONTAL_MAX_ANGLE);
+    Servo_WriteCompare(s_horizontalAngle, GPIO_SERVO_PWM_C0_IDX);
+}
+
+uint16_t Servo_GetVerticalAngle(void)
+{
+    return s_verticalAngle;
+}
+
+uint16_t Servo_GetHorizontalAngle(void)
+{
+    return s_horizontalAngle;
+}
+
+void Servo_Reset(void)
+{
+    Servo_SetVerticalAngle(SERVO_VERTICAL_DEFAULT_ANGLE);
+    Servo_SetHorizontalAngle(SERVO_HORIZONTAL_DEFAULT_ANGLE);
+}</code></pre>
+  <ol class="line-notes">
+    <li><strong>第 1～2 行：</strong>取得舵机公开参数和 SysConfig 生成的 TIMA0、通道、引脚、时钟宏。</li>
+    <li><strong>第 4～7 行：</strong>预处理器在编译前核对 CCP0 必须是 PB8、CCP1 必须是 PB9。若有人只在 SysConfig 改了引脚却没同步设计约定，#error 会主动停止构建。</li>
+    <li><strong>第 9～11 行：</strong>第二个编译期护栏要求 TIMA0 正好 1 MHz。后面的公式把“一个计数”直接当作“1 μs”，时钟一变，所有舵机角度都会错。</li>
+    <li><strong>第 13～14 行：</strong>两个文件私有变量缓存目标角，静态初始化为 135°。它们是软件命令记录，不是传感器反馈。</li>
+    <li><strong>第 16～18 行：</strong>限幅辅助函数接收原角度、下限和上限，因而两个轴可以复用。</li>
+    <li><strong>第 20～23 行：</strong>角度小于下限就返回下限，防止舵机撞机械边界。</li>
+    <li><strong>第 24～27 行：</strong>角度超过上限就返回上限。</li>
+    <li><strong>第 28～29 行：</strong>处在合法区间时原样返回。</li>
+    <li><strong>第 31～33 行：</strong>换算函数先令脉宽等于最小值 500 μs；pulseWidthUs 用 32 位，给乘法留足空间。</li>
+    <li><strong>第 35～37 行：</strong>增加 angle×(2500-500)/270。先把 angle 强制转为 uint32_t 很关键：最大中间值 270×2000=540000，超过 uint16_t 的 65535。整数除法会舍去小数微秒。</li>
+    <li><strong>第 39 行：</strong>返回 20000-pulseWidthUs，而不是直接返回脉宽。这与 SysConfig 生成的边沿对齐输出动作有关：比较值越靠近周期末尾，高脉冲越短。</li>
+    <li><strong>第 42～45 行：</strong>Servo_WriteCompare 把“换算”和 DriverLib 写寄存器集中在一处；channel 参数决定写 CCP0 还是 CCP1。</li>
+    <li><strong>第 48～51 行：</strong>初始化先写入两个默认角，再启动计数器。SysConfig 只完成外设配置，生成配置中定时器初始保持停止。</li>
+    <li><strong>第 54～58 行：</strong>纵向设置先用纵向上下限夹住输入，并把实际采用值保存到 s_verticalAngle。</li>
+    <li><strong>第 59 行：</strong>纵向轴写 C1，也就是 CCP1/PB9，和头文件映射一致。</li>
+    <li><strong>第 62～66 行：</strong>横向设置使用横向独立限位并缓存。</li>
+    <li><strong>第 67 行：</strong>横向轴写 C0，也就是 CCP0/PB8。</li>
+    <li><strong>第 70～73 行：</strong>纵向 getter 返回缓存目标角，不访问定时器也不等待舵机。</li>
+    <li><strong>第 75～78 行：</strong>横向 getter 同理。</li>
+    <li><strong>第 80～83 行：</strong>复位不重复写底层逻辑，而是调用两个公开 setter，因此限幅、缓存和通道写入规则仍只有一份。</li>
+    <li><strong>第 84 行：</strong>结束复位函数。</li>
+  </ol>
+
+  <div class="deep-dive">
+    <h4>难点拆解：135°为什么得到比较值 18500</h4>
+    <p><strong>输入：</strong>angle=135°。</p>
+    <p><strong>过程：</strong>脉宽=500+135×2000÷270=1500 μs；1 MHz 下 1 tick=1 μs；比较值=20000-1500=18500。</p>
+    <p><strong>输出：</strong>20 ms 帧中产生约 1.5 ms 有效脉冲，也就是 7.5% 占空比，对应中位角。</p>
+    <p><strong>边界：</strong>0°→500 μs→比较值 19500；270°→2500 μs→比较值 17500。输入超出各轴限位会先被夹住。</p>
+    <p><strong>设计原因：</strong>上层只处理角度；具体计数方向和比较寄存器表示法封装在 Servo_AngleToCompare 内。</p>
+  </div>
+
+  <h4>4.9 main.syscfg：按配置类别读，不把生成脚本当业务代码背诵</h4>
+  <p>main.syscfg 是 SysConfig 的配置脚本。构建工具读取它并生成 ti_msp_dl_config.h/.c；手写模块使用的是生成宏和初始化函数。下面只选与本模块直接相关的配置段。</p>
+
+  <pre class="source-code"><code data-source="main.syscfg" data-lines="1-6">/**
+ * These arguments were used when this file was generated. They will be automatically applied on subsequent loads
+ * via the GUI or CLI. Run CLI with '--help' for additional information on how to override these arguments.
+ * @cliArgs --device "MSPM0G350X" --part "Default" --package "LQFP-64(PM)" --product "mspm0_sdk@2.10.00.04"
+ * @v2CliArgs --device "MSPM0G3507" --package "LQFP-64(PM)" --product "mspm0_sdk@2.10.00.04"
+ * @versions {"tool":"1.26.2+4477"}</code></pre>
+  <ol class="line-notes">
+    <li><strong>第 1～6 行：</strong>记录目标芯片 MSPM0G3507、LQFP-64 封装、SDK 与工具版本。引脚求解必须知道封装，因为同名芯片的不同封装未必引出相同管脚。</li>
+  </ol>
+
+  <pre class="source-code"><code data-source="main.syscfg" data-lines="33-43">GPIO1.$name                          = "BOARD_OUTPUTS";
+GPIO1.associatedPins.create(7);
+GPIO1.associatedPins[0].$name        = "LED1";
+GPIO1.associatedPins[0].assignedPort = "PORTB";
+GPIO1.associatedPins[0].assignedPin  = "23";
+GPIO1.associatedPins[0].pin.$assign  = "PB23";
+GPIO1.associatedPins[1].$name        = "LED2";
+GPIO1.associatedPins[1].pin.$assign  = "PB27";
+GPIO1.associatedPins[2].$name        = "BEEP";
+GPIO1.associatedPins[2].initialValue = "SET";
+GPIO1.associatedPins[2].pin.$assign  = "PB17";</code></pre>
+  <ol class="line-notes">
+    <li><strong>第 33～34 行：</strong>创建名为 BOARD_OUTPUTS 的七引脚输出组；生成宏会带上这个组名前缀。</li>
+    <li><strong>第 35～38 行：</strong>LED1 映射到 PB23。assignedPort/assignedPin 与 pin.$assign 表达同一最终选择，属于 SysConfig 的保存格式，不需要在运行时执行。</li>
+    <li><strong>第 39～40 行：</strong>LED2 映射到 PB27。</li>
+    <li><strong>第 41～43 行：</strong>蜂鸣器映射 PB17，并把初值设为 SET，也就是上电初始化为高。由于蜂鸣器低电平有效，高电平初值意味着“先保持安静”。</li>
+  </ol>
+
+  <pre class="source-code"><code data-source="main.syscfg" data-lines="80-93">GPIO4.$name                         = "BUTTON_INPUTS";
+GPIO4.associatedPins.create(4);
+GPIO4.associatedPins[0].$name       = "KEY1";
+GPIO4.associatedPins[0].direction   = "INPUT";
+GPIO4.associatedPins[0].pin.$assign = "PA30";
+GPIO4.associatedPins[1].$name       = "KEY2";
+GPIO4.associatedPins[1].direction   = "INPUT";
+GPIO4.associatedPins[1].pin.$assign = "PB11";
+GPIO4.associatedPins[2].$name       = "KEY3";
+GPIO4.associatedPins[2].direction   = "INPUT";
+GPIO4.associatedPins[2].pin.$assign = "PB14";
+GPIO4.associatedPins[3].$name       = "KEY4";
+GPIO4.associatedPins[3].direction   = "INPUT";
+GPIO4.associatedPins[3].pin.$assign = "PB10";</code></pre>
+  <ol class="line-notes">
+    <li><strong>第 80～81 行：</strong>创建四引脚输入组 BUTTON_INPUTS。</li>
+    <li><strong>第 82～84 行：</strong>KEY1 是输入 PA30。</li>
+    <li><strong>第 85～87 行：</strong>KEY2 是输入 PB11。</li>
+    <li><strong>第 88～90 行：</strong>KEY3 是输入 PB14。</li>
+    <li><strong>第 91～93 行：</strong>KEY4 是输入 PB10。</li>
+    <li><strong>特别注意：</strong>这 14 行没有 internalResistor="PULL_UP"。SysConfig 生成初始化会先按“无内部电阻”配置，而 App 随后调用 Key_Init，在 Key.c 第 27～42 行重新配置为上拉；最终运行状态以上拉为准。</li>
+  </ol>
+
+  <pre class="source-code"><code data-source="main.syscfg" data-lines="159-187">PWM2.$name                              = "SERVO_PWM";
+PWM2.clockPrescale                      = 32;
+PWM2.timerCount                         = 20000;
+PWM2.peripheral.$assign                 = "TIMA0";
+PWM2.peripheral.ccp0Pin.$assign         = "PB8";
+PWM2.peripheral.ccp1Pin.$assign         = "PB9";
+PWM2.PWM_CHANNEL_0.$name                = "SERVO_HORIZONTAL";
+PWM2.PWM_CHANNEL_0.dutyCycle            = 7.5;
+PWM2.PWM_CHANNEL_1.$name                = "SERVO_VERTICAL";
+PWM2.PWM_CHANNEL_1.dutyCycle            = 7.5;
+PWM2.ccp0PinConfig.direction            = scripting.forceWrite("OUTPUT");
+PWM2.ccp0PinConfig.hideOutputInversion  = scripting.forceWrite(false);
+PWM2.ccp0PinConfig.onlyInternalResistor = scripting.forceWrite(false);
+PWM2.ccp0PinConfig.passedPeripheralType = scripting.forceWrite("Digital");
+PWM2.ccp0PinConfig.$name                = "ti_driverlib_gpio_GPIOPinGeneric6";
+PWM2.ccp1PinConfig.direction            = scripting.forceWrite("OUTPUT");
+PWM2.ccp1PinConfig.hideOutputInversion  = scripting.forceWrite(false);
+PWM2.ccp1PinConfig.onlyInternalResistor = scripting.forceWrite(false);
+PWM2.ccp1PinConfig.passedPeripheralType = scripting.forceWrite("Digital");
+PWM2.ccp1PinConfig.$name                = "ti_driverlib_gpio_GPIOPinGeneric7";
+
+const SYSCTL                 = scripting.addModule("/ti/driverlib/SYSCTL", {}, false);
+SYSCTL.forceDefaultClkConfig = true;
+SYSCTL.clockTreeEn           = true;
+
+SYSTICK.period          = 320000;
+SYSTICK.periodEnable    = true;
+SYSTICK.systickEnable   = true;
+SYSTICK.interruptEnable = true;</code></pre>
+  <ol class="line-notes">
+    <li><strong>第 159～162 行：</strong>舵机 PWM 使用 TIMA0，时钟预分频因子 32，周期计数 20000。</li>
+    <li><strong>第 163～168 行：</strong>CCP0/PB8 命名为横向，CCP1/PB9 命名为纵向；两路初始占空比 7.5%，即 20 ms×7.5%=1.5 ms 的中位脉冲。</li>
+    <li><strong>第 169～178 行：</strong>强制把两个复用引脚作为数字外设输出，不使用内部电阻，也不做输出反相。</li>
+    <li><strong>第 180～182 行：</strong>SYSCTL 采用芯片默认时钟配置并启用时钟树显示。32 MHz 数值没有直接写在这几行；生成结果 Debug/ti_msp_dl_config.h 第 77 行给出 CPUCLK_FREQ=32000000。</li>
+    <li><strong>时钟推导：</strong>默认 BUSCLK 32 MHz ÷ 32=1 MHz，所以 TIMA0 每个计数正好 1 μs；20000 计数就是 20 ms/50 Hz。生成宏 SERVO_PWM_INST_CLK_FREQ 也为 1000000，Servo.c 第 9～11 行会编译期核对。</li>
+    <li><strong>第 184～187 行：</strong>SysTick 周期 320000 个 32 MHz 时钟，320000÷32000000=0.01 s，因此产生 10 ms、100 Hz 系统节拍；Beep_Tick 的所有时长都建立在这里。</li>
+  </ol>
+
+  <h4>板级引脚与有效电平速查</h4>
+  <table>
+    <thead><tr><th>功能</th><th>引脚/通道</th><th>有效逻辑</th><th>配置证据</th></tr></thead>
+    <tbody>
+      <tr><td>LED1</td><td>PB23 GPIO</td><td>高亮、低灭</td><td>main.syscfg 35～38；LED.c 10～12</td></tr>
+      <tr><td>LED2</td><td>PB27 GPIO</td><td>高亮、低灭</td><td>main.syscfg 39～40；LED.c 13～15</td></tr>
+      <tr><td>蜂鸣器</td><td>PB17 GPIO</td><td>低响、高停</td><td>main.syscfg 41～43；Beep.c 16～25</td></tr>
+      <tr><td>KEY1</td><td>PA30 GPIO</td><td>上拉，按下为低</td><td>main.syscfg 82～84；Key.c 27～30</td></tr>
+      <tr><td>KEY2</td><td>PB11 GPIO</td><td>上拉，按下为低</td><td>main.syscfg 85～87；Key.c 31～34</td></tr>
+      <tr><td>KEY3</td><td>PB14 GPIO</td><td>上拉，按下为低</td><td>main.syscfg 88～90；Key.c 35～38</td></tr>
+      <tr><td>KEY4</td><td>PB10 GPIO</td><td>上拉，按下为低</td><td>main.syscfg 91～93；Key.c 39～42</td></tr>
+      <tr><td>横向舵机</td><td>PB8 / TIMA0 CCP0</td><td>500～2500 μs PWM</td><td>main.syscfg 163、165～166；Servo.c 62～67</td></tr>
+      <tr><td>纵向舵机</td><td>PB9 / TIMA0 CCP1</td><td>500～2500 μs PWM</td><td>main.syscfg 164、167～168；Servo.c 54～59</td></tr>
+    </tbody>
+  </table>
+
+  <h3>5. 难点函数拆解</h3>
+  <div class="deep-dive">
+    <h4>位掩码和边沿公式</h4>
+    <p><strong>输入：</strong>current=0101，表示 KEY1、KEY3 正按下；previous=0001，表示上一拍只有 KEY1。</p>
+    <p><strong>过程：</strong>~previous 的低四位为 1110；current &amp; ~previous=0100。</p>
+    <p><strong>输出：</strong>只有 KEY3 是这一拍新按下。KEY1 虽仍按着，却不会重复成为边沿。</p>
+    <p><strong>边界：</strong>uint8_t 强制转换把按位取反后的结果限制回 8 位；任务只解释低四位。</p>
+    <p><strong>设计原因：</strong>用一条位运算同时处理四个键，比四套 if 和四个 previous 变量更整齐。</p>
+  </div>
+  <div class="deep-dive">
+    <h4>三个时间系统必须一致</h4>
+    <p><strong>CPU/SysTick：</strong>32 MHz 与 320000 周期产生 10 ms App 节拍。</p>
+    <p><strong>蜂鸣器：</strong>把 10 ms 当作一个 tick，所以宏 10、8、60 才分别是 100、80、600 ms。</p>
+    <p><strong>舵机：</strong>TIMA0 另经 32 分频得到 1 MHz，把一个 PWM 计数解释为 1 μs。</p>
+    <p><strong>边界：</strong>修改时钟不是局部变化；若只改 SysConfig，不同步 SysTick 周期或舵机换算，任务速度、鸣叫时间或舵机角度都会改变。</p>
+  </div>
+
+  <h3>6. 放回总体调用链</h3>
+  <p>main.c 第 10～12 行先 App_Init、再 Mission_Init、最后开中断；第 14～19 行循环中只有 App_Update 返回有效节拍时才调用 Mission_Update。</p>
+  <p>Application/Core/App.c 第 39 行先执行 SYSCFG_DL_init，让生成代码配置端口和外设；第 42～47 行依次初始化 LED、Beep、Key、传感器、电机和 Servo。顺序很重要：Key_Init 会覆盖生成代码里按键“无上拉”的默认输入特性，Servo_Init 会在写默认比较值后启动 TIMA0。</p>
+  <p>App.c 第 68 行保存开机按键快照；第 99～103 行每个有效节拍生成 pressedKeys 和 pressedEdges。App_UpdateContext 把它们交给 Mission，Accomplish/25H.c 第 112～124 行用 KEY1 的 pressedEdges 启动巡线，因此长按不重复触发。</p>
+  <p>App.c 第 23～32 行检测新的 MotionManager 错误并触发 Beep_Long；第 142～145 行按 elapsedTicks 次数补调 Beep_Tick，即使主循环偶尔一次积累了多个系统节拍，蜂鸣时间也不会少走。</p>
+  <p>Application/Comms/BluetoothDebug.c 第 243～255 行把 O 命令送到纵向 setter、D 命令送到横向 setter，再用 getter 回报最终限幅后的角度。目前舵机主要服务 UART1 调试命令；任务层若将来需要转动舵机，也应调用同一 setter，不能直接写 TIMA0。</p>
+
+  <div class="relation-chain">SysConfig 引脚/时钟 → ti_msp_dl_config 生成宏 → 板级驱动 → App 事件上下文 → Mission/题目条件</div>
+  <div class="relation-chain">Mission/MotionManager 错误 → App_ReportMotionError → Beep_Long → Beep_Tick → PB17 + LED2</div>
+  <div class="relation-chain">UART1 调试命令（历史文件名 BluetoothDebug） → 角度限幅 → 微秒脉宽 → TIMA0 比较值 → PB8/PB9</div>
+
+  <h3>7. 常见误解与调试提示</h3>
+  <div class="pitfall">
+    <p><strong>按键取反了？</strong>没有。硬件按下为低，Key_ReadPin 主动把低转换成业务层的 1。调试时同时观察原始 GPIO 和 pressedMask，二者语义相反。</p>
+  </div>
+  <div class="pitfall">
+    <p><strong>边沿等于去抖？</strong>不等于。边沿只比较相邻采样；若触点在 10 ms 采样窗口间抖成 1、0、1，可能触发两次。需要可靠单次操作时，应增加连续若干拍稳定确认或冷却窗口。</p>
+  </div>
+  <div class="pitfall">
+    <p><strong>Beep_Notify(0) 能停止吗？</strong>不能，它直接返回。Beep_Off 也只改输出、不清状态。若确需取消序列，应设计单独的 Beep_Cancel 接口，同时清 s_state、s_remaining 和 s_ticks。</p>
+  </div>
+  <div class="pitfall">
+    <p><strong>Servo_Get... 是真实角度吗？</strong>不是，它只返回最后保存的目标值。舵机掉电、堵转或接线错误时，这个值仍会看起来正常。</p>
+  </div>
+
+  <div class="ripple-effect">
+    <h4>修改联动：改一个参数前要检查哪里</h4>
+    <ul>
+      <li>改按键引脚：同步 main.syscfg，引脚宏会重新生成；确认 Key_Init 使用对应 IOMUX 宏，任务使用的 bit0～bit3 语义通常不变。</li>
+      <li>改按键有效电平：必须同步 Key_ReadPin 的 ==0U 判断和上下拉方向，否则会出现松开即按下。</li>
+      <li>改 SysTick 周期：同步 Beep 的 tick 常量、App 的 TICK_DT 以及所有任务时间参数。</li>
+      <li>改 CPU/BUSCLK 或 TIMA0 分频：保持 SERVO_PWM_INST_CLK_FREQ=1 MHz，或重写角度到计数的换算；编译期 #error 会阻止悄悄出错。</li>
+      <li>改舵机限位：优先按两个轴分别缩小 MIN/MAX；不要只扩大到物理范围之外，否则公式会产生超出 500～2500 μs 的脉宽。</li>
+      <li>改 LED2 用途：检查 Beep.c 和 LED_RGB 兼容接口，因为它们都会覆盖 LED2 状态。</li>
+    </ul>
+  </div>
+
+  <h3>8. 学完自测</h3>
+  <details class="quiz"><summary>KEY1 与 KEY3 同时按下时，Key_GetPressedMask 和 Key_GetNum 分别返回什么？</summary><p>掩码 bit0+bit2=00000101，即 5；Key_GetNum 从小到大扫描，返回 1。</p></details>
+  <details class="quiz"><summary>为什么 App 使用 pressedEdges，而不是直接用 pressedKeys 启动任务？</summary><p>pressedKeys 在长按期间每拍都为 1；pressedEdges 只在松开→按下的那一拍为 1，可避免长按重复启动。不过它本身不负责机械去抖。</p></details>
+  <details class="quiz"><summary>Beep_Notify(2) 时 s_remaining 在何时减少？</summary><p>每一段 ON 状态到期、执行 Beep_Off 后减少。第一次从 2 变 1并进入 GAP，第二次从 1 变 0并进入 IDLE。</p></details>
+  <details class="quiz"><summary>135°为什么对应 1500 μs，而写入比较寄存器的是 18500？</summary><p>线性公式得到 1500 μs 脉宽；当前边沿对齐输出用 20000-脉宽作为比较值，所以是 18500。</p></details>
+  <details class="quiz"><summary>按键的上拉在 main.syscfg 里配置了吗？</summary><p>按键段只配置 INPUT 和引脚，没有 internalResistor；Key_Init 在运行时用 DL_GPIO_RESISTOR_PULL_UP 重新配置四个键。</p></details>
+
+  <h3>9. 覆盖清单</h3>
+  <ul class="coverage-list">
+    <li>Hardware/Board/Key.h：第 1～12 行，全文原文与逐行说明。</li>
+    <li>Hardware/Board/Key.c：第 1～73 行，全文原文；覆盖低有效读取、上拉、位掩码、移位和最低键号优先。</li>
+    <li>Hardware/Board/LED.h：第 1～16 行，全文原文与接口语义。</li>
+    <li>Hardware/Board/LED.c：第 1～19 行，全文原文；覆盖置位、清零、翻转和 RGB→LED2 兼容映射。</li>
+    <li>Hardware/Board/Beep.h：第 1～19 行，全文原文与 100 Hz 非阻塞契约。</li>
+    <li>Hardware/Board/Beep.c：第 1～74 行，全文原文；覆盖宏、枚举、静态计数、ON/GAP/IDLE 状态转换和下溢保护。</li>
+    <li>Application/Servo/Servo.h：第 1～32 行，全文原文；覆盖 PWM 映射、脉宽、帧长、双轴限位和公开接口。</li>
+    <li>Application/Servo/Servo.c：第 1～84 行，全文原文；覆盖编译期检查、限幅、32 位插值、比较值、通道与复位。</li>
+    <li>main.syscfg：按生成配置阅读，摘录第 1～6、33～43、80～93、159～187 行；解释目标芯片、LED/蜂鸣 GPIO、按键输入与运行时上拉、CPU/SysTick、TIMA0 舵机 PWM 和引脚映射。其余传感器、编码器、I2C、电机 PWM、UART 配置属于其他教程模块，未机械逐值复述。</li>
+  </ul>
+</section>

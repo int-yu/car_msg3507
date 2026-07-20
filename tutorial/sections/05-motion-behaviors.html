@@ -1,0 +1,2452 @@
+<section class="lesson-section" id="module-05" data-title="直行、巡线、转向与运动管理" data-group="运动控制">
+  <h2>05　直行、巡线、转向与运动管理：把任务意图变成左右轮目标</h2>
+
+  <div class="module-map">
+    <h3>先看它在整车中的位置</h3>
+    <dl>
+      <dt>一句话职责</dt>
+      <dd>把 Mission 的“走 500 mm、沿黑线走、转到 90°、短暂刹车”等动作请求，转换为每个控制周期的左右轮速度目标，并保证同一时刻只有一种行为控制电机。</dd>
+      <dt>上游输入</dt>
+      <dd>Mission/蓝牙命令给出的距离、速度、终点速度和角度；Heading、Odometry、Graydetect 提供的航向、路程、轮速与灰度状态；App 提供的秒单位 <code>dt</code>。</dd>
+      <dt>下游输出</dt>
+      <dd>提交给 <code>MotionWheel</code> 的左右轮目标速度与附加 PWM 修正；同时向 Mission 返回 busy、finished、error 和当前模式。</dd>
+      <dt>依赖模块</dt>
+      <dd><code>MotionWheel</code>、<code>PID</code>、<code>Heading</code>、<code>Odometry</code>、<code>Graydetect</code>、底层 <code>Motor</code>。</dd>
+      <dt>主要调用者</dt>
+      <dd>题目状态机与通用 Mission、蓝牙调试命令；<code>App_Update</code> 每拍调用 <code>MotionManager_Update(dt)</code>。</dd>
+      <dt>总体位置</dt>
+      <dd><code>Mission → MotionManager → Straight / Line / Nav → MotionWheel → Motor</code>。状态数据则沿 <code>Heading/Odometry/Graydetect → 行为模块</code> 反向反馈。</dd>
+    </dl>
+  </div>
+
+  <h3>初学者需要先知道</h3>
+  <div class="concept-grid">
+    <p><dfn data-term="runtime context">运行时上下文</dfn>：一个结构体集中保存动作进行到哪里、目标是什么、上次算到什么。像一张正在执行订单的工作单，函数每拍都读写同一张单。</p>
+    <p><dfn data-term="state machine">状态机</dfn>：用 IDLE、RUNNING、COMPLETED、ERROR 等离散状态限制代码路径。状态不是文字说明，而是决定本拍允许执行什么的开关。</p>
+    <p><dfn data-term="parameter validation">参数校验</dfn>：启动或初始化前检查 NaN、无穷大、负时间、上下限矛盾等。控制器收到非法浮点数时，结果可能不是简单的“跑慢一点”，而是 PWM 完全不可预测。</p>
+    <p><dfn data-term="speed ramp / profile">速度斜坡 / 速度规划</dfn>：目标速度不瞬间跳变，而是按加速度每拍逐渐接近。这样能减少打滑、电流冲击和姿态摆动。</p>
+    <p><dfn data-term="clamp">限幅</dfn>：把数值限制在最小值和最大值之间。请求 1500 mm/s 而上限是 1000 时，输出 1000。</p>
+    <p><dfn data-term="PD controller">PD 控制器</dfn>：P 根据当前误差回正，D 根据误差变化趋势抑制摆动；本模块航向 PID 的 I 为 0，因此实际是 PD。</p>
+    <p><dfn data-term="feedforward and feedback">前馈与反馈</dfn>：行为层先给出想要的轮速，MotionWheel 再用编码器反馈修正 PWM；Straight 还额外给左右相反的航向 trim。</p>
+    <p><dfn data-term="absolute / relative yaw">绝对/相对航向</dfn>：TurnTo 的目标是连续航向坐标中的一个数；TurnBy 是“当前航向 + 增量”。两者都不自动选择 ±180° 的最短路。</p>
+    <p><dfn data-term="settling">稳定确认</dfn>：误差进入容差一次不算完成，必须轮速已经降到零且连续多拍仍在容差内。</p>
+    <p><dfn data-term="mutual exclusion">互斥所有权</dfn>：Straight、Line、Nav 都能写双轮目标，但管理器一次只更新一个。否则三个控制器会在同一拍抢电机。</p>
+    <p><dfn data-term="busy / finished">忙碌 / 已到分段终点</dfn>：它们不一定互为反义词。Straight 的 CONTINUING 表示分段距离完成、可让 Mission 转移，但仍持续输出终点轮速，所以 busy 与 finished 同时为 1。</p>
+  </div>
+
+  <h3>文件导读</h3>
+  <table>
+    <thead><tr><th>文件</th><th>角色</th><th>核心输入与输出</th></tr></thead>
+    <tbody>
+      <tr><td><code>MotionStraight.h/.c</code></td><td>定距直行行为</td><td>读左右里程与航向；输出同向轮速、航向差速 trim、剩余距离和完成状态。</td></tr>
+      <tr><td><code>MotionLine.h/.c</code></td><td>灰度巡线行为</td><td>读五路灰度位图；输出按权重增减后的左右轮速，并把连续全白解释为正常结束。</td></tr>
+      <tr><td><code>Nav.h/.c</code></td><td>原地转向行为</td><td>读连续航向；输出大小相同、方向相反的左右轮速，直到角度稳定。</td></tr>
+      <tr><td><code>MotionManager.h/.c</code></td><td>统一调度与状态适配</td><td>接收 Mission 动作请求，只更新当前模式，统一映射启动错误，并管理独立的释放/刹车阶段。</td></tr>
+    </tbody>
+  </table>
+  <p>三个行为都调用同一个 <code>MotionWheel</code>，因为轮速 PID、前馈、PWM 限幅、里程反馈和电机方向规则必须只有一份实现。行为层回答“左右轮应该多快”，轮速层回答“为了达到这个速度该给多少 PWM”。</p>
+
+  <h3>逐行讲解</h3>
+
+  <h4>Application/Control/MotionStraight.h：直行参数、状态和公共接口</h4>
+  <pre class="source-code"><code data-source="Application/Control/MotionStraight.h" data-lines="1-71">#ifndef APPLICATION_CONTROL_MOTION_STRAIGHT_H
+#define APPLICATION_CONTROL_MOTION_STRAIGHT_H
+
+#include &lt;stdint.h&gt;
+
+/* 直线行驶参数：换电池、电机、轮胎或路面后需要重新检查。 */
+#define MOTION_STRAIGHT_HEADING_KP              6.0f   /* 偏航回正力度。 */
+#define MOTION_STRAIGHT_HEADING_KD              0.4f   /* 抑制航向左右摆动。 */
+#define MOTION_STRAIGHT_HEADING_LIMIT_PWM        700.0f /* 航向差速修正上限。 */
+#define MOTION_STRAIGHT_CORRECTION_SIGN          (-1)   /* 越修越偏时翻转符号。 */
+#define MOTION_STRAIGHT_MAX_SPEED_MMPS           1000.0f /* 直线请求速度上限。 */
+#define MOTION_STRAIGHT_ACCELERATION_MMPS2       300.0f /* 起步加速度。 */
+#define MOTION_STRAIGHT_DECELERATION_START_RATIO (5.0f / 6.0f) /* 按全程比例进入匀减速。 */
+#define MOTION_STRAIGHT_DISTANCE_TOLERANCE_MM    5.0f   /* 到达距离允许误差。 */
+#define MOTION_STRAIGHT_ZERO_SPEED_HOLD_SECONDS  0.05f  /* 到零速目标后继续闭环保持的时间。 */
+
+/* 运行时可调参数：上电恢复上方 #define 默认值，由 K 命令经 Param 模块读写。
+ * Kp/Kd 写入后必须调用 MotionStraight_ApplyHeadingTunings() 才会进入 PID；
+ * 加速度每次规划直接读取变量。调好后把数值写回 #define 固化。 */
+extern float MotionStraight_TuneHeadingKp;
+extern float MotionStraight_TuneHeadingKd;
+extern float MotionStraight_TuneAccelerationMMps2;
+
+typedef enum
+{
+    MOTION_STRAIGHT_STATE_IDLE = 0,
+    MOTION_STRAIGHT_STATE_RUNNING,
+    MOTION_STRAIGHT_STATE_CONTINUING,
+    MOTION_STRAIGHT_STATE_COMPLETED,
+    MOTION_STRAIGHT_STATE_ERROR
+} MotionStraight_State_t;
+
+typedef enum
+{
+    MOTION_STRAIGHT_ERROR_NONE = 0,
+    MOTION_STRAIGHT_ERROR_HEADING_OFFLINE,
+    MOTION_STRAIGHT_ERROR_ODOMETRY_INVALID,
+    MOTION_STRAIGHT_ERROR_UPDATE_PERIOD_INVALID,
+    MOTION_STRAIGHT_ERROR_WHEEL
+} MotionStraight_Error_t;
+
+typedef enum
+{
+    MOTION_STRAIGHT_RESULT_OK = 0,
+    MOTION_STRAIGHT_RESULT_BUSY,
+    MOTION_STRAIGHT_RESULT_INVALID_ARGUMENT,
+    MOTION_STRAIGHT_RESULT_NOT_CONFIGURED,
+    MOTION_STRAIGHT_RESULT_SENSOR_NOT_READY
+} MotionStraight_Result_t;
+
+MotionStraight_Result_t MotionStraight_Init(void);
+MotionStraight_Result_t MotionStraight_Start(
+    float distanceMM, float speedMMps, float endSpeedMMps);
+MotionStraight_Result_t MotionStraight_StartForward(
+    uint32_t distanceMM, float speedMMps, float endSpeedMMps);
+MotionStraight_Result_t MotionStraight_StartBackward(
+    uint32_t distanceMM, float speedMMps, float endSpeedMMps);
+void MotionStraight_Update(float dt);
+void MotionStraight_Stop(void);
+
+/* 把 MotionStraight_TuneHeading* 写入航向 PID，运行中调用也安全。 */
+void MotionStraight_ApplyHeadingTunings(void);
+
+uint8_t MotionStraight_IsConfigured(void);
+uint8_t MotionStraight_IsBusy(void);
+uint8_t MotionStraight_IsFinished(void);
+MotionStraight_State_t MotionStraight_GetState(void);
+MotionStraight_Error_t MotionStraight_GetError(void);
+float MotionStraight_GetRemainingDistanceMM(void);
+
+#endif</code></pre>
+  <ol class="line-notes">
+    <li><strong>第 1～2、71 行：</strong>头文件保护，避免同一声明被重复展开。</li>
+    <li><strong>第 4 行：</strong>引入 <code>uint8_t/uint32_t</code>；公开的前进、后退距离用非负 32 位整数表示。</li>
+    <li><strong>第 6～9 行：</strong>先提醒实车参数会随机械与供电变化；随后定义航向 PD 的 P、D 增益和修正 PWM 上限。</li>
+    <li><strong>第 10～12 行：</strong>修正方向符号只允许 ±1；最大速度限制请求；加速度单位是 mm/s²，决定速度每秒最多增加多少。</li>
+    <li><strong>第 13～15 行：</strong>在全程 5/6 位置开始减速；距离容差定义“可认为到点”的范围；零终点速度还要保持 0.05 s 闭环。</li>
+    <li><strong>第 17～22 行：</strong>把航向 Kp/Kd 与加速度暴露为运行时变量；K6～K8 写入后立即用于控制，调好再回写默认宏。</li>
+    <li><strong>第 24～31 行：</strong>声明直线状态枚举：IDLE、RUNNING、CONTINUING、COMPLETED、ERROR。</li>
+    <li><strong>第 26～29 行：</strong>错误枚举区分无错误、航向离线。</li>
+    <li><strong>第 30～33 行：</strong>继续区分里程标定无效、dt 无效和轮速层失败；这些是运行中故障。</li>
+    <li><strong>第 35～38 行：</strong>启动结果枚举用于函数立即返回：OK、当前模块忙。</li>
+    <li><strong>第 39～42 行：</strong>其余启动失败原因是参数非法、尚未配置、传感器未就绪。</li>
+    <li><strong>第 44～46 行：</strong>初始化；通用 Start 使用带符号距离，正数前进、负数后退，并接收巡航速度与分段终点速度。</li>
+    <li><strong>第 47～50 行：</strong>Forward/Backward 是更易用的包装器，调用者只传非负距离，内部负责加正负号。</li>
+    <li><strong>第 58～59 行：</strong>Update 每拍推进速度规划和控制；Stop 立即释放当前直线行为。</li>
+    <li><strong>第 61～62 行：</strong>运行中更新航向 PID 参数时，通过 apply 函数写入实际 PID 对象。</li>
+    <li><strong>第 64～69 行：</strong>查询配置、忙碌、完成、状态、错误和带方向剩余距离。</li>
+  </ol>
+
+  <h4>Application/Control/MotionLine.h：巡线权重、丢线时间与状态</h4>
+  <pre class="source-code"><code data-source="Application/Control/MotionLine.h" data-lines="1-55">#ifndef APPLICATION_CONTROL_MOTION_LINE_H
+#define APPLICATION_CONTROL_MOTION_LINE_H
+
+#include &lt;stdint.h&gt;
+
+/* 五路灰度巡线参数：灰度返回 1 表示检测到黑线。 */
+#define MOTION_LINE_OUTER_WEIGHT        6       /* 左右最外侧灰度权重的绝对值。 */
+#define MOTION_LINE_INNER_WEIGHT        3       /* 左右内侧灰度权重的绝对值。 */
+#define MOTION_LINE_MAX_ADJUST_RATIO    0.2f    /* 最外侧压线时，每侧增减当前速度的比例。 */
+#define MOTION_LINE_MAX_SPEED_MMPS      1000.0f /* MotionLine_Start() 允许的巡线速度上限。 */
+#define MOTION_LINE_LOST_CONFIRM_TICKS  50U     /* 连续全白 50 个控制节拍后确认丢线。 */
+
+/* 运行时可调参数：上电恢复默认值，由 K 命令经 Param 模块读写，写入即生效。
+ * TuneWeightKd 是权重变化率阻尼（mm/s 每 权重单位/s），默认 0 时行为与
+ * 纯离散权重差速完全一致；弧线上左右摆动明显时少量增加以抑制震荡。 */
+extern float MotionLine_TuneMaxAdjustRatio;
+extern float MotionLine_TuneWeightKd;
+
+typedef enum
+{
+    MOTION_LINE_STATE_IDLE = 0,
+    MOTION_LINE_STATE_RUNNING,
+    MOTION_LINE_STATE_FINISHED,
+    MOTION_LINE_STATE_ERROR
+} MotionLine_State_t;
+
+typedef enum
+{
+    MOTION_LINE_ERROR_NONE = 0,
+    MOTION_LINE_ERROR_UPDATE_PERIOD_INVALID,
+    MOTION_LINE_ERROR_WHEEL
+} MotionLine_Error_t;
+
+typedef enum
+{
+    MOTION_LINE_RESULT_OK = 0,
+    MOTION_LINE_RESULT_BUSY,
+    MOTION_LINE_RESULT_INVALID_ARGUMENT,
+    MOTION_LINE_RESULT_NOT_CONFIGURED
+} MotionLine_Result_t;
+
+MotionLine_Result_t MotionLine_Init(void);
+/* 持续巡线，直到调用 MotionLine_Stop() 或确认丢线。 */
+MotionLine_Result_t MotionLine_Start(float speedMMps);
+void MotionLine_Update(float dt);
+void MotionLine_Stop(void);
+
+uint8_t MotionLine_IsConfigured(void);
+uint8_t MotionLine_IsBusy(void);
+uint8_t MotionLine_IsFinished(void);
+MotionLine_State_t MotionLine_GetState(void);
+MotionLine_Error_t MotionLine_GetError(void);
+float MotionLine_GetLineError(void);
+
+#endif</code></pre>
+  <ol class="line-notes">
+    <li><strong>第 1～4 行：</strong>头文件保护并引入固定宽度整数。</li>
+    <li><strong>第 6～8 行：</strong>灰度逻辑 1 代表黑线；外侧权重 6、内侧 3，离中心越远修正越强。</li>
+    <li><strong>第 9～11 行：</strong>最大权重时每侧轮速最多增减巡航速度的 20%；请求速度上限 1000；连续全白 50 拍才确认丢线。</li>
+    <li><strong>第 13～17 行：</strong><code>lra</code> 是最大差速比例，<code>lkd</code> 是权重变化率阻尼；默认 lkd=0 时行为与原纯离散权重算法一致。</li>
+    <li><strong>第 19～25 行：</strong>巡线状态从空闲进入运行；FINISHED 表示确认丢线后的正常终点，ERROR 表示控制失败。</li>
+    <li><strong>第 21～26 行：</strong>运行错误只区分 dt 非法和 MotionWheel 失败；“丢线”不是错误。</li>
+    <li><strong>第 28～34 行：</strong>启动结果区分成功、忙、参数非法和未初始化。</li>
+    <li><strong>第 36～40 行：</strong>初始化；Start 后持续巡线；Update 每拍修正；Stop 主动结束。</li>
+    <li><strong>第 42～44 行：</strong>查询配置、忙碌和正常结束。</li>
+    <li><strong>第 45～47 行：</strong>读取当前状态、错误和最近一次有效灰度权重误差。</li>
+    <li><strong>第 55 行：</strong>结束头文件保护。</li>
+  </ol>
+
+  <h4>Application/Control/Nav.h：连续航向坐标中的转向接口</h4>
+  <pre class="source-code"><code data-source="Application/Control/Nav.h" data-lines="1-67">#ifndef APPLICATION_CONTROL_NAV_H
+#define APPLICATION_CONTROL_NAV_H
+
+#include &lt;stdint.h&gt;
+
+/* 双轮反向转向参数：若角度误差持续增大，只翻转方向符号。 */
+#define NAV_MAX_TURN_SPEED_MMPS   200.0f /* 每侧轮允许的最高转向速度。 */
+#define NAV_MIN_TURN_SPEED_MMPS   40.0f  /* 接近目标角时的最低轮速。 */
+#define NAV_SLOWDOWN_ANGLE_DEG    45.0f  /* 进入低速区的剩余角度。 */
+#define NAV_ACCELERATION_MMPS2    150.0f /* 起转轮速上升斜率。 */
+#define NAV_DECELERATION_MMPS2    600.0f /* 接近目标时的轮速下降斜率。 */
+#define NAV_ANGLE_TOLERANCE_DEG   2.0f   /* 到达目标角的允许误差。 */
+#define NAV_SETTLE_TICKS          3U     /* 连续稳定 30 ms 后完成。 */
+#define NAV_ROTATION_COMMAND_SIGN 1      /* 误差增大时翻转为 -1。 */
+
+/* 运行时可调参数：上电恢复上方 #define 默认值，由 K 命令经 Param 模块读写。
+ * 每拍直接读取变量，写入即生效。调好后把数值写回 #define 固化。 */
+extern float Nav_TuneMaxTurnSpeedMMps;
+extern float Nav_TuneMinTurnSpeedMMps;
+extern float Nav_TuneSlowdownAngleDeg;
+extern float Nav_TuneAngleToleranceDeg;
+
+typedef enum
+{
+    NAV_STATE_IDLE = 0,
+    NAV_STATE_RUNNING,
+    NAV_STATE_COMPLETED,
+    NAV_STATE_ERROR
+} Nav_State_t;
+
+typedef enum
+{
+    NAV_ERROR_NONE = 0,
+    NAV_ERROR_HEADING_OFFLINE,
+    NAV_ERROR_UPDATE_PERIOD_INVALID,
+    NAV_ERROR_WHEEL
+} Nav_Error_t;
+
+typedef enum
+{
+    NAV_RESULT_OK = 0,
+    NAV_RESULT_BUSY,
+    NAV_RESULT_INVALID_ARGUMENT,
+    NAV_RESULT_NOT_CONFIGURED,
+    NAV_RESULT_SENSOR_NOT_READY
+} Nav_Result_t;
+
+Nav_Result_t Nav_Init(void);
+
+/* To：转到 Heading 连续累计角中的绝对角度，不做 ±180° 归一化。 */
+Nav_Result_t Nav_StartTo(float targetYawDeg, float speedMMps);
+
+/* By：从当前角度再旋转 deltaYawDeg，可填写正数、负数或多圈角度。 */
+Nav_Result_t Nav_StartBy(float deltaYawDeg, float speedMMps);
+
+void Nav_Update(float dt);
+void Nav_Stop(void);
+
+uint8_t Nav_IsConfigured(void);
+uint8_t Nav_IsBusy(void);
+uint8_t Nav_IsFinished(void);
+Nav_State_t Nav_GetState(void);
+Nav_Error_t Nav_GetError(void);
+float Nav_GetTargetYawDeg(void);
+float Nav_GetAngleErrorDeg(void);
+
+#endif</code></pre>
+  <ol class="line-notes">
+    <li><strong>第 1～4 行：</strong>头文件保护和固定宽度整数。</li>
+    <li><strong>第 6～9 行：</strong>转向使用左右轮反向；限制每侧最大、最小轮速，并从剩余 45° 开始按角度线性降速。</li>
+    <li><strong>第 10～14 行：</strong>加速较缓、减速较快；误差 ±2° 内视为到角候选，连续 3 拍才完成；方向不对时只需改 sign。</li>
+    <li><strong>第 16～22 行：</strong>Nav 状态为 IDLE、RUNNING、COMPLETED、ERROR。</li>
+    <li><strong>第 24～30 行：</strong>运行错误区分航向离线、dt 非法与轮速层故障。</li>
+    <li><strong>第 32～39 行：</strong>启动结果还区分忙、参数非法、未配置和传感器未就绪。</li>
+    <li><strong>第 41 行：</strong>初始化 Nav 与共享轮速层。</li>
+    <li><strong>第 43～44 行：</strong>StartTo 使用 Heading 的连续累计坐标；当前 370° 转到 90° 会按误差 -280° 转，不自动改成 +80°。</li>
+    <li><strong>第 46～47 行：</strong>StartBy 在当前角度上加带符号增量，可请求负角或多圈。</li>
+    <li><strong>第 49～50 行：</strong>周期更新和主动停止。</li>
+    <li><strong>第 52～58 行：</strong>公开配置、忙碌、完成、状态、错误、目标角和实时误差查询。</li>
+    <li><strong>第 60 行：</strong>结束头文件保护。</li>
+  </ol>
+
+  <h4>Application/Control/MotionManager.h：统一模式、统一错误、统一入口</h4>
+  <pre class="source-code"><code data-source="Application/Control/MotionManager.h" data-lines="1-76">#ifndef APPLICATION_CONTROL_MOTION_MANAGER_H
+#define APPLICATION_CONTROL_MOTION_MANAGER_H
+
+#include &lt;stdint.h&gt;
+
+/*
+ * 定距动作已经按速度曲线减速至零后，先保持 PWM 释放一小段时间，
+ * 再短暂调用 Motor_Brake()。前段释放避免从驱动状态直接切到全制动，
+ * 后段主动刹车用于抑制车辆残余滑行。
+ */
+#define MOTION_MANAGER_BRAKE_RELEASE_SECONDS  0.01f  /* 平滑过渡的 PWM 释放时间。 */
+#define MOTION_MANAGER_BRAKE_HOLD_SECONDS     0.05f  /* 主动刹车保持时间；过大可能导致顿挫。 */
+
+/* SPEED 调试模式允许的目标轮速上限，与直线请求速度上限一致。 */
+#define MOTION_MANAGER_SPEED_MAX_MMPS         1000.0f
+
+/* 统一运动调度层：任意时刻只允许一个上层运动模块控制双轮。 */
+typedef enum
+{
+    MOTION_MANAGER_MODE_IDLE = 0,
+    MOTION_MANAGER_MODE_STRAIGHT,
+    MOTION_MANAGER_MODE_LINE,
+    MOTION_MANAGER_MODE_TURN,
+    MOTION_MANAGER_MODE_BRAKE,
+    MOTION_MANAGER_MODE_SPEED
+} MotionManager_Mode_t;
+
+typedef enum
+{
+    MOTION_MANAGER_ERROR_NONE = 0,
+    MOTION_MANAGER_ERROR_INIT,
+    MOTION_MANAGER_ERROR_STRAIGHT,
+    MOTION_MANAGER_ERROR_LINE,
+    MOTION_MANAGER_ERROR_TURN,
+    MOTION_MANAGER_ERROR_BRAKE,
+    MOTION_MANAGER_ERROR_SPEED
+} MotionManager_Error_t;
+
+typedef enum
+{
+    MOTION_MANAGER_RESULT_OK = 0,
+    MOTION_MANAGER_RESULT_INVALID_ARGUMENT,
+    MOTION_MANAGER_RESULT_NOT_CONFIGURED,
+    MOTION_MANAGER_RESULT_SENSOR_NOT_READY,
+    MOTION_MANAGER_RESULT_START_FAILED
+} MotionManager_Result_t;
+
+MotionManager_Result_t MotionManager_Init(void);
+
+MotionManager_Result_t MotionManager_StartForward(
+    uint32_t distanceMM, float speedMMps, float endSpeedMMps);
+MotionManager_Result_t MotionManager_StartBackward(
+    uint32_t distanceMM, float speedMMps, float endSpeedMMps);
+MotionManager_Result_t MotionManager_StartLine(float speedMMps);
+MotionManager_Result_t MotionManager_TurnTo(
+    float targetYawDeg, float speedMMps);
+MotionManager_Result_t MotionManager_TurnBy(
+    float deltaYawDeg, float speedMMps);
+/* 启动固定时长的平滑短暂主动刹车；仅由题目状态机在定距完成后调用。 */
+MotionManager_Result_t MotionManager_StartBrake(void);
+
+/* 闭环恒速调试模式（W 命令）：双轮同目标速度、无规划斜坡、无航向修正，
+ * 是轮速 PI 的标准阶跃激励。已处于 SPEED 模式时再次调用只更新目标速度，
+ * 不复位 PID，可连续做链式阶跃；停止用 MotionManager_Stop() 或 C0。 */
+MotionManager_Result_t MotionManager_StartSpeed(float speedMMps);
+
+void MotionManager_Update(float dt);
+void MotionManager_Stop(void);
+
+uint8_t MotionManager_IsConfigured(void);
+uint8_t MotionManager_IsBusy(void);
+uint8_t MotionManager_IsFinished(void);
+MotionManager_Mode_t MotionManager_GetMode(void);
+MotionManager_Error_t MotionManager_GetError(void);
+
+#endif</code></pre>
+  <ol class="line-notes">
+    <li><strong>第 1～4 行：</strong>头文件保护并引入公共整数类型。</li>
+    <li><strong>第 6～10 行：</strong>解释刹车不是直行控制器自动完成的最后一步，而是可由 Mission 单独启动的“先释放、再短刹、再释放”行为。</li>
+    <li><strong>第 11～12 行：</strong>释放 0.01 s、主动刹车 0.05 s；两个时间都在初始化时检查。</li>
+    <li><strong>第 14～18 行：</strong>调度原则是一次只允许一个行为；模式从 IDLE、STRAIGHT 开始枚举。</li>
+    <li><strong>第 19～22 行：</strong>继续列出 LINE、TURN、BRAKE，并完成模式类型。</li>
+    <li><strong>第 24～28 行：</strong>管理器错误先区分无错、初始化错和直线错。</li>
+    <li><strong>第 29～32 行：</strong>继续区分巡线、转向和刹车错误，便于 App 统一显示错误来源。</li>
+    <li><strong>第 34～37 行：</strong>管理器启动结果采用比各行为更统一的枚举：成功与参数非法。</li>
+    <li><strong>第 38～41 行：</strong>其余是未配置、传感器未就绪和无法归入更具体类别的启动失败。</li>
+    <li><strong>第 43 行：</strong>统一初始化所有行为。</li>
+    <li><strong>第 45～49 行：</strong>前进、后退和巡线入口；Mission 不应绕过它们直接启动子模块。</li>
+    <li><strong>第 50～53 行：</strong>绝对与相对转向入口。</li>
+    <li><strong>第 54～55 行：</strong>主动刹车是独立模式，只应在定距零速完成后的题目流程中使用。</li>
+    <li><strong>第 57～58 行：</strong>Update 只推进当前模式；Stop 按当前模式调用正确的子模块清理函数。</li>
+    <li><strong>第 60～64 行：</strong>查询是否初始化、是否忙、是否完成、当前模式和统一错误。</li>
+    <li><strong>第 66 行：</strong>结束头文件保护。</li>
+  </ol>
+
+  <h4>Application/Control/MotionStraight.c（1/5）：上下文、通用数学和参数防线</h4>
+  <pre class="source-code"><code data-source="Application/Control/MotionStraight.c" data-lines="1-123">#include "Application/Control/MotionStraight.h"
+#include "Application/Control/MotionWheel.h"
+#include "Application/Control/PID.h"
+#include "Application/State/Heading.h"
+#include "Application/State/Odometry.h"
+#include "Hardware/Motor/Motor.h"
+#include &lt;math.h&gt;
+
+/* 直线任务的全部运行状态集中保存，便于检查状态转换和速度规划。 */
+typedef struct
+{
+    MotionStraight_State_t state;
+    MotionStraight_Error_t error;
+    uint8_t configured;
+
+    float startDistanceLMM;
+    float startDistanceRMM;
+    float totalDistanceMM;
+    float remainingDistanceMM;
+    float profileEndDistanceMM;
+
+    float cruiseSpeedMMps;
+    float endSpeedMMps;
+    float profileSpeedMMps;
+    float decelerationStartDistanceMM;
+    float effectiveDecelerationMMps2;
+
+    float targetHeadingDeg;
+    float direction;
+    float zeroSpeedHoldElapsedSeconds;
+    uint8_t decelerationActive;
+    uint8_t targetReached;
+} MotionStraight_Context_t;
+
+/* 运行时可调参数，默认值取头文件 #define；范围校验由 Param 模块负责。 */
+float MotionStraight_TuneHeadingKp = MOTION_STRAIGHT_HEADING_KP;
+float MotionStraight_TuneHeadingKd = MOTION_STRAIGHT_HEADING_KD;
+float MotionStraight_TuneAccelerationMMps2 =
+    MOTION_STRAIGHT_ACCELERATION_MMPS2;
+
+static PID_t s_headingPID;
+static MotionStraight_Context_t s_context = {
+    .state = MOTION_STRAIGHT_STATE_IDLE,
+    .error = MOTION_STRAIGHT_ERROR_NONE,
+};
+
+static float MotionStraight_Clamp(float value, float minimum, float maximum)
+{
+    if (value &lt; minimum)
+    {
+        return minimum;
+    }
+    if (value &gt; maximum)
+    {
+        return maximum;
+    }
+    return value;
+}
+
+static float MotionStraight_Approach(
+    float current, float target, float maximumStep)
+{
+    if (current &lt; target)
+    {
+        current += maximumStep;
+        return (current &gt; target) ? target : current;
+    }
+    if (current &gt; target)
+    {
+        current -= maximumStep;
+        return (current &lt; target) ? target : current;
+    }
+    return current;
+}
+
+/* 检查所有公共调参，防止非法值进入速度规划和电机控制。 */
+static uint8_t MotionStraight_ParametersAreValid(void)
+{
+    if ((!isfinite(MOTION_STRAIGHT_MAX_SPEED_MMPS)) ||
+        (!isfinite(MOTION_STRAIGHT_ACCELERATION_MMPS2)) ||
+        (!isfinite(MOTION_STRAIGHT_DECELERATION_START_RATIO)) ||
+        (!isfinite(MOTION_STRAIGHT_DISTANCE_TOLERANCE_MM)) ||
+        (!isfinite(MOTION_STRAIGHT_ZERO_SPEED_HOLD_SECONDS)) ||
+        (!isfinite(MOTION_STRAIGHT_HEADING_KP)) ||
+        (!isfinite(MOTION_STRAIGHT_HEADING_KD)) ||
+        (!isfinite(MOTION_STRAIGHT_HEADING_LIMIT_PWM)))
+    {
+        return 0U;
+    }
+    if ((MOTION_STRAIGHT_MAX_SPEED_MMPS &lt;= 0.0f) ||
+        (MOTION_STRAIGHT_ACCELERATION_MMPS2 &lt;= 0.0f) ||
+        (MOTION_STRAIGHT_DECELERATION_START_RATIO &lt;= 0.0f) ||
+        (MOTION_STRAIGHT_DECELERATION_START_RATIO &gt;= 1.0f) ||
+        (MOTION_STRAIGHT_DISTANCE_TOLERANCE_MM &lt; 0.0f) ||
+        (MOTION_STRAIGHT_ZERO_SPEED_HOLD_SECONDS &lt;= 0.0f) ||
+        (MOTION_STRAIGHT_HEADING_KP &lt; 0.0f) ||
+        (MOTION_STRAIGHT_HEADING_KD &lt; 0.0f) ||
+        ((MOTION_STRAIGHT_HEADING_KP == 0.0f) &amp;&amp;
+         (MOTION_STRAIGHT_HEADING_KD == 0.0f)) ||
+        (MOTION_STRAIGHT_HEADING_LIMIT_PWM &lt;= 0.0f) ||
+        (MOTION_STRAIGHT_HEADING_LIMIT_PWM &gt;
+         MotionWheel_GetMaximumCommandPWM()) ||
+        ((MOTION_STRAIGHT_CORRECTION_SIGN != 1) &amp;&amp;
+         (MOTION_STRAIGHT_CORRECTION_SIGN != -1)))
+    {
+        return 0U;
+    }
+    return 1U;
+}
+
+static void MotionStraight_ResetControllers(void)
+{
+    MotionWheel_Reset();
+    PID_Reset(&amp;s_headingPID);
+    s_context.profileSpeedMMps = 0.0f;
+}
+
+static void MotionStraight_SetError(MotionStraight_Error_t error)
+{
+    MotionWheel_Stop();
+    s_context.error = error;
+    s_context.state = MOTION_STRAIGHT_STATE_ERROR;
+}</code></pre>
+  <ol class="line-notes">
+    <li><strong>第 1～4 行：</strong>引入自身接口、共享轮速层、PID 和航向状态。</li>
+    <li><strong>第 5～7 行：</strong>再引入里程、底层电机停机和数学函数；本文件会用 <code>fabsf/isfinite/sqrtf</code>。</li>
+    <li><strong>第 9～12 行：</strong>注释说明采用集中式运行上下文；结构体前两项保存状态与具体错误。</li>
+    <li><strong>第 13～16 行：</strong><code>configured</code> 是初始化门闩；随后保存左右轮任务起点里程。</li>
+    <li><strong>第 17～20 行：</strong>保存总距离、带方向剩余距离和速度曲线真正到达终点速度的位置。</li>
+    <li><strong>第 22～24 行：</strong>巡航速度、分段终点速度和当前斜坡速度是三个不同概念；当前速度从 0 逐拍变化。</li>
+    <li><strong>第 25～26 行：</strong>记录减速起点与根据实际剩余距离算出的恒定减速度。</li>
+    <li><strong>第 28～30 行：</strong>启动时锁定目标航向；<code>direction</code> 为 ±1；零速保持计时器用于完成前等待。</li>
+    <li><strong>第 31～33 行：</strong>两个布尔标志记录是否已开始减速、是否进入距离容差；最后命名结构体类型。</li>
+    <li><strong>第 35～39 行：</strong>文件私有的航向 PID 与唯一上下文；指定初始化只写两个字段，其余静态字段自动为 0。</li>
+    <li><strong>第 41～45 行：</strong>Clamp 小于下界时返回下界。</li>
+    <li><strong>第 46 行：</strong>结束低于下界的分支。</li>
+    <li><strong>第 47～51 行：</strong>大于上界返回上界，否则原值通过；这是所有速度限幅的基础。</li>
+    <li><strong>第 52 行：</strong>结束 Clamp。</li>
+    <li><strong>第 54～60 行：</strong>Approach 若当前值低于目标，就最多增加 <code>maximumStep</code>；一旦跨过目标，直接钳到目标而不越界。</li>
+    <li><strong>第 61～65 行：</strong>当前值高于目标时对称地减小，并同样防止越过目标。</li>
+    <li><strong>第 66～68 行：</strong>已等于目标就保持原值，结束斜坡辅助函数。</li>
+    <li><strong>第 70～73 行：</strong>参数检查先用 <code>isfinite</code> 拒绝最大速度中的 NaN/无穷值。</li>
+    <li><strong>第 74～77 行：</strong>继续检查加速度、减速比例、距离容差和零速保持时间都是有限数。</li>
+    <li><strong>第 78～80 行：</strong>检查 PD 增益与修正上限的有限性。</li>
+    <li><strong>第 81～83 行：</strong>任何浮点常量非有限就返回失败。</li>
+    <li><strong>第 84～87 行：</strong>最大速度、加速度必须为正；减速比例必须严格位于 0 与 1 之间。</li>
+    <li><strong>第 88～91 行：</strong>距离容差可为 0 但不能负；保持时间必须正；P、D 各自不能负。</li>
+    <li><strong>第 92～94 行：</strong>P、D 不能同时为 0，否则航向完全不修正；PWM 修正上限必须正。</li>
+    <li><strong>第 95～98 行：</strong>修正上限不能超过 MotionWheel 的最终命令上限，方向符号只能是 +1 或 -1。</li>
+    <li><strong>第 99～103 行：</strong>范围检查失败返回 0，全部通过返回 1。</li>
+    <li><strong>第 105～110 行：</strong>复位共享轮速 PID、航向 PID，并把规划速度清零；新动作不会继承旧控制器积分或旧斜坡。</li>
+    <li><strong>第 112～117 行：</strong>运行错误先停止轮速输出，再保存错误并进入 ERROR；从此 Update 会因状态不对而停止控制。</li>
+  </ol>
+
+  <h4>Application/Control/MotionStraight.c（2/5）：建立距离曲线并在正确位置开始减速</h4>
+  <pre class="source-code"><code data-source="Application/Control/MotionStraight.c" data-lines="125-205">/* 根据全程比例确定减速起点；终点速度由减速段的距离曲线保证。 */
+static void MotionStraight_PrepareProfile(
+    float distanceMM, float speedMMps, float endSpeedMMps)
+{
+    s_context.startDistanceLMM = Odometry_GetDistanceLMM();
+    s_context.startDistanceRMM = Odometry_GetDistanceRMM();
+    s_context.totalDistanceMM = fabsf(distanceMM);
+    s_context.remainingDistanceMM = distanceMM;
+    s_context.direction = (distanceMM &gt;= 0.0f) ? 1.0f : -1.0f;
+
+    s_context.cruiseSpeedMMps = MotionStraight_Clamp(
+        speedMMps, 0.0f, MOTION_STRAIGHT_MAX_SPEED_MMPS);
+    s_context.endSpeedMMps = MotionStraight_Clamp(
+        endSpeedMMps, 0.0f, s_context.cruiseSpeedMMps);
+
+    /*
+     * 容差是允许的终点误差，因此速度曲线在 total - tolerance 处达到
+     * endSpeed。这样在允许误差内已经是目标速度，而不会到点后突然降速。
+     */
+    s_context.profileEndDistanceMM = s_context.totalDistanceMM -
+        MOTION_STRAIGHT_DISTANCE_TOLERANCE_MM;
+    if (s_context.profileEndDistanceMM &lt; 0.0f)
+    {
+        s_context.profileEndDistanceMM = 0.0f;
+    }
+
+    s_context.decelerationStartDistanceMM =
+        s_context.totalDistanceMM *
+        MOTION_STRAIGHT_DECELERATION_START_RATIO;
+    if (s_context.decelerationStartDistanceMM &gt;
+        s_context.profileEndDistanceMM)
+    {
+        /* 极短距离没有完整的后 1/6，直接在速度规划终点前开始减速。 */
+        s_context.decelerationStartDistanceMM =
+            s_context.profileEndDistanceMM;
+    }
+
+    s_context.effectiveDecelerationMMps2 = 0.0f;
+    s_context.decelerationActive = 0U;
+    s_context.targetReached = 0U;
+    s_context.zeroSpeedHoldElapsedSeconds = 0.0f;
+}
+
+static float MotionStraight_GetDirectedTravelledDistance(void)
+{
+    float distanceLMM = Odometry_GetDistanceLMM() -
+                        s_context.startDistanceLMM;
+    float distanceRMM = Odometry_GetDistanceRMM() -
+                        s_context.startDistanceRMM;
+    float averageDistanceMM = (distanceLMM + distanceRMM) * 0.5f;
+
+    return s_context.direction * averageDistanceMM;
+}
+
+/* 在固定减速点记录当前速度，并计算剩余距离内所需的恒定减速度。 */
+static void MotionStraight_StartDecelerationIfNeeded(
+    float travelledDistanceMM)
+{
+    float currentSpeedMMps;
+    float profileRemainingDistanceMM;
+
+    if ((s_context.decelerationActive != 0U) ||
+        (travelledDistanceMM &lt; s_context.decelerationStartDistanceMM))
+    {
+        return;
+    }
+
+    s_context.decelerationActive = 1U;
+    currentSpeedMMps = fabsf(s_context.profileSpeedMMps);
+    profileRemainingDistanceMM = s_context.profileEndDistanceMM -
+        travelledDistanceMM;
+    if ((currentSpeedMMps &gt; s_context.endSpeedMMps) &amp;&amp;
+        (profileRemainingDistanceMM &gt; 0.001f))
+    {
+        /* v_end^2 = v_start^2 - 2 * a * s。a 在本次减速段内保持不变。 */
+        s_context.effectiveDecelerationMMps2 =
+            (currentSpeedMMps * currentSpeedMMps -
+             s_context.endSpeedMMps * s_context.endSpeedMMps) /
+            (2.0f * profileRemainingDistanceMM);
+    }
+}</code></pre>
+  <ol class="line-notes">
+    <li><strong>第 119～122 行：</strong>开始准备一次新速度曲线，输入是带方向距离、请求巡航速度和终点速度。</li>
+    <li><strong>第 123～124 行：</strong>记录左右里程绝对读数作为本段零点，不需要重置全局 Odometry。</li>
+    <li><strong>第 125～127 行：</strong>总距离取绝对值用于规划；剩余距离先保留原符号；方向由距离正负变成 ±1。</li>
+    <li><strong>第 129～132 行：</strong>巡航速度限在 0～全局上限；终点速度再限在 0～巡航速度，保证不会在终点反而要求加速。</li>
+    <li><strong>第 134～137 行：</strong>注释解释“曲线终点”提前一个距离容差，进入允许误差区时速度已经到位。</li>
+    <li><strong>第 138～143 行：</strong><code>profileEnd = total - tolerance</code>；若任务短于容差则钳到 0，避免负距离。</li>
+    <li><strong>第 145～147 行：</strong>正常减速起点是总距离乘 5/6。</li>
+    <li><strong>第 148～153 行：</strong>极短任务若 5/6 点反而超过曲线终点，就把减速起点移到曲线终点。</li>
+    <li><strong>第 154 行：</strong>结束短距离修正分支。</li>
+    <li><strong>第 156～160 行：</strong>清除有效减速度、减速标志、到点标志和零速计时，结束曲线准备。</li>
+    <li><strong>第 162～165 行：</strong>左轮本段位移 = 当前累计里程 - 启动基线。</li>
+    <li><strong>第 166～168 行：</strong>右轮同样计算，再取左右均值作为车体中心前进量。</li>
+    <li><strong>第 170～171 行：</strong>乘任务方向后，前进和后退都得到“沿任务方向的正进度”。</li>
+    <li><strong>第 173～178 行：</strong>减速函数接收已行驶距离，并准备当前速度大小与曲线剩余距离。</li>
+    <li><strong>第 180～184 行：</strong>已经启动减速，或尚未走到减速点时直接返回，保证减速度只计算一次。</li>
+    <li><strong>第 186～189 行：</strong>越过减速点后锁定标志，记录此刻规划速度绝对值，并算到曲线终点还剩多少距离。</li>
+    <li><strong>第 190～192 行：</strong>只有当前速度确实高于终点速度且剩余距离大于极小阈值，才需要计算正减速度并避免除零。</li>
+    <li><strong>第 193～197 行：</strong>由运动学公式反解 <code>a=(v_start²-v_end²)/(2s)</code>；使用实际进入减速点时的速度，所以短任务没加到巡航速度也能正确规划。</li>
+    <li><strong>第 198～199 行：</strong>结束条件与减速启动函数。</li>
+  </ol>
+
+  <h4>Application/Control/MotionStraight.c（3/5）：剩余距离、减速目标、零速完成与航向 PD</h4>
+  <pre class="source-code"><code data-source="Application/Control/MotionStraight.c" data-lines="207-323">/* 距离规划层：返回本周期应跟踪的正速度大小。 */
+static float MotionStraight_CalculateTargetSpeedMagnitude(void)
+{
+    float travelledDistanceMM;
+    float remainingDistanceMM;
+    float profileRemainingDistanceMM;
+    float brakingSpeedMMps;
+
+    if (s_context.state == MOTION_STRAIGHT_STATE_CONTINUING)
+    {
+        s_context.remainingDistanceMM = 0.0f;
+        return s_context.endSpeedMMps;
+    }
+
+    travelledDistanceMM = MotionStraight_GetDirectedTravelledDistance();
+    remainingDistanceMM = s_context.totalDistanceMM -
+                          travelledDistanceMM;
+    s_context.remainingDistanceMM =
+        s_context.direction * remainingDistanceMM;
+
+    MotionStraight_StartDecelerationIfNeeded(travelledDistanceMM);
+
+    profileRemainingDistanceMM = s_context.profileEndDistanceMM -
+        travelledDistanceMM;
+    if (profileRemainingDistanceMM &lt;= 0.0f)
+    {
+        /* 到达距离容差范围时，速度已按规划下降至结束速度。 */
+        s_context.targetReached = 1U;
+        return s_context.endSpeedMMps;
+    }
+    if (s_context.decelerationActive == 0U)
+    {
+        return s_context.cruiseSpeedMMps;
+    }
+
+    brakingSpeedMMps = sqrtf(
+        s_context.endSpeedMMps * s_context.endSpeedMMps +
+        2.0f * s_context.effectiveDecelerationMMps2 *
+        profileRemainingDistanceMM);
+    return MotionStraight_Clamp(
+        brakingSpeedMMps,
+        s_context.endSpeedMMps,
+        s_context.cruiseSpeedMMps);
+}
+
+static float MotionStraight_UpdateProfileSpeed(
+    float targetSpeedMMps, float dt)
+{
+    float speedStepMMps;
+
+    if (fabsf(targetSpeedMMps) &gt; fabsf(s_context.profileSpeedMMps))
+    {
+        speedStepMMps = MotionStraight_TuneAccelerationMMps2 * dt;
+    }
+    else
+    {
+        speedStepMMps = s_context.effectiveDecelerationMMps2 * dt;
+    }
+    s_context.profileSpeedMMps = MotionStraight_Approach(
+        s_context.profileSpeedMMps, targetSpeedMMps, speedStepMMps);
+    return s_context.profileSpeedMMps;
+}
+
+/* 零速目标保持固定时长，不依赖低速下易跳变的编码器速度判断。 */
+static uint8_t MotionStraight_FinishProfileIfReady(
+    float targetSpeedMMps, float dt)
+{
+    if ((s_context.state != MOTION_STRAIGHT_STATE_RUNNING) ||
+        (s_context.targetReached == 0U) ||
+        (fabsf(s_context.profileSpeedMMps - targetSpeedMMps) &gt; 0.001f))
+    {
+        return 0U;
+    }
+
+    s_context.remainingDistanceMM = 0.0f;
+    if (s_context.endSpeedMMps &lt;= 0.001f)
+    {
+        /* 本周期已由 MotionWheel 下发 0 mm/s 的双轮速度目标。 */
+        s_context.zeroSpeedHoldElapsedSeconds += dt;
+        if (s_context.zeroSpeedHoldElapsedSeconds &lt;
+            MOTION_STRAIGHT_ZERO_SPEED_HOLD_SECONDS)
+        {
+            return 0U;
+        }
+
+        /* 固定保持结束后关闭 PWM，不调用 Motor_Brake()。 */
+        MotionWheel_Stop();
+        s_context.state = MOTION_STRAIGHT_STATE_COMPLETED;
+        return 1U;
+    }
+
+    s_context.state = MOTION_STRAIGHT_STATE_CONTINUING;
+    return 0U;
+}
+
+static MotionWheel_Result_t MotionStraight_ApplyWheelCommand(float dt)
+{
+    MotionWheel_Command_t command;
+    float headingCorrectionPWM;
+
+    headingCorrectionPWM = 0.0f;
+    if (fabsf(s_context.profileSpeedMMps) &gt; 0.001f)
+    {
+        /* 连续累计角不做 ±180° 归一化，因此可直接完成多圈航向保持。 */
+        headingCorrectionPWM = PID_Update(
+            &amp;s_headingPID,
+            s_context.targetHeadingDeg,
+            Heading_GetYaw(), dt);
+        headingCorrectionPWM *= (float)MOTION_STRAIGHT_CORRECTION_SIGN;
+    }
+
+    command.targetSpeedLMMps = s_context.profileSpeedMMps;
+    command.targetSpeedRMMps = s_context.profileSpeedMMps;
+    command.trimLPWM = -headingCorrectionPWM;
+    command.trimRPWM = headingCorrectionPWM;
+    return MotionWheel_Update(&amp;command, dt);
+}</code></pre>
+  <ol class="line-notes">
+    <li><strong>第 201～207 行：</strong>距离规划函数输出“正的速度大小”；准备已行驶、剩余、曲线剩余和制动速度变量。</li>
+    <li><strong>第 209～213 行：</strong>CONTINUING 已完成本段距离，不再重算里程，只持续返回终点速度并把剩余置 0。</li>
+    <li><strong>第 215～219 行：</strong>正常运行时计算沿任务方向的进度；总距离减进度得到剩余，再乘方向恢复成前进正、后退负的公开值。</li>
+    <li><strong>第 221 行：</strong>检查是否刚跨过固定减速点，必要时只在这一拍计算有效减速度。</li>
+    <li><strong>第 223～229 行：</strong>曲线剩余小于等于 0 表示进入距离容差，设置到点标志并直接要求终点速度。</li>
+    <li><strong>第 230 行：</strong>结束进入距离容差的分支。</li>
+    <li><strong>第 231～234 行：</strong>尚未进入减速段时，目标速度大小就是巡航速度。</li>
+    <li><strong>第 236～239 行：</strong>进入减速后用 <code>v=sqrt(v_end²+2as)</code> 根据当前剩余距离反算本点应有速度。</li>
+    <li><strong>第 240～244 行：</strong>把平方根结果限制在终点速度和巡航速度之间，结束目标计算。</li>
+    <li><strong>第 246～250 行：</strong>速度斜坡函数接收带正负方向的目标速度和 dt，准备本拍最大变化量。</li>
+    <li><strong>第 251～254 行：</strong>若目标绝对值更大，说明在加速，步长 = 固定加速度 × 秒数。</li>
+    <li><strong>第 255～258 行：</strong>否则使用刚计算的有效减速度；减速开始前该值为 0，但那时目标通常仍等于巡航速度，不需下降。</li>
+    <li><strong>第 259～262 行：</strong>Approach 让当前规划速度不越界地靠近目标，并返回更新值。</li>
+    <li><strong>第 264～267 行：</strong>完成函数不用编码器低速瞬时速度，而按规划目标与固定时间判断，避免低速计数跳动。</li>
+    <li><strong>第 268～272 行：</strong>只有仍在 RUNNING、已经进容差、规划速度已经到目标三个条件同时满足，才进入完成逻辑。</li>
+    <li><strong>第 273 行：</strong>结束未满足完成条件的提前返回分支。</li>
+    <li><strong>第 275～279 行：</strong>公开剩余设为 0；若终点目标约等于零，本拍已经先向 MotionWheel 下发了 0 mm/s，再累计保持时间。</li>
+    <li><strong>第 280～284 行：</strong>保持不足 0.05 s 就继续 RUNNING；这段时间轮速闭环仍试图维持零速。</li>
+    <li><strong>第 286～290 行：</strong>时间到后停止 PWM、进入 COMPLETED 并返回 1；这里刻意不主动刹车，刹车由 Manager 的独立模式控制。</li>
+    <li><strong>第 292～294 行：</strong>终点速度非零时进入 CONTINUING，返回 0，因为控制仍要持续输出该速度。</li>
+    <li><strong>第 296～300 行：</strong>建立一个轮速命令和航向修正量。</li>
+    <li><strong>第 301～304 行：</strong>先令修正为 0；规划速度接近零时不做航向 PD，避免静止时左右轮为了微小角漂而动作。</li>
+    <li><strong>第 305～309 行：</strong>PID 输入是启动时锁定目标航向和当前连续航向；初始化时 I=0，所以是 PD；最后乘实车方向符号。</li>
+    <li><strong>第 310 行：</strong>结束“非零规划速度才做航向修正”的分支。</li>
+    <li><strong>第 312～315 行：</strong>左右轮基础目标相同；修正 PWM 一负一正，形成差速而不改变平均目标轮速。</li>
+    <li><strong>第 316～317 行：</strong>把命令交给共享 MotionWheel，由其结合编码器反馈生成最终 PWM。</li>
+  </ol>
+
+  <h4>Application/Control/MotionStraight.c（4/5）：初始化、启动校验与前后退包装</h4>
+  <pre class="source-code"><code data-source="Application/Control/MotionStraight.c" data-lines="325-414">MotionStraight_Result_t MotionStraight_Init(void)
+{
+    MotionWheel_Result_t wheelResult;
+
+    Motor_StopAll();
+    s_context.configured = 0U;
+    s_context.state = MOTION_STRAIGHT_STATE_IDLE;
+    s_context.error = MOTION_STRAIGHT_ERROR_NONE;
+
+    wheelResult = MotionWheel_Init();
+    if ((wheelResult != MOTION_WHEEL_RESULT_OK) ||
+        (MotionStraight_ParametersAreValid() == 0U))
+    {
+        return MOTION_STRAIGHT_RESULT_INVALID_ARGUMENT;
+    }
+
+    /* 用运行时参数初始化：同一次上电内重复 Init 不会丢掉已调好的增益。 */
+    PID_Init(&amp;s_headingPID,
+             MotionStraight_TuneHeadingKp, 0.0f,
+             MotionStraight_TuneHeadingKd,
+             MOTION_STRAIGHT_HEADING_LIMIT_PWM, 0.0f);
+    MotionStraight_ResetControllers();
+    s_context.remainingDistanceMM = 0.0f;
+    s_context.configured = 1U;
+    return MOTION_STRAIGHT_RESULT_OK;
+}
+
+MotionStraight_Result_t MotionStraight_Start(
+    float distanceMM, float speedMMps, float endSpeedMMps)
+{
+    if (s_context.configured == 0U)
+    {
+        return MOTION_STRAIGHT_RESULT_NOT_CONFIGURED;
+    }
+    if (MotionStraight_IsBusy() != 0U)
+    {
+        return MOTION_STRAIGHT_RESULT_BUSY;
+    }
+    if ((!isfinite(distanceMM)) || (!isfinite(speedMMps)) ||
+        (!isfinite(endSpeedMMps)) || (speedMMps &lt;= 0.0f) ||
+        (endSpeedMMps &lt; 0.0f) || (endSpeedMMps &gt; speedMMps))
+    {
+        return MOTION_STRAIGHT_RESULT_INVALID_ARGUMENT;
+    }
+    if ((Heading_IsReady() == 0U) ||
+        (Odometry_CountsPerMM &lt;= 0.001f))
+    {
+        return MOTION_STRAIGHT_RESULT_SENSOR_NOT_READY;
+    }
+
+    MotionWheel_Stop();
+    MotionStraight_ResetControllers();
+    s_context.error = MOTION_STRAIGHT_ERROR_NONE;
+    s_context.targetHeadingDeg = Heading_GetYaw();
+    MotionStraight_PrepareProfile(distanceMM, speedMMps, endSpeedMMps);
+
+    if (fabsf(distanceMM) &lt;= MOTION_STRAIGHT_DISTANCE_TOLERANCE_MM)
+    {
+        s_context.remainingDistanceMM = 0.0f;
+        if (s_context.endSpeedMMps &lt;= 0.001f)
+        {
+            s_context.state = MOTION_STRAIGHT_STATE_COMPLETED;
+        }
+        else
+        {
+            /* 极短距离任务也通过加速度斜坡进入终点持续速度。 */
+            s_context.decelerationActive = 1U;
+            s_context.targetReached = 1U;
+            s_context.state = MOTION_STRAIGHT_STATE_RUNNING;
+        }
+        return MOTION_STRAIGHT_RESULT_OK;
+    }
+
+    s_context.state = MOTION_STRAIGHT_STATE_RUNNING;
+    return MOTION_STRAIGHT_RESULT_OK;
+}
+
+MotionStraight_Result_t MotionStraight_StartForward(
+    uint32_t distanceMM, float speedMMps, float endSpeedMMps)
+{
+    return MotionStraight_Start(
+        (float)distanceMM, speedMMps, endSpeedMMps);
+}
+
+MotionStraight_Result_t MotionStraight_StartBackward(
+    uint32_t distanceMM, float speedMMps, float endSpeedMMps)
+{
+    return MotionStraight_Start(
+        -(float)distanceMM, speedMMps, endSpeedMMps);
+}</code></pre>
+  <ol class="line-notes">
+    <li><strong>第 319～323 行：</strong>初始化准备接收 MotionWheel 结果，并先直接停止全部电机，建立安全起点。</li>
+    <li><strong>第 324～326 行：</strong>配置门闩先清 0，状态与错误复位。</li>
+    <li><strong>第 328～333 行：</strong>初始化共享轮速层并检查所有编译期参数；任一失败都返回参数错误，configured 仍为 0。</li>
+    <li><strong>第 335～338 行：</strong>初始化航向 PID：KP=6、KI=0、KD=0.4，输出限幅 700，积分限幅为 0，因此它实际是 PD。</li>
+    <li><strong>第 339～343 行：</strong>复位控制器和剩余距离，最后才置 configured=1 并报告成功。</li>
+    <li><strong>第 345～350 行：</strong>通用 Start 接收三项浮点参数；未完成初始化立即拒绝。</li>
+    <li><strong>第 351 行：</strong>结束未配置检查。</li>
+    <li><strong>第 352～355 行：</strong>模块自身若 RUNNING 或 CONTINUING，直接调用会返回 BUSY；但正常上层 Manager 会先 Stop 旧动作。</li>
+    <li><strong>第 356～360 行：</strong>拒绝非有限值、非正巡航速度、负终点速度，以及终点速度高于巡航速度。</li>
+    <li><strong>第 361 行：</strong>结束启动参数非法分支。</li>
+    <li><strong>第 362～366 行：</strong>Heading 必须在线、里程 counts/mm 必须有效，否则不能闭环定距和保航向。</li>
+    <li><strong>第 368～372 行：</strong>停止旧轮速输出、清控制器、清错误；把“启动瞬间航向”锁为直行目标，再准备距离曲线。</li>
+    <li><strong>第 374～380 行：</strong>距离本来就在容差内时直接令剩余为 0；若终点速度为 0，状态立即 COMPLETED，电机不必启动。</li>
+    <li><strong>第 381～387 行：</strong>极短任务但要求非零终点速度时，仍进入 RUNNING，通过加速度斜坡逐渐达到该持续速度。</li>
+    <li><strong>第 388～393 行：</strong>结束极短任务分支；普通距离进入 RUNNING 并返回成功。</li>
+    <li><strong>第 395～400 行：</strong>Forward 把无符号距离转为正 float，复用同一个 Start 算法。</li>
+    <li><strong>第 402～407 行：</strong>Backward 在转换后加负号；方向差异从入口处统一成带符号距离。</li>
+  </ol>
+
+  <h4>Application/Control/MotionStraight.c（5/5）：每拍更新、停止与 finished/busy 语义</h4>
+  <pre class="source-code"><code data-source="Application/Control/MotionStraight.c" data-lines="416-510">void MotionStraight_Update(float dt)
+{
+    float targetSpeedMagnitudeMMps;
+    float targetSpeedMMps;
+
+    if ((s_context.state != MOTION_STRAIGHT_STATE_RUNNING) &amp;&amp;
+        (s_context.state != MOTION_STRAIGHT_STATE_CONTINUING))
+    {
+        return;
+    }
+    if ((!isfinite(dt)) || (dt &lt;= 0.0f))
+    {
+        MotionStraight_SetError(
+            MOTION_STRAIGHT_ERROR_UPDATE_PERIOD_INVALID);
+        return;
+    }
+    if (Heading_IsReady() == 0U)
+    {
+        MotionStraight_SetError(MOTION_STRAIGHT_ERROR_HEADING_OFFLINE);
+        return;
+    }
+    if (Odometry_CountsPerMM &lt;= 0.001f)
+    {
+        MotionStraight_SetError(MOTION_STRAIGHT_ERROR_ODOMETRY_INVALID);
+        return;
+    }
+
+    targetSpeedMagnitudeMMps =
+        MotionStraight_CalculateTargetSpeedMagnitude();
+    targetSpeedMMps = s_context.direction * targetSpeedMagnitudeMMps;
+    MotionStraight_UpdateProfileSpeed(targetSpeedMMps, dt);
+
+    if (MotionStraight_ApplyWheelCommand(dt) != MOTION_WHEEL_RESULT_OK)
+    {
+        MotionStraight_SetError(MOTION_STRAIGHT_ERROR_WHEEL);
+        return;
+    }
+    if (MotionStraight_FinishProfileIfReady(targetSpeedMMps, dt) != 0U)
+    {
+        return;
+    }
+}
+
+void MotionStraight_ApplyHeadingTunings(void)
+{
+    if (s_context.configured == 0U)
+    {
+        return;
+    }
+    PID_SetTunings(&amp;s_headingPID, MotionStraight_TuneHeadingKp,
+                   0.0f, MotionStraight_TuneHeadingKd);
+}
+
+void MotionStraight_Stop(void)
+{
+    MotionWheel_Stop();
+    MotionStraight_ResetControllers();
+    s_context.remainingDistanceMM = 0.0f;
+    s_context.error = MOTION_STRAIGHT_ERROR_NONE;
+    s_context.state = MOTION_STRAIGHT_STATE_IDLE;
+}
+
+uint8_t MotionStraight_IsConfigured(void)
+{
+    return s_context.configured;
+}
+
+uint8_t MotionStraight_IsBusy(void)
+{
+    return ((s_context.state == MOTION_STRAIGHT_STATE_RUNNING) ||
+            (s_context.state == MOTION_STRAIGHT_STATE_CONTINUING)) ?
+               1U : 0U;
+}
+
+uint8_t MotionStraight_IsFinished(void)
+{
+    return ((s_context.state == MOTION_STRAIGHT_STATE_COMPLETED) ||
+            (s_context.state == MOTION_STRAIGHT_STATE_CONTINUING)) ?
+               1U : 0U;
+}
+
+MotionStraight_State_t MotionStraight_GetState(void)
+{
+    return s_context.state;
+}
+
+MotionStraight_Error_t MotionStraight_GetError(void)
+{
+    return s_context.error;
+}
+
+float MotionStraight_GetRemainingDistanceMM(void)
+{
+    return s_context.remainingDistanceMM;
+}</code></pre>
+  <ol class="line-notes">
+    <li><strong>第 409～413 行：</strong>周期函数准备目标速度大小与带方向速度。</li>
+    <li><strong>第 414～418 行：</strong>只有 RUNNING 和 CONTINUING 会继续控制；IDLE、COMPLETED、ERROR 都立即返回。</li>
+    <li><strong>第 419～424 行：</strong>dt 必须是有限正秒数，否则停止轮速并进入 update-period 错误。</li>
+    <li><strong>第 425～429 行：</strong>运行中 MPU/Heading 掉线立即安全停止并记录航向错误。</li>
+    <li><strong>第 430～434 行：</strong>里程标定值变无效也立即停止，避免距离与速度反馈失真。</li>
+    <li><strong>第 436～439 行：</strong>先按距离求正速度大小，再乘方向得到前进正/后退负目标，并按 dt 更新速度斜坡。</li>
+    <li><strong>第 441～445 行：</strong>向 MotionWheel 提交基础速度和航向 trim；轮速层失败就转为直线轮控错误。</li>
+    <li><strong>第 446～450 行：</strong>轮命令成功下发后再检查是否满足完成条件，结束本拍。</li>
+    <li><strong>第 459～467 行：</strong>在线写入 skp/skd 后，apply 函数把运行时 Kp/Kd 更新进实际航向 PID；未初始化时安全返回。</li>
+    <li><strong>第 469～476 行：</strong>Stop 停共享轮速层、清两个控制器、剩余距离和错误，状态回 IDLE；configured 不清，可再次启动。</li>
+    <li><strong>第 459 行：</strong>结束 Stop 函数。</li>
+    <li><strong>第 461～464 行：</strong>配置查询直接返回初始化门闩。</li>
+    <li><strong>第 466～471 行：</strong>RUNNING 和 CONTINUING 都算忙，因为两者都仍会在 Update 中控制车轮。</li>
+    <li><strong>第 473～478 行：</strong>COMPLETED 和 CONTINUING 都算 finished，因为两者都表示“这段距离已完成”。因此 CONTINUING 同时 busy=1、finished=1。</li>
+    <li><strong>第 480～483 行：</strong>返回精确状态，供 Manager 检查 ERROR。</li>
+    <li><strong>第 485～488 行：</strong>返回具体直线错误。</li>
+    <li><strong>第 490～493 行：</strong>返回带方向剩余距离；后退任务未完成时通常为负。</li>
+  </ol>
+
+  <h4>Application/Control/MotionLine.c（1/4）：巡线上下文、参数检查和错误收口</h4>
+  <pre class="source-code"><code data-source="Application/Control/MotionLine.c" data-lines="1-66">#include "Application/Control/MotionLine.h"
+#include "Application/Control/MotionWheel.h"
+#include "Hardware/Sensors/Graydetect.h"
+#include &lt;math.h&gt;
+
+typedef struct
+{
+    MotionLine_State_t state;
+    MotionLine_Error_t error;
+    float cruiseSpeedMMps;
+    float lineError;
+    float previousWeight;
+    float lastLeftSpeedMMps;
+    float lastRightSpeedMMps;
+    uint16_t lostTicks;
+    uint8_t configured;
+} MotionLine_Context_t;
+
+/* 运行时可调参数，默认值取头文件 #define；范围校验由 Param 模块负责。 */
+float MotionLine_TuneMaxAdjustRatio = MOTION_LINE_MAX_ADJUST_RATIO;
+float MotionLine_TuneWeightKd = 0.0f;
+
+static MotionLine_Context_t s_context = {
+    .state = MOTION_LINE_STATE_IDLE,
+    .error = MOTION_LINE_ERROR_NONE,
+};
+
+static uint8_t MotionLine_ParametersAreValid(void)
+{
+    if ((!isfinite(MOTION_LINE_MAX_SPEED_MMPS)) ||
+        (!isfinite(MOTION_LINE_MAX_ADJUST_RATIO)))
+    {
+        return 0U;
+    }
+
+    if ((MOTION_LINE_MAX_SPEED_MMPS &lt;= 0.0f) ||
+        (MOTION_LINE_MAX_ADJUST_RATIO &lt;= 0.0f) ||
+        (MOTION_LINE_MAX_ADJUST_RATIO &gt; 1.0f) ||
+        (MOTION_LINE_OUTER_WEIGHT &lt;= 0) ||
+        (MOTION_LINE_INNER_WEIGHT &lt;= 0) ||
+        (MOTION_LINE_INNER_WEIGHT &gt;= MOTION_LINE_OUTER_WEIGHT) ||
+        (MOTION_LINE_LOST_CONFIRM_TICKS == 0U))
+    {
+        return 0U;
+    }
+
+    return 1U;
+}
+
+static void MotionLine_ResetControl(void)
+{
+    s_context.cruiseSpeedMMps = 0.0f;
+    s_context.lineError = 0.0f;
+    s_context.previousWeight = 0.0f;
+    s_context.lastLeftSpeedMMps = 0.0f;
+    s_context.lastRightSpeedMMps = 0.0f;
+    s_context.lostTicks = 0U;
+}
+
+static void MotionLine_SetError(MotionLine_Error_t error)
+{
+    MotionWheel_Stop();
+    MotionLine_ResetControl();
+    s_context.error = error;
+    s_context.state = MOTION_LINE_STATE_ERROR;
+}</code></pre>
+  <ol class="line-notes">
+    <li><strong>第 1～4 行：</strong>引入巡线接口、共享轮速层、灰度位图和 <code>isfinite</code>。</li>
+    <li><strong>第 6～10 行：</strong>上下文先保存状态、错误和经过上限处理后的巡航速度。</li>
+    <li><strong>第 11～14 行：</strong>保存最近有效权重、上一拍左右目标速度和连续丢线计数。</li>
+    <li><strong>第 15～16 行：</strong>配置门闩结束结构体定义。</li>
+    <li><strong>第 18～21 行：</strong>唯一静态上下文显式从 IDLE、无错误开始，其余字段自动清零。</li>
+    <li><strong>第 23～29 行：</strong>初始化参数检查先拒绝速度上限或调整比例中的 NaN/无穷。</li>
+    <li><strong>第 31～33 行：</strong>最大速度和调整比例必须为正，调整比例不能超过 100%。</li>
+    <li><strong>第 34～37 行：</strong>内外权重都必须正，内权重小于外权重，丢线确认拍数不能是 0。</li>
+    <li><strong>第 38～43 行：</strong>范围非法返回 0，全部通过返回 1。</li>
+    <li><strong>第 45～48 行：</strong>控制复位把巡航速度和最近线误差清零。</li>
+    <li><strong>第 49～52 行：</strong>同时清上一拍左右目标与丢线计数。</li>
+    <li><strong>第 54～60 行：</strong>错误处理停止共享轮速层、清运行量、保存错误并进入 ERROR。</li>
+  </ol>
+
+  <h4>Application/Control/MotionLine.c（2/4）：灰度加权、短暂丢线保持和左右轮目标</h4>
+  <pre class="source-code"><code data-source="Application/Control/MotionLine.c" data-lines="68-171">/*
+ * 位图从左到右为 bit0~bit4，灰度返回 1 表示检测到黑线。
+ * 最外侧权重为正负 6，内侧权重为正负 3，中心权重为 0。
+ */
+static int8_t MotionLine_GetWeight(uint8_t grayState)
+{
+    int16_t weight = 0;
+
+    if ((grayState &amp; 0x01U) != 0U)
+    {
+        weight -= MOTION_LINE_OUTER_WEIGHT;
+    }
+    if ((grayState &amp; 0x02U) != 0U)
+    {
+        weight -= MOTION_LINE_INNER_WEIGHT;
+    }
+    if ((grayState &amp; 0x08U) != 0U)
+    {
+        weight += MOTION_LINE_INNER_WEIGHT;
+    }
+    if ((grayState &amp; 0x10U) != 0U)
+    {
+        weight += MOTION_LINE_OUTER_WEIGHT;
+    }
+
+    /* 多个同侧探头同时压线时，不允许超过最外侧的修正力度。 */
+    if (weight &gt; MOTION_LINE_OUTER_WEIGHT)
+    {
+        weight = MOTION_LINE_OUTER_WEIGHT;
+    }
+    else if (weight &lt; -MOTION_LINE_OUTER_WEIGHT)
+    {
+        weight = -MOTION_LINE_OUTER_WEIGHT;
+    }
+
+    return (int8_t)weight;
+}
+
+static uint8_t MotionLine_CalculateTargetSpeeds(
+    float *leftSpeedMMps, float *rightSpeedMMps, float dt)
+{
+    uint8_t grayState = Graydetect_GetState();
+    float weight;
+    float speedAdjustMMps;
+
+    if (grayState == 0U)
+    {
+        if (s_context.lostTicks &lt; MOTION_LINE_LOST_CONFIRM_TICKS)
+        {
+            s_context.lostTicks++;
+        }
+        if (s_context.lostTicks &gt;= MOTION_LINE_LOST_CONFIRM_TICKS)
+        {
+            return 0U;
+        }
+
+        /* 短暂丢线时保持上一拍的左右轮目标速度。 */
+        *leftSpeedMMps = s_context.lastLeftSpeedMMps;
+        *rightSpeedMMps = s_context.lastRightSpeedMMps;
+        return 1U;
+    }
+
+    s_context.lostTicks = 0U;
+    weight = (float)MotionLine_GetWeight(grayState);
+    s_context.lineError = weight;
+
+    /* 权重达到正负 6 时，速度增减比例等于最大调整比例；
+     * 微分项对权重跳变（压线切换瞬间）施加一次性阻尼，默认 0 不生效。 */
+    speedAdjustMMps = s_context.cruiseSpeedMMps *
+                      MotionLine_TuneMaxAdjustRatio *
+                      (weight / (float)MOTION_LINE_OUTER_WEIGHT);
+    speedAdjustMMps += MotionLine_TuneWeightKd *
+                       ((weight - s_context.previousWeight) / dt);
+    s_context.previousWeight = weight;
+
+    /* 阻尼过强时不允许反向超过巡航速度，防止单轮猛烈倒转。 */
+    if (speedAdjustMMps &gt; s_context.cruiseSpeedMMps)
+    {
+        speedAdjustMMps = s_context.cruiseSpeedMMps;
+    }
+    else if (speedAdjustMMps &lt; -s_context.cruiseSpeedMMps)
+    {
+        speedAdjustMMps = -s_context.cruiseSpeedMMps;
+    }
+
+    /* 左侧压线：左轮减速、右轮加速；右侧压线时相反。 */
+    *leftSpeedMMps = s_context.cruiseSpeedMMps + speedAdjustMMps;
+    *rightSpeedMMps = s_context.cruiseSpeedMMps - speedAdjustMMps;
+    s_context.lastLeftSpeedMMps = *leftSpeedMMps;
+    s_context.lastRightSpeedMMps = *rightSpeedMMps;
+    return 1U;
+}
+
+static MotionWheel_Result_t MotionLine_ApplyWheelCommand(
+    float leftSpeedMMps, float rightSpeedMMps, float dt)
+{
+    MotionWheel_Command_t command;
+
+    command.targetSpeedLMMps = leftSpeedMMps;
+    command.targetSpeedRMMps = rightSpeedMMps;
+    command.trimLPWM = 0.0f;
+    command.trimRPWM = 0.0f;
+    return MotionWheel_Update(&amp;command, dt);
+}</code></pre>
+  <ol class="line-notes">
+    <li><strong>第 62～65 行：</strong>注释固定 bit0～bit4 的左右位置和 -6、-3、0、+3、+6 规则。</li>
+    <li><strong>第 66～68 行：</strong>权重函数接收一次灰度快照，用 16 位临时量防止多个权重相加时过早溢出。</li>
+    <li><strong>第 70～73 行：</strong>最左 bit0 触发就减外侧权重，得到 -6。</li>
+    <li><strong>第 74～77 行：</strong>左内 bit1 再贡献 -3。</li>
+    <li><strong>第 78～81 行：</strong>右内 bit3 贡献 +3；中心 bit2 没有分支，因为权重为 0。</li>
+    <li><strong>第 82～85 行：</strong>最右 bit4 贡献 +6。</li>
+    <li><strong>第 87～91 行：</strong>同侧多探头相加若超过 +6，钳回 +6，避免比最外侧还猛烈。</li>
+    <li><strong>第 92～95 行：</strong>负方向同样钳到 -6。</li>
+    <li><strong>第 97～98 行：</strong>范围已经在 int8_t 内，转换后返回。</li>
+    <li><strong>第 100～105 行：</strong>目标计算通过两个指针写回左右速度；只读取一次灰度位图，准备权重和速度调整量。</li>
+    <li><strong>第 107～112 行：</strong>全白时递增丢线计数，但最多增加到确认阈值，不继续溢出。</li>
+    <li><strong>第 113～116 行：</strong>计数达到 50 就返回 0，告诉上层“巡线正常结束”。</li>
+    <li><strong>第 118～121 行：</strong>尚未确认时保持上一拍左右目标并返回成功，避免一拍毛刺让车辆突然直行或停车。</li>
+    <li><strong>第 122 行：</strong>结束全白分支。</li>
+    <li><strong>第 124～126 行：</strong>重新看见任意黑线就清丢线计数，计算权重并保存为公开 lineError。</li>
+    <li><strong>第 128～131 行：</strong>调整量 = 巡航速度 × 最大比例 × 归一化权重；权重 ±6 时正好是巡航速度的 ±20%。</li>
+    <li><strong>第 133～135 行：</strong>左侧压线权重为负，所以左轮变慢、右轮变快；右侧正权重时相反。</li>
+    <li><strong>第 136～139 行：</strong>保存本次有效目标供短暂丢线沿用，然后返回成功。</li>
+    <li><strong>第 141～145 行：</strong>轮命令包装函数接收左右速度和 dt，声明共享命令结构体。</li>
+    <li><strong>第 146～149 行：</strong>填入左右目标；巡线不使用额外 PWM trim，因为转弯已经体现在不同轮速中。</li>
+    <li><strong>第 150～151 行：</strong>把结构体地址交给 MotionWheel，返回其结果。</li>
+  </ol>
+
+  <h4>Application/Control/MotionLine.c（3/4）：初始化、启动与确认丢线后的正常结束</h4>
+  <pre class="source-code"><code data-source="Application/Control/MotionLine.c" data-lines="173-246">MotionLine_Result_t MotionLine_Init(void)
+{
+    MotionWheel_Result_t wheelResult;
+
+    s_context.configured = 0U;
+    s_context.state = MOTION_LINE_STATE_IDLE;
+    s_context.error = MOTION_LINE_ERROR_NONE;
+    MotionLine_ResetControl();
+
+    wheelResult = MotionWheel_Init();
+    if ((wheelResult != MOTION_WHEEL_RESULT_OK) ||
+        (MotionLine_ParametersAreValid() == 0U))
+    {
+        return MOTION_LINE_RESULT_INVALID_ARGUMENT;
+    }
+
+    s_context.configured = 1U;
+    return MOTION_LINE_RESULT_OK;
+}
+
+MotionLine_Result_t MotionLine_Start(float speedMMps)
+{
+    if (s_context.configured == 0U)
+    {
+        return MOTION_LINE_RESULT_NOT_CONFIGURED;
+    }
+    if (MotionLine_IsBusy() != 0U)
+    {
+        return MOTION_LINE_RESULT_BUSY;
+    }
+    if ((!isfinite(speedMMps)) || (speedMMps &lt;= 0.0f))
+    {
+        return MOTION_LINE_RESULT_INVALID_ARGUMENT;
+    }
+
+    MotionWheel_Stop();
+    MotionLine_ResetControl();
+    s_context.cruiseSpeedMMps =
+        (speedMMps &gt; MOTION_LINE_MAX_SPEED_MMPS) ?
+            MOTION_LINE_MAX_SPEED_MMPS : speedMMps;
+    s_context.error = MOTION_LINE_ERROR_NONE;
+    s_context.state = MOTION_LINE_STATE_RUNNING;
+    return MOTION_LINE_RESULT_OK;
+}
+
+void MotionLine_Update(float dt)
+{
+    float leftSpeedMMps;
+    float rightSpeedMMps;
+
+    if (s_context.state != MOTION_LINE_STATE_RUNNING)
+    {
+        return;
+    }
+    if ((!isfinite(dt)) || (dt &lt;= 0.0f))
+    {
+        MotionLine_SetError(MOTION_LINE_ERROR_UPDATE_PERIOD_INVALID);
+        return;
+    }
+    if (MotionLine_CalculateTargetSpeeds(
+            &amp;leftSpeedMMps, &amp;rightSpeedMMps, dt) == 0U)
+    {
+        /* 25E 等流程把确认丢线作为巡线任务的正常结束条件。 */
+        MotionWheel_Stop();
+        s_context.error = MOTION_LINE_ERROR_NONE;
+        s_context.state = MOTION_LINE_STATE_FINISHED;
+        return;
+    }
+    if (MotionLine_ApplyWheelCommand(
+            leftSpeedMMps, rightSpeedMMps, dt) != MOTION_WHEEL_RESULT_OK)
+    {
+        MotionLine_SetError(MOTION_LINE_ERROR_WHEEL);
+    }
+}</code></pre>
+  <ol class="line-notes">
+    <li><strong>第 153～160 行：</strong>初始化先关配置门闩，复位状态、错误和所有运行量。</li>
+    <li><strong>第 162～167 行：</strong>初始化共享 MotionWheel 并检查巡线常量；失败时不置 configured。</li>
+    <li><strong>第 169～171 行：</strong>全部成功后开放启动并返回 OK。</li>
+    <li><strong>第 173～178 行：</strong>Start 未配置时拒绝。</li>
+    <li><strong>第 179～182 行：</strong>若直接调用时已经 RUNNING，返回 BUSY。</li>
+    <li><strong>第 183～186 行：</strong>请求速度必须有限且为正。</li>
+    <li><strong>第 188～192 行：</strong>停止旧轮速、清历史；超过 1000 的请求被三目运算符钳到上限。</li>
+    <li><strong>第 193～196 行：</strong>清错误、进入 RUNNING 并返回成功。</li>
+    <li><strong>第 198～202 行：</strong>Update 准备左右目标局部变量。</li>
+    <li><strong>第 203～206 行：</strong>不是 RUNNING 时不再触碰轮速层。</li>
+    <li><strong>第 207～211 行：</strong>dt 非有限或非正，进入 update-period 错误并返回。</li>
+    <li><strong>第 212～214 行：</strong>通过指针计算左右目标；返回 0 代表已连续全白达到确认阈值。</li>
+    <li><strong>第 215～219 行：</strong>确认丢线是题目流程的正常终点，因此停止轮速、保持 error NONE、状态设 FINISHED。</li>
+    <li><strong>第 220 行：</strong>结束丢线完成分支。</li>
+    <li><strong>第 221～225 行：</strong>仍在线时提交轮速；MotionWheel 失败才进入真正的 WHEEL 错误。</li>
+    <li><strong>第 226 行：</strong>结束 Update。</li>
+  </ol>
+
+  <h4>Application/Control/MotionLine.c（4/4）：停止与状态查询</h4>
+  <pre class="source-code"><code data-source="Application/Control/MotionLine.c" data-lines="248-284">void MotionLine_Stop(void)
+{
+    MotionWheel_Stop();
+    MotionLine_ResetControl();
+    s_context.error = MOTION_LINE_ERROR_NONE;
+    s_context.state = MOTION_LINE_STATE_IDLE;
+}
+
+uint8_t MotionLine_IsConfigured(void)
+{
+    return s_context.configured;
+}
+
+uint8_t MotionLine_IsBusy(void)
+{
+    return (s_context.state == MOTION_LINE_STATE_RUNNING) ? 1U : 0U;
+}
+
+uint8_t MotionLine_IsFinished(void)
+{
+    return (s_context.state == MOTION_LINE_STATE_FINISHED) ? 1U : 0U;
+}
+
+MotionLine_State_t MotionLine_GetState(void)
+{
+    return s_context.state;
+}
+
+MotionLine_Error_t MotionLine_GetError(void)
+{
+    return s_context.error;
+}
+
+float MotionLine_GetLineError(void)
+{
+    return s_context.lineError;
+}</code></pre>
+  <ol class="line-notes">
+    <li><strong>第 228～234 行：</strong>Stop 停止轮速、清控制数据与错误并回 IDLE，但保留 configured 以便下次启动。</li>
+    <li><strong>第 236～239 行：</strong>返回配置门闩。</li>
+    <li><strong>第 241～244 行：</strong>只有 RUNNING 算忙；FINISHED 和 ERROR 都不再控制车轮。</li>
+    <li><strong>第 246～249 行：</strong>只有确认丢线形成的 FINISHED 才返回已完成。</li>
+    <li><strong>第 251～254 行：</strong>返回精确状态。</li>
+    <li><strong>第 256～259 行：</strong>返回巡线错误。</li>
+    <li><strong>第 261～264 行：</strong>返回最近一次看见黑线时的权重；短暂丢线期间它不会更新。</li>
+  </ol>
+
+  <h4>Application/Control/Nav.c（1/4）：转向上下文、斜坡工具和参数校验</h4>
+  <pre class="source-code"><code data-source="Application/Control/Nav.c" data-lines="1-99">#include "Application/Control/Nav.h"
+#include "Application/Control/MotionWheel.h"
+#include "Application/State/Heading.h"
+#include &lt;math.h&gt;
+
+typedef struct
+{
+    Nav_State_t state;
+    Nav_Error_t error;
+    float targetYawDeg;
+    float angleErrorDeg;
+    float requestedSpeedMMps;
+    float profileTurnSpeedMMps;
+    uint8_t settleCount;
+    uint8_t configured;
+} Nav_Context_t;
+
+/* 运行时可调参数，默认值取头文件 #define；范围校验由 Param 模块负责。 */
+float Nav_TuneMaxTurnSpeedMMps = NAV_MAX_TURN_SPEED_MMPS;
+float Nav_TuneMinTurnSpeedMMps = NAV_MIN_TURN_SPEED_MMPS;
+float Nav_TuneSlowdownAngleDeg = NAV_SLOWDOWN_ANGLE_DEG;
+float Nav_TuneAngleToleranceDeg = NAV_ANGLE_TOLERANCE_DEG;
+
+static Nav_Context_t s_context = {
+    .state = NAV_STATE_IDLE,
+    .error = NAV_ERROR_NONE,
+};
+
+static float Nav_Clamp(float value, float minimum, float maximum)
+{
+    if (value &lt; minimum)
+    {
+        return minimum;
+    }
+    if (value &gt; maximum)
+    {
+        return maximum;
+    }
+    return value;
+}
+
+static float Nav_Approach(float current, float target, float maximumStep)
+{
+    if (current &lt; target)
+    {
+        current += maximumStep;
+        return (current &gt; target) ? target : current;
+    }
+    if (current &gt; target)
+    {
+        current -= maximumStep;
+        return (current &lt; target) ? target : current;
+    }
+    return current;
+}
+
+static uint8_t Nav_ParametersAreValid(void)
+{
+    if ((!isfinite(NAV_MAX_TURN_SPEED_MMPS)) ||
+        (!isfinite(NAV_MIN_TURN_SPEED_MMPS)) ||
+        (!isfinite(NAV_SLOWDOWN_ANGLE_DEG)) ||
+        (!isfinite(NAV_ACCELERATION_MMPS2)) ||
+        (!isfinite(NAV_DECELERATION_MMPS2)) ||
+        (!isfinite(NAV_ANGLE_TOLERANCE_DEG)))
+    {
+        return 0U;
+    }
+    if ((NAV_MAX_TURN_SPEED_MMPS &lt;= 0.0f) ||
+        (NAV_MIN_TURN_SPEED_MMPS &lt;= 0.0f) ||
+        (NAV_MIN_TURN_SPEED_MMPS &gt; NAV_MAX_TURN_SPEED_MMPS) ||
+        (NAV_SLOWDOWN_ANGLE_DEG &lt;= NAV_ANGLE_TOLERANCE_DEG) ||
+        (NAV_ACCELERATION_MMPS2 &lt;= 0.0f) ||
+        (NAV_DECELERATION_MMPS2 &lt;= 0.0f) ||
+        (NAV_ANGLE_TOLERANCE_DEG &lt;= 0.0f) ||
+        (NAV_SETTLE_TICKS == 0U) ||
+        ((NAV_ROTATION_COMMAND_SIGN != 1) &amp;&amp;
+         (NAV_ROTATION_COMMAND_SIGN != -1)))
+    {
+        return 0U;
+    }
+    return 1U;
+}
+
+static void Nav_ResetRuntime(void)
+{
+    s_context.targetYawDeg = 0.0f;
+    s_context.angleErrorDeg = 0.0f;
+    s_context.requestedSpeedMMps = 0.0f;
+    s_context.profileTurnSpeedMMps = 0.0f;
+    s_context.settleCount = 0U;
+}
+
+static void Nav_SetError(Nav_Error_t error)
+{
+    MotionWheel_Stop();
+    s_context.profileTurnSpeedMMps = 0.0f;
+    s_context.error = error;
+    s_context.state = NAV_STATE_ERROR;
+}</code></pre>
+  <ol class="line-notes">
+    <li><strong>第 1～4 行：</strong>引入 Nav 接口、共享轮速层、连续航向和数学函数。</li>
+    <li><strong>第 6～10 行：</strong>上下文先保存状态、错误和绝对目标航向。</li>
+    <li><strong>第 11～14 行：</strong>保存当前误差、调用者请求速度、经过斜坡后的有符号转向轮速与稳定计数。</li>
+    <li><strong>第 15～16 行：</strong>配置门闩结束结构体。</li>
+    <li><strong>第 18～21 行：</strong>静态上下文从 IDLE、无错误开始，其他字段自动为 0。</li>
+    <li><strong>第 23～28 行：</strong>Clamp 处理低于下界的值。</li>
+    <li><strong>第 29～34 行：</strong>处理高于上界与正常范围，结束限幅函数。</li>
+    <li><strong>第 36～41 行：</strong>Approach 当前低于目标时按最大步长增加且不越过。</li>
+    <li><strong>第 42 行：</strong>结束当前值低于目标的分支。</li>
+    <li><strong>第 43～49 行：</strong>当前高于目标时对称减小；相等时保持。</li>
+    <li><strong>第 51～58 行：</strong>先检查最大/最小速度、减速角、加减速度和角容差都为有限浮点数。</li>
+    <li><strong>第 59～61 行：</strong>任一非有限立即失败。</li>
+    <li><strong>第 62～65 行：</strong>最大最小速度必须正，最小不能大于最大，减速区必须大于完成容差。</li>
+    <li><strong>第 66～71 行：</strong>加减速度与容差必须正，稳定拍数非零，旋转命令符号只能 ±1。</li>
+    <li><strong>第 72～76 行：</strong>范围非法返回 0，全部通过返回 1。</li>
+    <li><strong>第 78～85 行：</strong>运行复位清目标、误差、请求速度、斜坡速度和稳定计数，但不清 configured。</li>
+    <li><strong>第 87～93 行：</strong>运行错误停止轮速、清转速，保存错误并进入 ERROR。</li>
+  </ol>
+
+  <h4>Application/Control/Nav.c（2/4）：绝对目标、角度降速与反向轮速</h4>
+  <pre class="source-code"><code data-source="Application/Control/Nav.c" data-lines="101-194">static Nav_Result_t Nav_Start(float targetYawDeg, float speedMMps)
+{
+    if (s_context.configured == 0U)
+    {
+        return NAV_RESULT_NOT_CONFIGURED;
+    }
+    if (Nav_IsBusy() != 0U)
+    {
+        return NAV_RESULT_BUSY;
+    }
+    if ((!isfinite(targetYawDeg)) || (!isfinite(speedMMps)) ||
+        (speedMMps &lt;= 0.0f))
+    {
+        return NAV_RESULT_INVALID_ARGUMENT;
+    }
+    if (Heading_IsReady() == 0U)
+    {
+        return NAV_RESULT_SENSOR_NOT_READY;
+    }
+
+    MotionWheel_Stop();
+    Nav_ResetRuntime();
+    s_context.targetYawDeg = targetYawDeg;
+    s_context.angleErrorDeg = targetYawDeg - Heading_GetYaw();
+    s_context.requestedSpeedMMps = Nav_Clamp(
+        speedMMps, 0.0f, Nav_TuneMaxTurnSpeedMMps);
+    s_context.error = NAV_ERROR_NONE;
+    s_context.state = NAV_STATE_RUNNING;
+    return NAV_RESULT_OK;
+}
+
+/* 根据剩余角度生成带低速区的有符号转向轮速。 */
+static float Nav_CalculateTargetTurnSpeed(void)
+{
+    float absoluteErrorDeg = fabsf(s_context.angleErrorDeg);
+    float minimumSpeedMMps;
+    float slowdownRatio;
+    float speedMagnitudeMMps;
+    float direction;
+
+    if (absoluteErrorDeg &lt;= Nav_TuneAngleToleranceDeg)
+    {
+        return 0.0f;
+    }
+
+    minimumSpeedMMps = Nav_Clamp(
+        Nav_TuneMinTurnSpeedMMps,
+        0.0f, s_context.requestedSpeedMMps);
+    slowdownRatio = Nav_Clamp(
+        absoluteErrorDeg / Nav_TuneSlowdownAngleDeg,
+        0.0f, 1.0f);
+    speedMagnitudeMMps = minimumSpeedMMps +
+        (s_context.requestedSpeedMMps - minimumSpeedMMps) *
+        slowdownRatio;
+
+    direction = (s_context.angleErrorDeg &gt;= 0.0f) ? 1.0f : -1.0f;
+    return direction * (float)NAV_ROTATION_COMMAND_SIGN *
+           speedMagnitudeMMps;
+}
+
+static void Nav_UpdateSpeedProfile(float targetTurnSpeedMMps, float dt)
+{
+    float speedStepMMps;
+    uint8_t reversing =
+        ((targetTurnSpeedMMps * s_context.profileTurnSpeedMMps) &lt; 0.0f) ?
+            1U : 0U;
+
+    if ((reversing != 0U) ||
+        (fabsf(targetTurnSpeedMMps) &lt;
+         fabsf(s_context.profileTurnSpeedMMps)))
+    {
+        speedStepMMps = NAV_DECELERATION_MMPS2 * dt;
+    }
+    else
+    {
+        speedStepMMps = NAV_ACCELERATION_MMPS2 * dt;
+    }
+    s_context.profileTurnSpeedMMps = Nav_Approach(
+        s_context.profileTurnSpeedMMps,
+        targetTurnSpeedMMps,
+        speedStepMMps);
+}
+
+static MotionWheel_Result_t Nav_ApplyWheelCommand(float dt)
+{
+    MotionWheel_Command_t command = {0};
+    float turnSpeedMMps = s_context.profileTurnSpeedMMps;
+
+    /* 左右轮使用大小相等、方向相反的目标速度。 */
+    command.targetSpeedLMMps = turnSpeedMMps;
+    command.targetSpeedRMMps = -turnSpeedMMps;
+
+    return MotionWheel_Update(&amp;command, dt);
+}</code></pre>
+  <ol class="line-notes">
+    <li><strong>第 95～100 行：</strong>私有 Start 统一接收“绝对目标角”；未配置时拒绝。</li>
+    <li><strong>第 101～104 行：</strong>Nav 自身正在 RUNNING 时直接调用返回 BUSY。</li>
+    <li><strong>第 105～109 行：</strong>目标角和速度必须有限，速度必须正。</li>
+    <li><strong>第 110～113 行：</strong>Heading 离线无法形成角度闭环，返回传感器未就绪。</li>
+    <li><strong>第 115～118 行：</strong>停止旧轮速、清运行数据，保存绝对目标并计算连续坐标下的初始误差。</li>
+    <li><strong>第 119～123 行：</strong>请求速度限到最大值，清错误，进入 RUNNING 并返回成功。</li>
+    <li><strong>第 124 行：</strong>结束私有 Nav_Start。</li>
+    <li><strong>第 126～133 行：</strong>目标轮速计算先取误差绝对值，准备最低速度、降速比例、速度大小与方向。</li>
+    <li><strong>第 135～138 行：</strong>误差已在 ±2° 容差内时目标转速为 0。</li>
+    <li><strong>第 140～142 行：</strong>实际最低速度不能超过调用者请求；若只请求 30 mm/s，最低值会被钳到 30，而不是强行 40。</li>
+    <li><strong>第 143～145 行：</strong>误差除以 45° 得降速比例，并限制在 0～1。</li>
+    <li><strong>第 146～148 行：</strong>在最小速度与请求速度之间线性插值：远处接近请求速度，越近越靠近最低速度。</li>
+    <li><strong>第 150～153 行：</strong>误差正负决定方向，再乘实车方向符号，返回有符号轮速。</li>
+    <li><strong>第 155～160 行：</strong>速度斜坡先判断目标和当前速度乘积是否为负；负值说明要反向。</li>
+    <li><strong>第 162～167 行：</strong>反向或目标绝对值变小时使用较大的减速度。</li>
+    <li><strong>第 168～171 行：</strong>目标绝对值增大时使用较缓的加速度。</li>
+    <li><strong>第 172～176 行：</strong>按本拍步长让有符号转速接近目标。</li>
+    <li><strong>第 178～181 行：</strong>轮命令结构体用 <code>{0}</code> 全字段清零，再取得当前斜坡转速。</li>
+    <li><strong>第 183～185 行：</strong>左轮为 +turnSpeed、右轮为 -turnSpeed，使车体中心附近原地旋转。</li>
+    <li><strong>第 187～188 行：</strong>提交给共享 MotionWheel；trim 因结构体清零而为 0。</li>
+  </ol>
+
+  <h4>Application/Control/Nav.c（3/4）：To/By 转换、到角减速和连续稳定</h4>
+  <pre class="source-code"><code data-source="Application/Control/Nav.c" data-lines="196-281">Nav_Result_t Nav_Init(void)
+{
+    MotionWheel_Result_t wheelResult;
+
+    MotionWheel_Stop();
+    s_context.configured = 0U;
+    s_context.state = NAV_STATE_IDLE;
+    s_context.error = NAV_ERROR_NONE;
+    Nav_ResetRuntime();
+
+    wheelResult = MotionWheel_Init();
+    if ((wheelResult != MOTION_WHEEL_RESULT_OK) ||
+        (Nav_ParametersAreValid() == 0U))
+    {
+        return NAV_RESULT_INVALID_ARGUMENT;
+    }
+
+    s_context.configured = 1U;
+    return NAV_RESULT_OK;
+}
+
+Nav_Result_t Nav_StartTo(float targetYawDeg, float speedMMps)
+{
+    return Nav_Start(targetYawDeg, speedMMps);
+}
+
+Nav_Result_t Nav_StartBy(float deltaYawDeg, float speedMMps)
+{
+    if (!isfinite(deltaYawDeg))
+    {
+        return NAV_RESULT_INVALID_ARGUMENT;
+    }
+    if (Heading_IsReady() == 0U)
+    {
+        return NAV_RESULT_SENSOR_NOT_READY;
+    }
+    return Nav_StartTo(Heading_GetYaw() + deltaYawDeg, speedMMps);
+}
+
+void Nav_Update(float dt)
+{
+    float targetTurnSpeedMMps;
+
+    if (s_context.state != NAV_STATE_RUNNING)
+    {
+        return;
+    }
+    if ((!isfinite(dt)) || (dt &lt;= 0.0f))
+    {
+        Nav_SetError(NAV_ERROR_UPDATE_PERIOD_INVALID);
+        return;
+    }
+    if (Heading_IsReady() == 0U)
+    {
+        Nav_SetError(NAV_ERROR_HEADING_OFFLINE);
+        return;
+    }
+
+    s_context.angleErrorDeg =
+        s_context.targetYawDeg - Heading_GetYaw();
+    targetTurnSpeedMMps = Nav_CalculateTargetTurnSpeed();
+    Nav_UpdateSpeedProfile(targetTurnSpeedMMps, dt);
+
+    if (fabsf(s_context.angleErrorDeg) &lt;= Nav_TuneAngleToleranceDeg)
+    {
+        if (fabsf(s_context.profileTurnSpeedMMps) &lt;= 0.001f)
+        {
+            MotionWheel_Stop();
+            s_context.settleCount++;
+            if (s_context.settleCount &gt;= NAV_SETTLE_TICKS)
+            {
+                s_context.state = NAV_STATE_COMPLETED;
+            }
+            return;
+        }
+    }
+    else
+    {
+        s_context.settleCount = 0U;
+    }
+
+    if (Nav_ApplyWheelCommand(dt) != MOTION_WHEEL_RESULT_OK)
+    {
+        Nav_SetError(NAV_ERROR_WHEEL);
+    }
+}</code></pre>
+  <ol class="line-notes">
+    <li><strong>第 190～198 行：</strong>初始化停止轮速、关配置门闩、复位状态错误和全部运行数据。</li>
+    <li><strong>第 200～205 行：</strong>初始化共享 MotionWheel 并校验 Nav 常量；失败时返回参数错误。</li>
+    <li><strong>第 207～209 行：</strong>成功后置 configured 并返回 OK。</li>
+    <li><strong>第 211～214 行：</strong>StartTo 不改目标，直接交给私有绝对目标 Start。</li>
+    <li><strong>第 216～221 行：</strong>StartBy 先拒绝非有限增量。</li>
+    <li><strong>第 222～226 行：</strong>确认 Heading 在线后，把“当前连续航向 + 增量”转换为绝对目标，再复用 StartTo。</li>
+    <li><strong>第 227 行：</strong>结束相对转向启动函数。</li>
+    <li><strong>第 229～235 行：</strong>Update 只在 RUNNING 工作，先准备本拍目标转速。</li>
+    <li><strong>第 236 行：</strong>结束非 RUNNING 的提前返回分支。</li>
+    <li><strong>第 237～241 行：</strong>dt 非有限或非正，停止并记录周期错误。</li>
+    <li><strong>第 242～246 行：</strong>运行中 Heading 掉线，停止并记录航向错误。</li>
+    <li><strong>第 248～251 行：</strong>每拍重新用目标减当前航向算误差，再算角度目标速度并推进斜坡。</li>
+    <li><strong>第 253～256 行：</strong>进入 ±2° 只是第一条件；还要求斜坡轮速已经降到近零。</li>
+    <li><strong>第 257～262 行：</strong>满足两条件后停止轮速并把稳定计数加一；累计到 3 拍才进入 COMPLETED。</li>
+    <li><strong>第 263～265 行：</strong>本拍已经处于零速稳定阶段，直接返回，不再下发转向命令。</li>
+    <li><strong>第 266～269 行：</strong>误差一旦离开容差，稳定计数清零，必须重新连续满足。</li>
+    <li><strong>第 271～274 行：</strong>尚未稳定完成时提交反向轮速；失败进入 WHEEL 错误。</li>
+    <li><strong>第 275 行：</strong>结束 Update。</li>
+  </ol>
+
+  <h4>Application/Control/Nav.c（4/4）：停止与查询接口</h4>
+  <pre class="source-code"><code data-source="Application/Control/Nav.c" data-lines="283-324">void Nav_Stop(void)
+{
+    MotionWheel_Stop();
+    Nav_ResetRuntime();
+    s_context.error = NAV_ERROR_NONE;
+    s_context.state = NAV_STATE_IDLE;
+}
+
+uint8_t Nav_IsConfigured(void)
+{
+    return s_context.configured;
+}
+
+uint8_t Nav_IsBusy(void)
+{
+    return (s_context.state == NAV_STATE_RUNNING) ? 1U : 0U;
+}
+
+uint8_t Nav_IsFinished(void)
+{
+    return (s_context.state == NAV_STATE_COMPLETED) ? 1U : 0U;
+}
+
+Nav_State_t Nav_GetState(void)
+{
+    return s_context.state;
+}
+
+Nav_Error_t Nav_GetError(void)
+{
+    return s_context.error;
+}
+
+float Nav_GetTargetYawDeg(void)
+{
+    return s_context.targetYawDeg;
+}
+
+float Nav_GetAngleErrorDeg(void)
+{
+    return s_context.angleErrorDeg;
+}</code></pre>
+  <ol class="line-notes">
+    <li><strong>第 277～283 行：</strong>Stop 停轮、清目标/误差/斜坡/稳定计数，清错误并回 IDLE。</li>
+    <li><strong>第 285～288 行：</strong>配置查询保留初始化结果。</li>
+    <li><strong>第 290～293 行：</strong>只有 RUNNING 算忙。</li>
+    <li><strong>第 295～298 行：</strong>只有 COMPLETED 算完成。</li>
+    <li><strong>第 300～303 行：</strong>返回精确 Nav 状态。</li>
+    <li><strong>第 305～308 行：</strong>返回具体 Nav 错误。</li>
+    <li><strong>第 310～313 行：</strong>返回绝对连续航向目标。</li>
+    <li><strong>第 315～318 行：</strong>返回最近一次 Update 计算的带符号角误差。</li>
+  </ol>
+
+  <h4>Application/Control/MotionManager.c（1/4）：管理器上下文与三阶段刹车</h4>
+  <pre class="source-code"><code data-source="Application/Control/MotionManager.c" data-lines="1-67">#include "Application/Control/MotionManager.h"
+#include "Application/Control/MotionLine.h"
+#include "Application/Control/MotionStraight.h"
+#include "Application/Control/MotionWheel.h"
+#include "Application/Control/Nav.h"
+#include "Hardware/Motor/Motor.h"
+#include &lt;math.h&gt;
+
+typedef struct
+{
+    MotionManager_Mode_t mode;
+    MotionManager_Error_t error;
+    uint8_t configured;
+    float brakeElapsedSeconds;
+    uint8_t brakeFinished;
+    float speedTargetMMps;
+} MotionManager_Context_t;
+
+static MotionManager_Context_t s_context;
+
+/* 刹车参数固定在头文件，初始化时统一检查，防止运行期间出现无效时长。 */
+static uint8_t MotionManager_BrakeParametersAreValid(void)
+{
+    if ((!isfinite(MOTION_MANAGER_BRAKE_RELEASE_SECONDS)) ||
+        (!isfinite(MOTION_MANAGER_BRAKE_HOLD_SECONDS)))
+    {
+        return 0U;
+    }
+
+    return ((MOTION_MANAGER_BRAKE_RELEASE_SECONDS &gt;= 0.0f) &amp;&amp;
+            (MOTION_MANAGER_BRAKE_HOLD_SECONDS &gt; 0.0f)) ? 1U : 0U;
+}
+
+/* 完整刹车过程只占用 MotionManager，不进入 MotionWheel 速度闭环。 */
+static void MotionManager_UpdateBrake(float dt)
+{
+    float brakeStartSeconds;
+    float brakeEndSeconds;
+
+    if ((!isfinite(dt)) || (dt &lt;= 0.0f))
+    {
+        Motor_StopAll();
+        s_context.error = MOTION_MANAGER_ERROR_BRAKE;
+        return;
+    }
+
+    s_context.brakeElapsedSeconds += dt;
+    brakeStartSeconds = MOTION_MANAGER_BRAKE_RELEASE_SECONDS;
+    brakeEndSeconds = brakeStartSeconds + MOTION_MANAGER_BRAKE_HOLD_SECONDS;
+
+    if (s_context.brakeElapsedSeconds &lt; brakeStartSeconds)
+    {
+        /* 直线速度已平滑降至零；这里继续释放 PWM，避免突变制动。 */
+        Motor_StopAll();
+        return;
+    }
+
+    if (s_context.brakeElapsedSeconds &lt; brakeEndSeconds)
+    {
+        Motor_Brake();
+        return;
+    }
+
+    /* 制动脉冲结束必须释放方向脚，防止电机持续发热。 */
+    Motor_StopAll();
+    s_context.brakeFinished = 1U;
+}</code></pre>
+  <ol class="line-notes">
+    <li><strong>第 1～4 行：</strong>引入管理器、三个行为中的 Line/Straight 和共享 MotionWheel。</li>
+    <li><strong>第 5～7 行：</strong>再引入 Nav、底层 Motor 直接刹车接口与浮点有限性检查。</li>
+    <li><strong>第 9～13 行：</strong>上下文保存唯一当前模式、统一错误和配置门闩。</li>
+    <li><strong>第 14～16 行：</strong>刹车模式还需累计秒数和完成标志，结束结构体定义。</li>
+    <li><strong>第 18 行：</strong>静态上下文默认全零，因此初始 mode 对应枚举值 0 的 IDLE。</li>
+    <li><strong>第 20～26 行：</strong>刹车参数校验先拒绝 release/hold 的 NaN 或无穷。</li>
+    <li><strong>第 27 行：</strong>结束非有限参数分支。</li>
+    <li><strong>第 29～31 行：</strong>释放时间允许为 0，主动刹车时间必须严格大于 0，三目运算返回 1/0。</li>
+    <li><strong>第 33～37 行：</strong>刹车绕过轮速闭环，直接按时间操作 Motor；准备开始与结束时刻。</li>
+    <li><strong>第 39～44 行：</strong>dt 非法时只能释放电机并记录 BRAKE 错误；不把 finished 置 1，Mission 会先看到错误。</li>
+    <li><strong>第 46～48 行：</strong>累计真实秒数；主动刹车起点等于释放时长，终点等于释放加保持时长。</li>
+    <li><strong>第 50～55 行：</strong>还在前置释放阶段就保持 Motor_StopAll，避免从驱动瞬间切成短接制动。</li>
+    <li><strong>第 57～61 行：</strong>进入保持窗口后调用 <code>Motor_Brake</code>，直到到达结束时刻。</li>
+    <li><strong>第 63～66 行：</strong>制动脉冲结束立即释放方向脚并标记完成，避免持续刹车发热。</li>
+  </ol>
+
+  <h4>Application/Control/MotionManager.c（2/4）：把各模块结果映射成统一语言</h4>
+  <pre class="source-code"><code data-source="Application/Control/MotionManager.c" data-lines="69-145">static MotionManager_Result_t MotionManager_MapStraightResult(
+    MotionStraight_Result_t result)
+{
+    if (result == MOTION_STRAIGHT_RESULT_OK)
+    {
+        return MOTION_MANAGER_RESULT_OK;
+    }
+    if (result == MOTION_STRAIGHT_RESULT_INVALID_ARGUMENT)
+    {
+        return MOTION_MANAGER_RESULT_INVALID_ARGUMENT;
+    }
+    if (result == MOTION_STRAIGHT_RESULT_NOT_CONFIGURED)
+    {
+        return MOTION_MANAGER_RESULT_NOT_CONFIGURED;
+    }
+    if (result == MOTION_STRAIGHT_RESULT_SENSOR_NOT_READY)
+    {
+        return MOTION_MANAGER_RESULT_SENSOR_NOT_READY;
+    }
+    return MOTION_MANAGER_RESULT_START_FAILED;
+}
+
+static MotionManager_Result_t MotionManager_MapLineResult(
+    MotionLine_Result_t result)
+{
+    if (result == MOTION_LINE_RESULT_OK)
+    {
+        return MOTION_MANAGER_RESULT_OK;
+    }
+    if (result == MOTION_LINE_RESULT_INVALID_ARGUMENT)
+    {
+        return MOTION_MANAGER_RESULT_INVALID_ARGUMENT;
+    }
+    if (result == MOTION_LINE_RESULT_NOT_CONFIGURED)
+    {
+        return MOTION_MANAGER_RESULT_NOT_CONFIGURED;
+    }
+    return MOTION_MANAGER_RESULT_START_FAILED;
+}
+
+static MotionManager_Result_t MotionManager_MapNavResult(Nav_Result_t result)
+{
+    if (result == NAV_RESULT_OK)
+    {
+        return MOTION_MANAGER_RESULT_OK;
+    }
+    if (result == NAV_RESULT_INVALID_ARGUMENT)
+    {
+        return MOTION_MANAGER_RESULT_INVALID_ARGUMENT;
+    }
+    if (result == NAV_RESULT_NOT_CONFIGURED)
+    {
+        return MOTION_MANAGER_RESULT_NOT_CONFIGURED;
+    }
+    if (result == NAV_RESULT_SENSOR_NOT_READY)
+    {
+        return MOTION_MANAGER_RESULT_SENSOR_NOT_READY;
+    }
+    return MOTION_MANAGER_RESULT_START_FAILED;
+}
+
+static MotionManager_Result_t MotionManager_FinishStart(
+    MotionManager_Result_t result, MotionManager_Mode_t mode,
+    MotionManager_Error_t error)
+{
+    if (result == MOTION_MANAGER_RESULT_OK)
+    {
+        s_context.mode = mode;
+        s_context.error = MOTION_MANAGER_ERROR_NONE;
+    }
+    else
+    {
+        s_context.mode = MOTION_MANAGER_MODE_IDLE;
+        s_context.error = error;
+    }
+    return result;
+}</code></pre>
+  <ol class="line-notes">
+    <li><strong>第 68～74 行：</strong>Straight 的 OK 映射为 Manager OK。</li>
+    <li><strong>第 75～82 行：</strong>参数非法和未配置保留具体含义。</li>
+    <li><strong>第 83～88 行：</strong>传感器未就绪也保留；BUSY 等其余结果归为 START_FAILED。</li>
+    <li><strong>第 90～96 行：</strong>Line 的 OK 映射为统一 OK。</li>
+    <li><strong>第 97～104 行：</strong>Line 的参数非法与未配置映射到同名 Manager 结果。</li>
+    <li><strong>第 105～106 行：</strong>Line BUSY 等其他情况统一为 START_FAILED。</li>
+    <li><strong>第 108～113 行：</strong>Nav OK 映射成功。</li>
+    <li><strong>第 114～121 行：</strong>Nav 参数非法、未配置分别保留。</li>
+    <li><strong>第 122～127 行：</strong>Heading 未就绪映射为 SENSOR_NOT_READY，剩余情况为 START_FAILED。</li>
+    <li><strong>第 129～132 行：</strong>FinishStart 同时接收启动结果、成功模式和失败时错误类别，避免五个入口重复收尾代码。</li>
+    <li><strong>第 133～137 行：</strong>启动成功才把 Manager 所有权切到目标模式，并清旧错误。</li>
+    <li><strong>第 138～142 行：</strong>启动失败回到 IDLE，并记录是 Straight/Line/Turn 哪一类启动失败。</li>
+    <li><strong>第 143～144 行：</strong>原样返回映射后的启动结果。</li>
+  </ol>
+
+  <h4>Application/Control/MotionManager.c（3/4）：初始化和五种启动入口的互斥切换</h4>
+  <pre class="source-code"><code data-source="Application/Control/MotionManager.c" data-lines="147-299">MotionManager_Result_t MotionManager_Init(void)
+{
+    s_context.configured = 0U;
+    s_context.mode = MOTION_MANAGER_MODE_IDLE;
+    s_context.error = MOTION_MANAGER_ERROR_NONE;
+    s_context.brakeElapsedSeconds = 0.0f;
+    s_context.brakeFinished = 0U;
+    s_context.speedTargetMMps = 0.0f;
+
+    if ((MotionManager_BrakeParametersAreValid() == 0U) ||
+        (MotionStraight_Init() != MOTION_STRAIGHT_RESULT_OK) ||
+        (MotionLine_Init() != MOTION_LINE_RESULT_OK) ||
+        (Nav_Init() != NAV_RESULT_OK))
+    {
+        MotionWheel_Stop();
+        s_context.error = MOTION_MANAGER_ERROR_INIT;
+        return MOTION_MANAGER_RESULT_NOT_CONFIGURED;
+    }
+
+    MotionWheel_Stop();
+    s_context.configured = 1U;
+    return MOTION_MANAGER_RESULT_OK;
+}
+
+MotionManager_Result_t MotionManager_StartForward(
+    uint32_t distanceMM, float speedMMps, float endSpeedMMps)
+{
+    MotionManager_Result_t result;
+
+    if (s_context.configured == 0U)
+    {
+        return MOTION_MANAGER_RESULT_NOT_CONFIGURED;
+    }
+
+    MotionManager_Stop();
+    result = MotionManager_MapStraightResult(MotionStraight_StartForward(
+        distanceMM, speedMMps, endSpeedMMps));
+    return MotionManager_FinishStart(
+        result, MOTION_MANAGER_MODE_STRAIGHT,
+        MOTION_MANAGER_ERROR_STRAIGHT);
+}
+
+MotionManager_Result_t MotionManager_StartBackward(
+    uint32_t distanceMM, float speedMMps, float endSpeedMMps)
+{
+    MotionManager_Result_t result;
+
+    if (s_context.configured == 0U)
+    {
+        return MOTION_MANAGER_RESULT_NOT_CONFIGURED;
+    }
+
+    MotionManager_Stop();
+    result = MotionManager_MapStraightResult(MotionStraight_StartBackward(
+        distanceMM, speedMMps, endSpeedMMps));
+    return MotionManager_FinishStart(
+        result, MOTION_MANAGER_MODE_STRAIGHT,
+        MOTION_MANAGER_ERROR_STRAIGHT);
+}
+
+MotionManager_Result_t MotionManager_StartLine(float speedMMps)
+{
+    MotionManager_Result_t result;
+
+    if (s_context.configured == 0U)
+    {
+        return MOTION_MANAGER_RESULT_NOT_CONFIGURED;
+    }
+
+    MotionManager_Stop();
+    result = MotionManager_MapLineResult(MotionLine_Start(speedMMps));
+    return MotionManager_FinishStart(
+        result, MOTION_MANAGER_MODE_LINE, MOTION_MANAGER_ERROR_LINE);
+}
+
+MotionManager_Result_t MotionManager_TurnTo(
+    float targetYawDeg, float speedMMps)
+{
+    MotionManager_Result_t result;
+
+    if (s_context.configured == 0U)
+    {
+        return MOTION_MANAGER_RESULT_NOT_CONFIGURED;
+    }
+
+    MotionManager_Stop();
+    result = MotionManager_MapNavResult(Nav_StartTo(targetYawDeg, speedMMps));
+    return MotionManager_FinishStart(
+        result, MOTION_MANAGER_MODE_TURN, MOTION_MANAGER_ERROR_TURN);
+}
+
+MotionManager_Result_t MotionManager_TurnBy(
+    float deltaYawDeg, float speedMMps)
+{
+    MotionManager_Result_t result;
+
+    if (s_context.configured == 0U)
+    {
+        return MOTION_MANAGER_RESULT_NOT_CONFIGURED;
+    }
+
+    MotionManager_Stop();
+    result = MotionManager_MapNavResult(Nav_StartBy(deltaYawDeg, speedMMps));
+    return MotionManager_FinishStart(
+        result, MOTION_MANAGER_MODE_TURN, MOTION_MANAGER_ERROR_TURN);
+}
+
+MotionManager_Result_t MotionManager_StartSpeed(float speedMMps)
+{
+    if (s_context.configured == 0U)
+    {
+        return MOTION_MANAGER_RESULT_NOT_CONFIGURED;
+    }
+    if ((!isfinite(speedMMps)) ||
+        (fabsf(speedMMps) &gt; MOTION_MANAGER_SPEED_MAX_MMPS))
+    {
+        return MOTION_MANAGER_RESULT_INVALID_ARGUMENT;
+    }
+
+    /* 已在恒速模式时只改目标：保留双轮 PID 状态，支持链式阶跃。 */
+    if (s_context.mode == MOTION_MANAGER_MODE_SPEED)
+    {
+        s_context.speedTargetMMps = speedMMps;
+        return MOTION_MANAGER_RESULT_OK;
+    }
+
+    MotionManager_Stop();
+    s_context.speedTargetMMps = speedMMps;
+    s_context.mode = MOTION_MANAGER_MODE_SPEED;
+    s_context.error = MOTION_MANAGER_ERROR_NONE;
+    return MOTION_MANAGER_RESULT_OK;
+}
+
+MotionManager_Result_t MotionManager_StartBrake(void)
+{
+    if (s_context.configured == 0U)
+    {
+        return MOTION_MANAGER_RESULT_NOT_CONFIGURED;
+    }
+    if (MotionManager_BrakeParametersAreValid() == 0U)
+    {
+        s_context.error = MOTION_MANAGER_ERROR_BRAKE;
+        return MOTION_MANAGER_RESULT_INVALID_ARGUMENT;
+    }
+
+    /* 此调用发生在目标状态 onEnter；只清理进入前的旧模式。 */
+    MotionManager_Stop();
+    s_context.brakeElapsedSeconds = 0.0f;
+    s_context.brakeFinished = 0U;
+    s_context.mode = MOTION_MANAGER_MODE_BRAKE;
+    s_context.error = MOTION_MANAGER_ERROR_NONE;
+    return MOTION_MANAGER_RESULT_OK;
+}</code></pre>
+  <ol class="line-notes">
+    <li><strong>第 146～152 行：</strong>初始化先清配置、模式、错误和刹车运行量。</li>
+    <li><strong>第 154～157 行：</strong>依次校验刹车并初始化 Straight、Line、Nav；逻辑或短路意味着前项失败后后项可能不再执行。</li>
+    <li><strong>第 158～162 行：</strong>任一步失败都停止共享轮速，记录 INIT 错误并保持未配置。</li>
+    <li><strong>第 164～167 行：</strong>全部成功后再次确保轮速停止，置 configured 并返回 OK。</li>
+    <li><strong>第 169～176 行：</strong>前进入口准备统一结果；Manager 未配置时立即拒绝。</li>
+    <li><strong>第 177 行：</strong>结束未配置检查。</li>
+    <li><strong>第 179～184 行：</strong>关键互斥策略：先无条件 Stop 当前模式，再启动 Straight，映射结果并决定新模式/错误。</li>
+    <li><strong>第 185 行：</strong>结束前进启动函数。</li>
+    <li><strong>第 187～195 行：</strong>后退入口具有相同的配置检查。</li>
+    <li><strong>第 197～203 行：</strong>同样先停旧模式，再调用 Straight backward，成功后模式仍是 STRAIGHT。</li>
+    <li><strong>第 205～212 行：</strong>巡线入口检查配置。</li>
+    <li><strong>第 214～218 行：</strong>停止旧控制器后启动 Line，统一结果与错误类别。</li>
+    <li><strong>第 220～228 行：</strong>绝对转向入口检查配置。</li>
+    <li><strong>第 230～234 行：</strong>先 Stop 再 Nav_StartTo，成功后模式为 TURN。</li>
+    <li><strong>第 236～244 行：</strong>相对转向入口同样检查配置。</li>
+    <li><strong>第 246～250 行：</strong>先 Stop 后调用 Nav_StartBy，再统一收尾。</li>
+    <li><strong>第 252～257 行：</strong>刹车入口先检查 Manager 已初始化。</li>
+    <li><strong>第 258～262 行：</strong>刹车参数若在运行前复查失败，记录 BRAKE 错并返回参数错误。</li>
+    <li><strong>第 264～270 行：</strong>清理旧模式、清刹车计时/完成标志，取得 BRAKE 所有权、清错误并返回成功。</li>
+    <li><strong>第 271 行：</strong>结束刹车启动。</li>
+  </ol>
+
+  <h4>Application/Control/MotionManager.c（4/4）：只更新当前模式、统一停止及状态语义</h4>
+  <pre class="source-code"><code data-source="Application/Control/MotionManager.c" data-lines="301-447">void MotionManager_Update(float dt)
+{
+    if (s_context.configured == 0U)
+    {
+        return;
+    }
+
+    switch (s_context.mode)
+    {
+        case MOTION_MANAGER_MODE_STRAIGHT:
+            MotionStraight_Update(dt);
+            if (MotionStraight_GetState() == MOTION_STRAIGHT_STATE_ERROR)
+            {
+                s_context.error = MOTION_MANAGER_ERROR_STRAIGHT;
+            }
+            break;
+
+        case MOTION_MANAGER_MODE_LINE:
+            MotionLine_Update(dt);
+            if (MotionLine_GetState() == MOTION_LINE_STATE_ERROR)
+            {
+                s_context.error = MOTION_MANAGER_ERROR_LINE;
+            }
+            break;
+
+        case MOTION_MANAGER_MODE_TURN:
+            Nav_Update(dt);
+            if (Nav_GetState() == NAV_STATE_ERROR)
+            {
+                s_context.error = MOTION_MANAGER_ERROR_TURN;
+            }
+            break;
+
+        case MOTION_MANAGER_MODE_BRAKE:
+            MotionManager_UpdateBrake(dt);
+            break;
+
+        case MOTION_MANAGER_MODE_SPEED:
+        {
+            MotionWheel_Command_t command = {0};
+
+            command.targetSpeedLMMps = s_context.speedTargetMMps;
+            command.targetSpeedRMMps = s_context.speedTargetMMps;
+            if (MotionWheel_Update(&amp;command, dt) != MOTION_WHEEL_RESULT_OK)
+            {
+                MotionWheel_Stop();
+                s_context.mode = MOTION_MANAGER_MODE_IDLE;
+                s_context.error = MOTION_MANAGER_ERROR_SPEED;
+            }
+            break;
+        }
+
+        case MOTION_MANAGER_MODE_IDLE:
+        default:
+            break;
+    }
+}
+
+void MotionManager_Stop(void)
+{
+    switch (s_context.mode)
+    {
+        case MOTION_MANAGER_MODE_STRAIGHT:
+            MotionStraight_Stop();
+            break;
+
+        case MOTION_MANAGER_MODE_LINE:
+            MotionLine_Stop();
+            break;
+
+        case MOTION_MANAGER_MODE_TURN:
+            Nav_Stop();
+            break;
+
+        case MOTION_MANAGER_MODE_BRAKE:
+            /* 无论刹车处于哪个阶段，停止时都只能释放电机。 */
+            MotionWheel_Stop();
+            break;
+
+        case MOTION_MANAGER_MODE_SPEED:
+        case MOTION_MANAGER_MODE_IDLE:
+        default:
+            MotionWheel_Stop();
+            break;
+    }
+
+    s_context.mode = MOTION_MANAGER_MODE_IDLE;
+    s_context.error = MOTION_MANAGER_ERROR_NONE;
+    s_context.brakeElapsedSeconds = 0.0f;
+    s_context.brakeFinished = 0U;
+    s_context.speedTargetMMps = 0.0f;
+}
+
+uint8_t MotionManager_IsConfigured(void)
+{
+    return s_context.configured;
+}
+
+uint8_t MotionManager_IsBusy(void)
+{
+    switch (s_context.mode)
+    {
+        case MOTION_MANAGER_MODE_STRAIGHT:
+            return MotionStraight_IsBusy();
+        case MOTION_MANAGER_MODE_LINE:
+            return MotionLine_IsBusy();
+        case MOTION_MANAGER_MODE_TURN:
+            return Nav_IsBusy();
+        case MOTION_MANAGER_MODE_BRAKE:
+            return (s_context.brakeFinished == 0U) ? 1U : 0U;
+        case MOTION_MANAGER_MODE_SPEED:
+            /* 恒速模式没有完成条件，只能被显式停止。 */
+            return 1U;
+        case MOTION_MANAGER_MODE_IDLE:
+        default:
+            return 0U;
+    }
+}
+
+uint8_t MotionManager_IsFinished(void)
+{
+    switch (s_context.mode)
+    {
+        case MOTION_MANAGER_MODE_STRAIGHT:
+            return MotionStraight_IsFinished();
+        case MOTION_MANAGER_MODE_TURN:
+            return Nav_IsFinished();
+        case MOTION_MANAGER_MODE_LINE:
+            return MotionLine_IsFinished();
+        case MOTION_MANAGER_MODE_BRAKE:
+            return s_context.brakeFinished;
+        case MOTION_MANAGER_MODE_SPEED:
+        case MOTION_MANAGER_MODE_IDLE:
+        default:
+            return 0U;
+    }
+}
+
+MotionManager_Mode_t MotionManager_GetMode(void)
+{
+    return s_context.mode;
+}
+
+MotionManager_Error_t MotionManager_GetError(void)
+{
+    return s_context.error;
+}</code></pre>
+  <ol class="line-notes">
+    <li><strong>第 273～278 行：</strong>Update 未配置时什么也不做。</li>
+    <li><strong>第 280～288 行：</strong>STRAIGHT 模式只更新 Straight；若子状态变 ERROR，把统一错误标为 STRAIGHT。</li>
+    <li><strong>第 290～296 行：</strong>LINE 模式只更新 Line，并映射运行错误来源。</li>
+    <li><strong>第 298～304 行：</strong>TURN 模式只更新 Nav，并映射错误。</li>
+    <li><strong>第 306～308 行：</strong>BRAKE 模式走独立的时间阶段，不调用三个行为。</li>
+    <li><strong>第 310～314 行：</strong>IDLE 或未知模式不发新命令，结束 Update。</li>
+    <li><strong>第 316～322 行：</strong>Stop 根据当前模式调用 Straight 的专属清理。</li>
+    <li><strong>第 324～330 行：</strong>LINE 与 TURN 分别调用自己的 Stop，确保私有上下文也复位。</li>
+    <li><strong>第 332～335 行：</strong>刹车中被停止时必须释放电机，不能继续保持短接制动。</li>
+    <li><strong>第 337～341 行：</strong>IDLE/default 也调用 MotionWheel_Stop，形成最终安全兜底。</li>
+    <li><strong>第 343～347 行：</strong>统一回 IDLE、清错误和刹车运行量；configured 仍保留。</li>
+    <li><strong>第 349～352 行：</strong>返回初始化门闩。</li>
+    <li><strong>第 354～359 行：</strong>忙碌查询按当前模式委托；Straight 可能在 CONTINUING 返回忙。</li>
+    <li><strong>第 360～365 行：</strong>Line、Turn 委托子模块；Brake 在 finished 之前都忙。</li>
+    <li><strong>第 366～370 行：</strong>IDLE/default 不忙。</li>
+    <li><strong>第 372～379 行：</strong>完成查询按模式委托 Straight 和 Nav。</li>
+    <li><strong>第 380～383 行：</strong>Line 委托 FINISHED；Brake 直接返回自己的完成标志。</li>
+    <li><strong>第 384～388 行：</strong>IDLE/default 在 Manager 层返回未完成。</li>
+    <li><strong>第 390～393 行：</strong>返回当前唯一模式。</li>
+    <li><strong>第 395～398 行：</strong>返回统一错误类别。</li>
+  </ol>
+
+  <h3>难点函数拆解</h3>
+
+  <div class="deep-dive">
+    <h4>难点一：为什么每个行为都要有一个运行时结构体</h4>
+    <p><strong>输入：</strong>Start 写入一次性任务参数，Update 每拍写入进度，查询函数读取状态。</p>
+    <p><strong>过程：</strong>结构体把同一任务的变量放在一起。Straight 的基线里程、总距离、速度曲线、目标航向和完成标志共同描述一段直线；Line 的上一拍轮速和 lostTicks 共同描述丢线过程；Nav 的目标角、斜坡转速和 settleCount 共同描述转向过程。</p>
+    <p><strong>输出：</strong>函数即使返回了，下一拍仍能从静态 <code>s_context</code> 继续工作。</p>
+    <p><strong>边界条件：</strong>启动新任务前必须 Reset 对应运行字段，否则上一任务的丢线计数、PID 状态或稳定计数会污染新任务；但 configured 应保留。</p>
+    <p><strong>设计原因：</strong>比散落十几个静态变量更容易检查“哪些字段属于同一次动作”，也让状态转换和调试显示更清楚。</p>
+  </div>
+
+  <div class="deep-dive">
+    <h4>难点二：Straight 如何同时处理加速、定距、减速和终点速度</h4>
+    <p><strong>输入：</strong>带符号距离、巡航速度、终点速度、左右里程和 dt。</p>
+    <p><strong>过程：</strong>启动时记录左右里程基线；每拍用两轮平均位移得到任务方向进度。前 5/6 距离以固定加速度靠近巡航速度；跨过减速点时，用当时实际规划速度和到 <code>total-tolerance</code> 的剩余距离反解恒定减速度；之后再用 <code>v=sqrt(v_end²+2as)</code> 产生距离相关目标速度。</p>
+    <p>例：总距离 600 mm、容差 5 mm，曲线终点是 595 mm，减速点是 500 mm。若越过减速点时实际速度 300 mm/s、终点速度 0，则剩余 95 mm，所需减速度约为 <code>300²/(2×95)=473.7 mm/s²</code>。以后越接近终点，平方根目标越低。</p>
+    <p><strong>输出：</strong>同向的左右基础轮速，以及前进为正、后退为负的剩余距离。</p>
+    <p><strong>边界条件：</strong>很短的任务可能来不及达到巡航速度，所以减速度必须基于“进入减速段时实际 profileSpeed”，不能盲用 cruiseSpeed。距离不超过容差且终点速度为 0 时可立即完成。</p>
+    <p><strong>设计原因：</strong>时间斜坡负责平滑，距离曲线负责准确在终点速度收尾；两者分工避免“只按时间减速导致距离变化时到点速度不对”。</p>
+  </div>
+
+  <div class="deep-dive">
+    <h4>难点三：航向 PD 为什么作为 PWM trim，而不是改目标轮速</h4>
+    <p><strong>输入：</strong>启动时锁定的 <code>targetHeadingDeg</code>、当前 <code>Heading_GetYaw()</code> 和 dt。</p>
+    <p><strong>过程：</strong>PD 计算航向误差对应的修正 PWM；基础左右目标轮速保持相同，而 <code>trimL=-correction</code>、<code>trimR=+correction</code> 形成相反修正。</p>
+    <p><strong>输出：</strong>MotionWheel 先按左右目标速度做各自反馈，再叠加航向 trim，兼顾“平均前进速度”和“车头方向”。</p>
+    <p><strong>边界条件：</strong>规划速度接近 0 时关闭航向修正，防止静止时因陀螺仪微漂而让轮子互相对转。trim 上限不能超过 MotionWheel 最终 PWM 上限。</p>
+    <p><strong>设计原因：</strong>速度层专注每个轮子达到目标速度；车体航向是更高一层的差速修正。分层后调参含义更明确。</p>
+  </div>
+
+  <div class="deep-dive">
+    <h4>难点四：灰度加权巡线和丢线确认</h4>
+    <p><strong>输入：</strong>五位灰度位图与巡航速度。</p>
+    <p><strong>过程：</strong>bit0/1 分别贡献 -6/-3，bit2 为 0，bit3/4 贡献 +3/+6；同侧叠加后钳在 ±6。归一化权重乘 20% 巡航速度得到左右一增一减的轮速差。全白时先保持上一拍命令并计数，连续 50 次 Update 才返回结束。</p>
+    <p><strong>输出：</strong>左右不同的目标轮速；确认丢线时输出 FINISHED，而不是 ERROR。</p>
+    <p><strong>边界条件：</strong><code>lostTicks</code> 每次 Update 只加 1，没有按 <code>dt</code> 或 App 的 elapsedTicks 增加。正常 100 Hz 时 50 次约 0.5 s；若主循环一次跨过多拍，真实确认时间会变长。刚 Start 就全白时“上一拍速度”是 0，因此先静止等待确认。</p>
+    <p><strong>设计原因：</strong>保持上一拍能穿过短暂反光、接缝或采样毛刺；把确认丢线定义为正常结束，Mission 可自然转入下一个状态。</p>
+  </div>
+
+  <div class="deep-dive">
+    <h4>难点五：绝对 TurnTo、相对 TurnBy 与“不会自动走最短路”</h4>
+    <p><strong>输入：</strong>Heading 的连续累计角、绝对目标或相对增量、允许轮速。</p>
+    <p><strong>过程：</strong>TurnTo 直接保存目标；TurnBy 先计算 <code>当前角 + 增量</code> 再调用 TurnTo。每拍误差始终是 <code>target-current</code>，没有把它折回 -180°～+180°。</p>
+    <p><strong>输出：</strong>误差为正时一种旋转方向，误差为负时相反；左右轮大小相等、符号相反。</p>
+    <p><strong>边界条件：</strong>当前 370°、TurnTo(90°) 得到 -280°，而不是 +80°。想转最短路径应由调用者算出最短相对增量后调用 TurnBy。TurnBy 可明确要求 ±720° 等多圈动作。</p>
+    <p><strong>设计原因：</strong>连续坐标没有跨 ±180° 的跳变，能准确表达多圈和 Mission 逐次累加的绝对目标。</p>
+  </div>
+
+  <div class="deep-dive">
+    <h4>难点六：到角后为什么还要“轮速归零 + 连续三拍”</h4>
+    <p><strong>输入：</strong>角误差、当前斜坡转速和稳定计数。</p>
+    <p><strong>过程：</strong>角误差进 ±2° 后目标速度先变 0；斜坡用 600 mm/s² 减速。只有 profileTurnSpeed 也接近 0 才停止轮速并计一次稳定；连续 3 次达到才 COMPLETED。误差离开容差立即清计数。</p>
+    <p><strong>输出：</strong>Nav finished 只在车已经基本停住且角度稳定约 30 ms 后出现。</p>
+    <p><strong>边界条件：</strong>单拍冲进容差但仍高速旋转不会完成；惯性冲出容差会重新转向并从 0 开始稳定计数。</p>
+    <p><strong>设计原因：</strong>仅判断位置误差会把“高速经过目标角”误判为完成；速度和时间条件能显著降低过冲误报。</p>
+  </div>
+
+  <div class="deep-dive">
+    <h4>难点七：MotionManager 的模式互斥、结果映射和刹车阶段</h4>
+    <p><strong>输入：</strong>Mission 的动作请求、当前 mode、子模块启动/运行结果和 dt。</p>
+    <p><strong>过程：</strong>每个 Start 都先调用 <code>MotionManager_Stop()</code> 清掉旧模式，再启动新行为；成功才设置新 mode。Update 的 switch 每拍只调用一个行为。子模块不同的结果枚举先映射为统一 Manager 结果，运行错误再映射为 STRAIGHT/LINE/TURN 类别。Brake 则独占 mode，按“释放→主动刹车→释放”推进。</p>
+    <p><strong>输出：</strong>Mission 只需面对一套 Start、Busy、Finished、Error 接口。</p>
+    <p><strong>边界条件：</strong>Manager 的 Start 不是“忙就拒绝”，而是主动抢占：新命令会停止旧动作。切换失败时旧动作已经被停，新 mode 回 IDLE 并带错误。刹车 dt 无效时 error 被置位但 brakeFinished 仍为 0，Mission 必须先检查 error。</p>
+    <p><strong>设计原因：</strong>唯一所有权防止多个行为同时写 MotionWheel；统一结果让 Mission 不必知道每个子模块的枚举细节。</p>
+  </div>
+
+  <div class="deep-dive">
+    <h4>难点八：Straight 的 finished 与 busy 为什么能同时为真</h4>
+    <p><strong>输入：</strong>终点速度是否为 0，以及 Straight 当前状态。</p>
+    <p><strong>过程：</strong>零终点速度完成后进入 COMPLETED：finished=1、busy=0。非零终点速度到达分段终点后进入 CONTINUING：finished=1，告诉 Mission 可以转移；busy=1，因为本模块仍每拍维持终点速度。</p>
+    <p><strong>输出：</strong>Mission 可把 CONTINUING 当作“这一段完成”，下一状态启动另一个动作接管。</p>
+    <p><strong>边界条件：</strong>下一动作通过 Manager 启动时会先 Stop CONTINUING，轮速控制器与斜坡也会复位，因此不能假设跨动作绝对无缝继承内部 PID 状态。</p>
+    <p><strong>设计原因：</strong>“任务边界是否到达”和“当前是否仍占用执行器”是两个独立问题，用两个查询比强行互斥更能表达真实状态。</p>
+  </div>
+
+  <h3>放回总体调用链</h3>
+  <p>下面出现的 <code>onEnter</code>、<code>onUpdate</code> 和动作状态适配属于 Mission 回调接口；本章只关注它们怎样启动运动，回调函数指针、转换规则和状态生命周期会在模块 08 系统解释。</p>
+  <div class="relation-chain">
+    <p><code>Mission 状态 onEnter</code> → <code>MotionManager_StartForward/Backward</code> → <code>MotionStraight_Start</code> → 每拍根据 Odometry/Heading 生成基础轮速与航向 trim → <code>MotionWheel_Update</code> → <code>Motor</code></p>
+    <p><code>Mission 状态 onEnter</code> → <code>MotionManager_StartLine</code> → <code>MotionLine_Update</code> 读取 Graydetect → 加权左右轮速 → <code>MotionWheel_Update</code> → <code>Motor</code></p>
+    <p><code>Mission 状态 onEnter</code> → <code>MotionManager_TurnTo/TurnBy</code> → <code>Nav_Update</code> 读取 Heading → 左右反向轮速 → <code>MotionWheel_Update</code> → <code>Motor</code></p>
+    <p><code>定距零速完成</code> → Mission 下一个状态 → <code>MotionManager_StartBrake</code> → PWM 释放 → <code>Motor_Brake</code> 短脉冲 → <code>Motor_StopAll</code></p>
+  </div>
+  <p><code>App.c</code> 第 96～97 行先更新 Heading 和 Odometry，第 120 行才调用 <code>MotionManager_Update(dt)</code>，所以行为使用的是本拍新鲜状态。Mission 的 onUpdate 不应再次更新控制器，只需调用 <code>Mission_GetMotionActionStatus()</code>：<code>Mission.c</code> 第 286～298 行按“error 优先、finished 其次、busy 再次、其余视为完成”翻译动作状态。</p>
+  <p>三个行为共享 MotionWheel 的直接原因是它们最终都需要同一套左右轮速度 PID、前馈、PWM 限幅和 Odometry 反馈。如果各写一套，轮胎、电池或电机变化时要调三份参数，而且切换时可能残留三个不同的积分状态。共享的代价是必须严格互斥：Manager 的 switch 保证一拍只有一个生产者，所有启动入口也先 Stop 旧模式。</p>
+
+  <h3>常见误解与调试提示</h3>
+  <div class="pitfall">
+    <h4>误解：请求速度就是电机立刻达到的速度</h4>
+    <p>Straight 与 Nav 都有 profileSpeed。请求只是上限或远距离目标，每拍最多按加速度乘 dt 变化；MotionWheel 还要根据编码器反馈换算 PWM。</p>
+  </div>
+  <div class="pitfall">
+    <h4>误解：减速参数就是固定的 300 mm/s²</h4>
+    <p>Straight 的 300 是起步加速度。减速时在固定位置根据实际速度、终点速度和剩余距离动态反解 <code>effectiveDeceleration</code>，可能大于或小于 300。</p>
+  </div>
+  <div class="pitfall">
+    <h4>误解：剩余距离为负就是计算错误</h4>
+    <p>后退任务公开的 remainingDistance 带方向，因此未完成时为负；内部规划用的是正的距离大小。</p>
+  </div>
+  <div class="pitfall">
+    <h4>误解：灰度中心 bit2 没参与巡线</h4>
+    <p>它参与“是否看见线”和丢线判断，只是横向权重为 0，因此不会造成左右差速。中心单独触发时两轮都是巡航速度。</p>
+  </div>
+  <div class="pitfall">
+    <h4>误解：NAV_MIN_TURN_SPEED 总会强制为 40 mm/s</h4>
+    <p>代码把最小速度再钳到调用者请求速度。若请求 30，最低与最高都只能是 30；参数名表示正常请求范围内的低速下限。</p>
+  </div>
+  <div class="pitfall">
+    <h4>误解：Manager 会拒绝正在忙时的新动作</h4>
+    <p>Manager 没有公开 BUSY 结果。所有 Start 都先 Stop 当前模式再尝试新动作，所以新命令是抢占式切换。若新参数非法，旧动作也已经停止。</p>
+  </div>
+  <div class="pitfall">
+    <h4>调试顺序</h4>
+    <p>先单独验证 MotionWheel 的左右方向与速度反馈；再用低速 Nav 检查旋转 sign；再用短距离 Straight 看里程方向和剩余距离；最后才调航向 PD、巡线权重与刹车时间。上层异常经常源于共享轮速层，而不是行为公式本身。</p>
+  </div>
+
+  <div class="ripple-effect">
+    <h4>修改参数会牵动哪里</h4>
+    <ul>
+      <li>提高 Straight 加速度会缩短起步时间，但也提高打滑、过流和航向 PD 瞬态负担；短距离进入减速点时的实际速度也随之变化。</li>
+      <li>改变距离容差同时改变“何时 targetReached”和速度曲线终点，Mission 的定距精度与零速时刻都会变化。</li>
+      <li>改变航向 KP/KD 或 correction sign 会影响前进与后退直线；必须两方向都验证，且修正 PWM 上限不能超过 MotionWheel 上限。</li>
+      <li>改变巡线权重或最大调整比例会改变最坏情况下左右速度差；比例过大可能让一侧速度过低、另一侧超过适合路面的速度。</li>
+      <li>改变丢线确认拍数会影响 Mission 在黑线末端何时转移；当前实现按 Update 次数而不按真实 elapsedTicks。</li>
+      <li>改变 Nav 低速、减速角、加减速度与容差会共同影响过冲和完成时间，不能只单独看一个值。</li>
+      <li>改变 Manager 刹车保持时间会影响滑行距离、电机发热和顿挫；该模式绕过 MotionWheel，不能用轮速 PID 参数补救。</li>
+      <li>任何行为切换都会复位或停止共享 MotionWheel；修改切换策略时必须重新审计唯一所有权，避免两个模块同拍写命令。</li>
+    </ul>
+  </div>
+
+  <h3>学完自测</h3>
+  <details class="quiz"><summary>1. Straight 为什么同时保存 totalDistance、remainingDistance 和 profileEndDistance？</summary><p>total 是规划用的正总长度；remaining 是对外带方向的剩余量；profileEnd 是 total-tolerance，表示速度曲线应在进入允许误差区时已经达到终点速度。</p></details>
+  <details class="quiz"><summary>2. 巡线位图只有最左 bit0 为 1、巡航速度 500 mm/s 时，左右目标速度是多少？</summary><p>权重 -6，调整量为 500×0.2×(-6/6)=-100；左轮 500-100=400，右轮 500-(-100)=600 mm/s。</p></details>
+  <details class="quiz"><summary>3. 当前连续航向 370°，Nav_StartTo(90°) 的初始误差是多少？怎样请求最短的 +80°？</summary><p>误差是 90-370=-280°。若要明确走 +80°，调用 Nav_StartBy(80°)，而不是依赖 To 自动归一化。</p></details>
+  <details class="quiz"><summary>4. Straight 进入 CONTINUING 时 IsBusy 和 IsFinished 分别是什么？</summary><p>两者都是 1：本段距离已完成，所以 finished；但仍持续输出非零终点速度，所以 busy。</p></details>
+  <details class="quiz"><summary>5. 为什么 MotionManager 启动新动作前必须先 Stop 旧模式？</summary><p>Straight、Line、Nav 共享同一个 MotionWheel 和双电机。先 Stop 可清旧模块状态并确保同一时刻只有一个命令生产者；代价是新动作启动失败时旧动作也不会恢复。</p></details>
+
+  <h3>覆盖清单</h3>
+  <ul class="coverage-list">
+    <li><code>Application/Control/MotionStraight.h</code>：第 1～61 行；全部参数、三组枚举、启动/更新/查询接口按真实行号覆盖。</li>
+    <li><code>Application/Control/MotionStraight.c</code>：第 1～493 行；上下文、参数校验、限幅/Approach、速度曲线、定距与剩余距离、动态减速、航向 PD、零速保持、CONTINUING 和 getter 全部覆盖；仅未单列说明空行。</li>
+    <li><code>Application/Control/MotionLine.h</code>：第 1～49 行；灰度权重、速度比例、丢线确认、状态/错误/结果与接口全部覆盖。</li>
+    <li><code>Application/Control/MotionLine.c</code>：第 1～264 行；运行时结构体、参数检查、位图加权、钳位、指针输出、短丢线保持、确认丢线完成、轮速提交和查询全部覆盖。</li>
+    <li><code>Application/Control/Nav.h</code>：第 1～60 行；转向速度、减速区、容差、稳定拍、方向符号、To/By 和查询接口全部覆盖。</li>
+    <li><code>Application/Control/Nav.c</code>：第 1～318 行；上下文、绝对/相对目标、角度线性降速、有符号速度斜坡、反向轮速、到角零速与稳定确认、错误和 getter 全部覆盖。</li>
+    <li><code>Application/Control/MotionManager.h</code>：第 1～66 行；刹车参数、五种模式、统一错误/结果、全部动作入口和状态查询覆盖。</li>
+    <li><code>Application/Control/MotionManager.c</code>：第 1～398 行；管理器上下文、刹车阶段、结果与错误映射、初始化、抢占式启动、模式 switch、统一 Stop、busy/finished 语义全部覆盖。</li>
+  </ul>
+</section>

@@ -218,7 +218,7 @@ void MotionWheel_ApplyPidTunings(void)
 
 void MotionWheel_Stop(void)
 {
-    Motor_StopAll();
+    Motor_Brake();
     MotionWheel_Reset();
 }
 

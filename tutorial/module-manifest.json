@@ -1,0 +1,117 @@
+{
+  "modules": [
+    {
+      "id": "01",
+      "title": "从 main 到 100Hz 主循环",
+      "fragment": "sections/01-runtime.html",
+      "sources": [
+        "main.c",
+        "System/Tick.c", "System/Tick.h",
+        "System/Interrupt.c", "System/Interrupt.h",
+        "System/Delay.c", "System/Delay.h",
+        "Application/Core/App.c", "Application/Core/App.h"
+      ]
+    },
+    {
+      "id": "02",
+      "title": "板级输入输出与 SysConfig",
+      "fragment": "sections/02-board-io.html",
+      "sources": [
+        "Hardware/Board/Key.c", "Hardware/Board/Key.h",
+        "Hardware/Board/LED.c", "Hardware/Board/LED.h",
+        "Hardware/Board/Beep.c", "Hardware/Board/Beep.h",
+        "Application/Servo/Servo.c", "Application/Servo/Servo.h",
+        "main.syscfg"
+      ]
+    },
+    {
+      "id": "03",
+      "title": "传感器与状态估计",
+      "fragment": "sections/03-sensing-state.html",
+      "sources": [
+        "Hardware/Sensors/Graydetect.c", "Hardware/Sensors/Graydetect.h",
+        "Hardware/Sensors/MPU6050.c", "Hardware/Sensors/MPU6050.h",
+        "Hardware/Motor/Encoder.c", "Hardware/Motor/Encoder.h",
+        "Application/State/Heading.c", "Application/State/Heading.h",
+        "Application/State/Odometry.c", "Application/State/Odometry.h"
+      ]
+    },
+    {
+      "id": "04",
+      "title": "电机驱动与轮速闭环",
+      "fragment": "sections/04-motor-control.html",
+      "sources": [
+        "Hardware/Motor/PWM.c", "Hardware/Motor/PWM.h",
+        "Hardware/Motor/Motor.c", "Hardware/Motor/Motor.h",
+        "Application/Control/PID.c", "Application/Control/PID.h",
+        "Application/Control/MotionWheel.c", "Application/Control/MotionWheel.h"
+      ]
+    },
+    {
+      "id": "05",
+      "title": "直行、巡线、转向与运动管理",
+      "fragment": "sections/05-motion-behaviors.html",
+      "sources": [
+        "Application/Control/MotionStraight.c", "Application/Control/MotionStraight.h",
+        "Application/Control/MotionLine.c", "Application/Control/MotionLine.h",
+        "Application/Control/Nav.c", "Application/Control/Nav.h",
+        "Application/Control/MotionManager.c", "Application/Control/MotionManager.h"
+      ]
+    },
+    {
+      "id": "06",
+      "title": "串口命令与 K230 协议",
+      "fragment": "sections/06-communications.html",
+      "sources": [
+        "Hardware/Comms/Serial.c", "Hardware/Comms/Serial.h",
+        "Application/Comms/BluetoothDebug.c", "Application/Comms/BluetoothDebug.h",
+        "Application/Comms/K230Link.c", "Application/Comms/K230Link.h"
+      ]
+    },
+    {
+      "id": "07",
+      "title": "OLED、调试显示与遥测",
+      "fragment": "sections/07-debug-observability.html",
+      "sources": [
+        "Hardware/Display/OLED.c", "Hardware/Display/OLED.h",
+        "Hardware/Display/OLED_Data.c", "Hardware/Display/OLED_Data.h",
+        "Application/Debug/DebugDisplay.c", "Application/Debug/DebugDisplay.h",
+        "Application/Debug/Telemetry.c", "Application/Debug/Telemetry.h"
+      ]
+    },
+    {
+      "id": "08",
+      "title": "通用任务状态机引擎",
+      "fragment": "sections/08-mission-engine.html",
+      "sources": [
+        "Application/Mission/Mission.c", "Application/Mission/Mission.h",
+        "状态机.md"
+      ]
+    },
+    {
+      "id": "09",
+      "title": "25E、25H 与测试任务",
+      "fragment": "sections/09-mission-graphs.html",
+      "sources": [
+        "Accomplish/25E.c", "Accomplish/25E.h",
+        "Accomplish/25H.c", "Accomplish/25H.h",
+        "Accomplish/Test.c", "Accomplish/Test.h"
+      ]
+    },
+    {
+      "id": "10",
+      "title": "网页调试、测试、烧录与工程文件",
+      "fragment": "sections/10-tooling.html",
+      "sources": [
+        "car_debug.html", "tests/test_csv_parse.mjs",
+        "flash.ps1", "flash.bat", "README.md",
+        "targetConfigs/readme.txt", "targetConfigs/MSPM0G3507.ccxml",
+        ".project", ".cproject", ".ccsproject", ".clangd",
+        "25.theia-workspace", ".theia/launch.json",
+        ".settings/org.eclipse.cdt.codan.core.prefs",
+        ".settings/org.eclipse.core.resources.prefs",
+        ".gitignore", ".gitattributes"
+      ]
+    }
+  ]
+}
