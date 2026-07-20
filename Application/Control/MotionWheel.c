@@ -6,13 +6,21 @@
 #include <math.h>
 #include <stddef.h>
 
-/* 运行时可调参数，默认值取头文件 #define；范围校验由 Param 模块负责。 */
-float MotionWheel_TuneKp = MOTION_WHEEL_KP;
-float MotionWheel_TuneKi = MOTION_WHEEL_KI;
-float MotionWheel_TuneIntegralLimit = MOTION_WHEEL_INTEGRAL_LIMIT;
-float MotionWheel_TuneFeedforwardPWMPerMMps =
-    MOTION_WHEEL_FEEDFORWARD_PWM_PER_MMPS;
-float MotionWheel_TuneStaticFrictionPWM = MOTION_WHEEL_STATIC_FRICTION_PWM;
+/* 运行时可调参数：左右电机、减速箱和轮胎不完全一致，必须分开标定。 */
+float MotionWheel_TuneLeftKp = MOTION_WHEEL_LEFT_KP;
+float MotionWheel_TuneLeftKi = MOTION_WHEEL_LEFT_KI;
+float MotionWheel_TuneLeftIntegralLimit = MOTION_WHEEL_LEFT_INTEGRAL_LIMIT;
+float MotionWheel_TuneLeftFeedforwardPWMPerMMps =
+    MOTION_WHEEL_LEFT_FEEDFORWARD_PWM_PER_MMPS;
+float MotionWheel_TuneLeftStaticFrictionPWM =
+    MOTION_WHEEL_LEFT_STATIC_FRICTION_PWM;
+float MotionWheel_TuneRightKp = MOTION_WHEEL_RIGHT_KP;
+float MotionWheel_TuneRightKi = MOTION_WHEEL_RIGHT_KI;
+float MotionWheel_TuneRightIntegralLimit = MOTION_WHEEL_RIGHT_INTEGRAL_LIMIT;
+float MotionWheel_TuneRightFeedforwardPWMPerMMps =
+    MOTION_WHEEL_RIGHT_FEEDFORWARD_PWM_PER_MMPS;
+float MotionWheel_TuneRightStaticFrictionPWM =
+    MOTION_WHEEL_RIGHT_STATIC_FRICTION_PWM;
 
 static PID_t s_leftPID;
 static PID_t s_rightPID;
@@ -35,40 +43,57 @@ static float MotionWheel_Clamp(float value, float limit)
     return value;
 }
 
-static uint8_t MotionWheel_ParametersAreValid(void)
+static uint8_t MotionWheel_SideParametersAreValid(
+    float kp, float ki, float integralLimit,
+    float feedforwardPWMPerMMps, float staticFrictionPWM)
 {
-    if ((!isfinite(MOTION_WHEEL_KP)) ||
-        (!isfinite(MOTION_WHEEL_KI)) ||
-        (!isfinite(MOTION_WHEEL_INTEGRAL_LIMIT)) ||
-        (!isfinite(MOTION_WHEEL_FEEDFORWARD_PWM_PER_MMPS)) ||
-        (!isfinite(MOTION_WHEEL_STATIC_FRICTION_PWM)) ||
-        (!isfinite(MOTION_WHEEL_MAX_COMMAND_PWM)))
+    if ((!isfinite(kp)) || (!isfinite(ki)) ||
+        (!isfinite(integralLimit)) || (!isfinite(feedforwardPWMPerMMps)) ||
+        (!isfinite(staticFrictionPWM)))
     {
         return 0U;
     }
-    if ((MOTION_WHEEL_KP < 0.0f) || (MOTION_WHEEL_KI < 0.0f) ||
-        (MOTION_WHEEL_INTEGRAL_LIMIT < 0.0f) ||
-        ((MOTION_WHEEL_KI > 0.0f) &&
-         (MOTION_WHEEL_INTEGRAL_LIMIT <= 0.0f)) ||
-        (MOTION_WHEEL_FEEDFORWARD_PWM_PER_MMPS < 0.0f) ||
-        (MOTION_WHEEL_STATIC_FRICTION_PWM < 0.0f) ||
-        (MOTION_WHEEL_MAX_COMMAND_PWM <= 0.0f) ||
-        (MOTION_WHEEL_MAX_COMMAND_PWM > (float)PWM_MAX_DUTY) ||
-        (MOTION_WHEEL_STATIC_FRICTION_PWM >
-         MOTION_WHEEL_MAX_COMMAND_PWM))
+    if ((kp < 0.0f) || (ki < 0.0f) || (integralLimit < 0.0f) ||
+        ((ki > 0.0f) && (integralLimit <= 0.0f)) ||
+        (feedforwardPWMPerMMps < 0.0f) || (staticFrictionPWM < 0.0f) ||
+        (staticFrictionPWM > MOTION_WHEEL_MAX_COMMAND_PWM))
     {
         return 0U;
     }
-    if ((MOTION_WHEEL_KP == 0.0f) &&
-        (MOTION_WHEEL_KI == 0.0f) &&
-        (MOTION_WHEEL_FEEDFORWARD_PWM_PER_MMPS == 0.0f))
+    if ((kp == 0.0f) && (ki == 0.0f) &&
+        (feedforwardPWMPerMMps == 0.0f))
     {
         return 0U;
     }
     return 1U;
 }
 
-static float MotionWheel_GetFeedforward(float targetSpeedMMps)
+static uint8_t MotionWheel_ParametersAreValid(void)
+{
+    if ((!isfinite(MOTION_WHEEL_MAX_COMMAND_PWM)) ||
+        (MOTION_WHEEL_MAX_COMMAND_PWM <= 0.0f) ||
+        (MOTION_WHEEL_MAX_COMMAND_PWM > (float)PWM_MAX_DUTY))
+    {
+        return 0U;
+    }
+    if (MotionWheel_SideParametersAreValid(
+            MotionWheel_TuneLeftKp, MotionWheel_TuneLeftKi,
+            MotionWheel_TuneLeftIntegralLimit,
+            MotionWheel_TuneLeftFeedforwardPWMPerMMps,
+            MotionWheel_TuneLeftStaticFrictionPWM) == 0U)
+    {
+        return 0U;
+    }
+    return MotionWheel_SideParametersAreValid(
+        MotionWheel_TuneRightKp, MotionWheel_TuneRightKi,
+        MotionWheel_TuneRightIntegralLimit,
+        MotionWheel_TuneRightFeedforwardPWMPerMMps,
+        MotionWheel_TuneRightStaticFrictionPWM);
+}
+
+static float MotionWheel_GetFeedforward(
+    float targetSpeedMMps, float feedforwardPWMPerMMps,
+    float staticFrictionPWM)
 {
     float output;
 
@@ -77,10 +102,9 @@ static float MotionWheel_GetFeedforward(float targetSpeedMMps)
         return 0.0f;
     }
 
-    output = targetSpeedMMps * MotionWheel_TuneFeedforwardPWMPerMMps;
+    output = targetSpeedMMps * feedforwardPWMPerMMps;
     output += (targetSpeedMMps > 0.0f) ?
-                  MotionWheel_TuneStaticFrictionPWM :
-                  -MotionWheel_TuneStaticFrictionPWM;
+                  staticFrictionPWM : -staticFrictionPWM;
     return output;
 }
 
@@ -102,12 +126,12 @@ MotionWheel_Result_t MotionWheel_Init(void)
     }
 
     /* 用运行时参数初始化：同一次上电内重复 Init 不会丢掉已调好的增益。 */
-    PID_Init(&s_leftPID, MotionWheel_TuneKp, MotionWheel_TuneKi, 0.0f,
+    PID_Init(&s_leftPID, MotionWheel_TuneLeftKp, MotionWheel_TuneLeftKi, 0.0f,
              MOTION_WHEEL_MAX_COMMAND_PWM,
-             MotionWheel_TuneIntegralLimit);
-    PID_Init(&s_rightPID, MotionWheel_TuneKp, MotionWheel_TuneKi, 0.0f,
+             MotionWheel_TuneLeftIntegralLimit);
+    PID_Init(&s_rightPID, MotionWheel_TuneRightKp, MotionWheel_TuneRightKi, 0.0f,
              MOTION_WHEEL_MAX_COMMAND_PWM,
-             MotionWheel_TuneIntegralLimit);
+             MotionWheel_TuneRightIntegralLimit);
     s_configured = 1U;
     MotionWheel_Reset();
     return MOTION_WHEEL_RESULT_OK;
@@ -146,9 +170,15 @@ MotionWheel_Result_t MotionWheel_Update(
         &s_rightPID, command->targetSpeedRMMps, Odometry_GetSpeedR(), dt);
 
     s_leftCommandPWM = MotionWheel_GetFeedforward(
-        command->targetSpeedLMMps) + leftFeedbackPWM + command->trimLPWM;
+        command->targetSpeedLMMps,
+        MotionWheel_TuneLeftFeedforwardPWMPerMMps,
+        MotionWheel_TuneLeftStaticFrictionPWM) +
+        leftFeedbackPWM + command->trimLPWM;
     s_rightCommandPWM = MotionWheel_GetFeedforward(
-        command->targetSpeedRMMps) + rightFeedbackPWM + command->trimRPWM;
+        command->targetSpeedRMMps,
+        MotionWheel_TuneRightFeedforwardPWMPerMMps,
+        MotionWheel_TuneRightStaticFrictionPWM) +
+        rightFeedbackPWM + command->trimRPWM;
     s_leftCommandPWM = MotionWheel_Clamp(
         s_leftCommandPWM, MOTION_WHEEL_MAX_COMMAND_PWM);
     s_rightCommandPWM = MotionWheel_Clamp(
@@ -178,12 +208,12 @@ void MotionWheel_ApplyPidTunings(void)
     {
         return;
     }
-    PID_SetTunings(&s_leftPID, MotionWheel_TuneKp,
-                   MotionWheel_TuneKi, 0.0f);
-    PID_SetTunings(&s_rightPID, MotionWheel_TuneKp,
-                   MotionWheel_TuneKi, 0.0f);
-    s_leftPID.integralMax = MotionWheel_TuneIntegralLimit;
-    s_rightPID.integralMax = MotionWheel_TuneIntegralLimit;
+    PID_SetTunings(&s_leftPID, MotionWheel_TuneLeftKp,
+                   MotionWheel_TuneLeftKi, 0.0f);
+    PID_SetTunings(&s_rightPID, MotionWheel_TuneRightKp,
+                   MotionWheel_TuneRightKi, 0.0f);
+    s_leftPID.integralMax = MotionWheel_TuneLeftIntegralLimit;
+    s_rightPID.integralMax = MotionWheel_TuneRightIntegralLimit;
 }
 
 void MotionWheel_Stop(void)

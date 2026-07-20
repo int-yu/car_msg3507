@@ -72,6 +72,9 @@ label { color: var(--dim); font-size: 13px; }
 #paramTable .pname small { color: var(--dim); }
 #paramTable input { width: 100%; }
 #paramTable .dirty { border-color: var(--accent); }
+#paramTable .pgroup { grid-column: 1 / -1; color: var(--accent); font-size: 12px; font-weight: bold; padding-top: 6px; border-top: 1px solid var(--line); }
+#wheelMap { margin-top: 8px; padding: 7px 8px; border: 1px solid var(--line); border-radius: 4px; background: #12141a; white-space: pre-line; }
+#wheelMap.warn { border-color: var(--err); color: var(--err); }
 .run { display: flex; gap: 6px; align-items: center; padding: 4px 0; border-top: 1px solid var(--line); font-size: 12px; }
 .run:first-child { border-top: none; }
 .run span { flex: 1; }
@@ -126,7 +129,8 @@ label { color: var(--dim); font-size: 13px; }
         </div>
         <div class="row">
             <button data-cmd="Z1" disabled>航向归零 Z1</button>
-            <span class="hint">当前朝向定为 0°</span>
+            <button data-cmd="Z2" disabled>重新采样航向 Z2</button>
+            <span class="hint">Z1 只把当前朝向定为 0°；Z2 会重采陀螺仪零漂并归零，请保持车辆静止约 0.8 秒</span>
         </div>
         <p class="hint">自动运动进行中时固件返回 <code>ERR BUSY</code>；<code>W</code> 是无规划斜坡的闭环恒速（阶跃激励），运动中重复发 W 可链式改目标。</p>
     </div>
@@ -139,6 +143,7 @@ label { color: var(--dim); font-size: 13px; }
             <button id="btnParamApplyStored" disabled>回写存档</button>
         </div>
         <div id="paramTable"><span class="hint">连接后自动读取</span></div>
+        <div id="wheelMap" class="hint">读取左右轮参数后，这里显示当前 W 速度对应的基础 PWM。</div>
         <p class="hint">输入框变蓝表示尚未写入。调好后把数值写回对应 <code>.h</code> 的 <code>#define</code> 固化，或存到浏览器，下次上电一键回写。</p>
     </div>
 
@@ -463,6 +468,23 @@ function buildAiPack(meta, samples) {
     lines.push('```');
     return lines.join('\n');
 }
+
+/* 只估算前馈部分，不含 PI 反馈和航向/巡线 trim；最终固件仍会夹到 ±1000。 */
+function estimateWheelBasePwm(speedMMps, feedforwardPWMPerMMps, staticFrictionPWM) {
+    if (![speedMMps, feedforwardPWMPerMMps, staticFrictionPWM].every(Number.isFinite)) {
+        return null;
+    }
+    let raw = 0;
+    if (Math.abs(speedMMps) >= 0.001) {
+        raw = speedMMps * feedforwardPWMPerMMps +
+              (speedMMps > 0 ? staticFrictionPWM : -staticFrictionPWM);
+    }
+    return {
+        raw,
+        clamped: Math.max(-1000, Math.min(1000, raw)),
+        saturated: Math.abs(raw) >= 1000,
+    };
+}
 /* ==PARSER_END== */
 
 const parser = new TelemetryParser();
@@ -475,8 +497,9 @@ const SESSIONS = {
         label: '轮速 PI', mask: 0x10 | 0x08 | 0x40 | 0x80, rate: 30,
         ampLabel: '目标mm/s', ampDefault: 300, timed: true, durDefault: 3,
         excite: (amp) => 'W' + amp, stopCmd: 'W0',
-        params: ['wkp', 'wki', 'wil', 'wff', 'wsf'],
-        structure: '目标轮速 -> 双轮各自 PI(wkp,wki,积分限wil) + 前馈(wff×v+wsf×sign) -> PWM(±1000)；测量为编码器轮速 mm/s，控制周期 10ms',
+        params: ['lwkp', 'lwki', 'lwil', 'lwff', 'lwsf',
+                 'rwkp', 'rwki', 'rwil', 'rwff', 'rwsf'],
+        structure: '左右目标轮速 -> 左 PI(lwkp,lwki,lwil)+左前馈(lwff×v+lwsf×sign)，右 PI(rwkp,rwki,rwil)+右前馈(rwff×v+rwsf×sign) -> 各自 PWM(±1000)；测量为编码器轮速 mm/s，控制周期 10ms',
         columnsNote: 'TL/TR=左右目标轮速mm/s，LV/RV=左右实测轮速mm/s，PL/PR=左右输出PWM，mode=运动模式',
         expectation: '快速跟踪阶跃、无持续振荡、稳态误差接近 0、PWM 不长期饱和',
     },
@@ -484,7 +507,7 @@ const SESSIONS = {
         label: '直线航向 PD', mask: 0x01 | 0x04 | 0x08 | 0x10 | 0x40 | 0x80, rate: 20,
         ampLabel: '距离mm', ampDefault: 500, timed: false,
         excite: (amp) => 'F' + amp, stopCmd: 'C0',
-        params: ['skp', 'skd', 'sac', 'wkp', 'wki'],
+        params: ['skp', 'skd', 'sac', 'lwkp', 'lwki', 'rwkp', 'rwki'],
         structure: '定距梯形速度规划(sac 加速度) + 航向 PD(skp,skd) 差速修正 -> 双轮速度环；yaw 应全程保持起始值',
         columnsNote: 'yaw=航向角°，LD/RD=左右累计路程mm，TL/TR=目标轮速，LV/RV=实测轮速，PL/PR=输出PWM',
         expectation: 'yaw 波动小且无低频摆动，LD/RD 停在目标距离误差 ±5mm 内',
@@ -502,7 +525,7 @@ const SESSIONS = {
         label: '巡线', mask: 0x02 | 0x08 | 0x10 | 0x40 | 0x200, rate: 25,
         ampLabel: '巡线mm/s', ampDefault: 200, timed: true, durDefault: 5,
         excite: (amp) => 'N' + amp, stopCmd: 'N0',
-        params: ['lra', 'lkd', 'wkp', 'wki'],
+        params: ['lra', 'lkd', 'lwkp', 'lwki', 'rwkp', 'rwki'],
         structure: '五路灰度离散权重(-6..+6)×lra 生成差速 + lkd×权重变化率阻尼 -> 双轮速度环；lerr 为权重误差',
         columnsNote: 'lerr=巡线权重误差，gray=灰度位图(十进制化)，TL/TR=目标轮速，LV/RV=实测轮速',
         expectation: 'lerr 在 0 附近小幅摆动不发散，弧线段无大幅蛇形，速度不明显掉落',
@@ -510,11 +533,28 @@ const SESSIONS = {
 };
 
 const PARAM_LABELS = {
-    wkp: '轮速Kp', wki: '轮速Ki', wil: '轮速积分限', wff: '前馈PWM/mmps', wsf: '静摩擦PWM',
+    wkp: '双轮批量Kp（兼容）', wki: '双轮批量Ki（兼容）',
+    wil: '双轮批量积分限（兼容）', wff: '双轮批量前馈（兼容）',
+    wsf: '双轮批量静摩擦（兼容）',
+    lwkp: '左轮Kp', lwki: '左轮Ki', lwil: '左轮积分限',
+    lwff: '左轮前馈 PWM/(mm/s)', lwsf: '左轮静摩擦PWM',
+    rwkp: '右轮Kp', rwki: '右轮Ki', rwil: '右轮积分限',
+    rwff: '右轮前馈 PWM/(mm/s)', rwsf: '右轮静摩擦PWM',
     skp: '直线航向Kp', skd: '直线航向Kd', sac: '直线加速度',
     lra: '巡线比例', lkd: '巡线阻尼',
     nvx: '转向最高速', nvn: '转向最低速', nsa: '转向减速角', ntl: '到角容差',
     gsc: '陀螺尺度', cpm: '编码计数/mm',
+};
+const PARAM_GROUPS = {
+    lwkp: '左轮速度 PI 与前馈', lwki: '左轮速度 PI 与前馈',
+    lwil: '左轮速度 PI 与前馈', lwff: '左轮速度 PI 与前馈',
+    lwsf: '左轮速度 PI 与前馈',
+    rwkp: '右轮速度 PI 与前馈', rwki: '右轮速度 PI 与前馈',
+    rwil: '右轮速度 PI 与前馈', rwff: '右轮速度 PI 与前馈',
+    rwsf: '右轮速度 PI 与前馈',
+    wkp: '双轮批量兼容参数', wki: '双轮批量兼容参数',
+    wil: '双轮批量兼容参数', wff: '双轮批量兼容参数',
+    wsf: '双轮批量兼容参数',
 };
 const PARAM_STORE_KEY = 'carDebugParamsV1';
 
@@ -721,6 +761,17 @@ function upsertParam(id, value, name, min, max) {
 function updateParamValue(id, value) {
     if (paramCache[id]) {
         paramCache[id].value = value;
+        const mirrors = {
+            wkp: ['lwkp', 'rwkp'], wki: ['lwki', 'rwki'],
+            wil: ['lwil', 'rwil'], wff: ['lwff', 'rwff'],
+            wsf: ['lwsf', 'rwsf'],
+        }[paramCache[id].name];
+        if (mirrors) {
+            mirrors.forEach((name) => {
+                const entry = paramByName(name);
+                if (entry) entry.value = value;
+            });
+        }
         renderParamTable();
     }
 }
@@ -730,11 +781,47 @@ function fmtParam(v) {
     return String(parseFloat(v.toFixed(4)));
 }
 
+function wheelParamValue(independentName, legacyName) {
+    const entry = paramByName(independentName) || paramByName(legacyName);
+    return entry ? entry.value : NaN;
+}
+
+function renderWheelMapping() {
+    const box = $('wheelMap');
+    const speed = parseFloat($('wVal').value);
+    const left = estimateWheelBasePwm(
+        speed, wheelParamValue('lwff', 'wff'), wheelParamValue('lwsf', 'wsf'));
+    const right = estimateWheelBasePwm(
+        speed, wheelParamValue('rwff', 'wff'), wheelParamValue('rwsf', 'wsf'));
+    if (!left || !right) {
+        box.textContent = '读取左右轮参数后，这里显示当前 W 速度对应的基础 PWM。';
+        box.classList.remove('warn');
+        return;
+    }
+    const describe = (side, result) =>
+        `${side} ${result.raw.toFixed(1)}${result.saturated ? ` → 限幅 ${result.clamped.toFixed(0)}` : ''}`;
+    box.textContent =
+        `W${speed} 基础PWM（未含PI修正/差速trim）：${describe('左', left)}；${describe('右', right)}。\n` +
+        '若基础值已接近或超过 ±1000，速度环没有足够纠偏余量，应先重新标定对应轮的 ff/sf。';
+    box.classList.toggle('warn', left.saturated || right.saturated);
+}
+
 function renderParamTable() {
     const box = $('paramTable');
-    const ids = Object.keys(paramCache).map(Number).sort((a, b) => a - b);
+    const groupOrder = {
+        '左轮速度 PI 与前馈': 0,
+        '右轮速度 PI 与前馈': 1,
+        '其他控制与标定': 2,
+        '双轮批量兼容参数': 3,
+    };
+    const ids = Object.keys(paramCache).map(Number).sort((a, b) => {
+        const groupA = PARAM_GROUPS[paramCache[a].name] || '其他控制与标定';
+        const groupB = PARAM_GROUPS[paramCache[b].name] || '其他控制与标定';
+        return (groupOrder[groupA] - groupOrder[groupB]) || (a - b);
+    });
     if (ids.length === 0) {
         box.innerHTML = '<span class="hint">连接后自动读取</span>';
+        renderWheelMapping();
         return;
     }
     /* 输入框正在编辑时不要整表重建，否则会打断输入。 */
@@ -742,8 +829,17 @@ function renderParamTable() {
         return;
     }
     box.innerHTML = '';
+    let previousGroup = '';
     for (const id of ids) {
         const p = paramCache[id];
+        const group = PARAM_GROUPS[p.name] || '其他控制与标定';
+        if (group !== previousGroup) {
+            const groupEl = document.createElement('div');
+            groupEl.className = 'pgroup';
+            groupEl.textContent = group;
+            box.appendChild(groupEl);
+            previousGroup = group;
+        }
         const nameEl = document.createElement('span');
         nameEl.className = 'pname';
         nameEl.title = `K${id} 范围 ${p.min}~${p.max}，上电默认 ${fmtParam(p.def)}`;
@@ -771,11 +867,17 @@ function renderParamTable() {
         input.onkeydown = (e) => { if (e.key === 'Enter') { writeIt(); } };
         box.append(nameEl, input, btn);
     }
+    renderWheelMapping();
 }
 
 function saveParamsToBrowser() {
     const out = {};
+    const hasIndependentWheelParams = paramByName('lwkp') && paramByName('rwkp');
+    const legacyWheelNames = new Set(['wkp', 'wki', 'wil', 'wff', 'wsf']);
     for (const id of Object.keys(paramCache)) {
+        if (hasIndependentWheelParams && legacyWheelNames.has(paramCache[id].name)) {
+            continue;
+        }
         out[paramCache[id].name] = paramCache[id].value;
     }
     if (Object.keys(out).length === 0) {
@@ -1228,6 +1330,7 @@ $('btnMask').onclick = () => {
 $('btnParamRefresh').onclick = () => send('K?');
 $('btnParamSave').onclick = saveParamsToBrowser;
 $('btnParamApplyStored').onclick = applyStoredParams;
+$('wVal').oninput = renderWheelMapping;
 
 $('btnCalFinish').onclick = () => send('Y' + $('calTurns').value);
 $('btnOdomMark').onclick = odomMark;
@@ -1297,6 +1400,7 @@ $('btnExport').onclick = () => {
 window.addEventListener('resize', () => { requestRedraw(); });
 setConnected(false);
 refreshSessionInputs();
+renderWheelMapping();
 log('等待连接。浏览器需支持 Web Serial（Chrome / Edge）。');
 </script>
 </body>

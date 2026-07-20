@@ -364,18 +364,45 @@ static void BluetoothDebug_ExecuteCommand(void)
             break;
 
         case 'Z':
-            /* 运动期间重置航向会改掉直线和转向的基准，必须拒绝。 */
+            /* 运动期间清零或重新采样都会改掉航向基准，必须拒绝。 */
             if (BluetoothDebug_RejectIfBusy() != 0U)
             {
                 break;
             }
-            if (value != 1)
+            if (value == 1)
+            {
+                /* Z1 只改角度基准，不重新估计陀螺仪零漂。 */
+                Heading_SetYaw(0.0f);
+                Serial1_SendString("OK Z=1\r\n");
+            }
+            else if (value == 2)
+            {
+                /* Z2 会阻塞约 0.8 秒；此期间车辆必须完全静止。 */
+                if (Heading_IsReady() == 0U)
+                {
+                    Serial1_SendString("ERR Z OFFLINE\r\n");
+                    break;
+                }
+                if (Heading_IsScaleCalibActive() != 0U)
+                {
+                    Serial1_SendString("ERR Z CALIBRATING\r\n");
+                    break;
+                }
+
+                Heading_Calibrate();
+                if (Heading_IsReady() != 0U)
+                {
+                    Serial1_SendString("OK Z=2\r\n");
+                }
+                else
+                {
+                    Serial1_SendString("ERR Z OFFLINE\r\n");
+                }
+            }
+            else
             {
                 Serial1_SendString("ERR RANGE\r\n");
-                break;
             }
-            Heading_SetYaw(0.0f);
-            Serial1_SendString("OK Z=1\r\n");
             break;
 
         case 'W':

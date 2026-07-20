@@ -24,8 +24,8 @@ if (begin < 0 || end < 0) {
 const parserSource = html.slice(begin, end);
 
 /* 抽出来的源码里只有定义，末尾补一句把要测的东西交出来。 */
-const { TelemetryParser, samplesToCsv, buildAiPack } = new Function(
-    parserSource + '\nreturn { TelemetryParser, samplesToCsv, buildAiPack };'
+const { TelemetryParser, samplesToCsv, buildAiPack, estimateWheelBasePwm } = new Function(
+    parserSource + '\nreturn { TelemetryParser, samplesToCsv, buildAiPack, estimateWheelBasePwm };'
 )();
 
 let passed = 0;
@@ -256,6 +256,28 @@ check('19. samplesToCsv 与 toCsv 输出一致', () => {
     p.feed(FULL_HEADER);
     p.feed(FULL_ROW);
     eq(p.toCsv(), samplesToCsv(p.samples), '两个入口共用一份实现');
+});
+
+check('20. 速度→基础PWM：正反转静摩擦符号正确', () => {
+    const forward = estimateWheelBasePwm(300, 2, 50);
+    const backward = estimateWheelBasePwm(-300, 2, 50);
+    eq(forward.raw, 650, '正转基础PWM');
+    eq(backward.raw, -650, '反转基础PWM');
+    eq(forward.saturated, false, '正转不应饱和');
+});
+
+check('21. 速度→基础PWM：零速不施加静摩擦', () => {
+    const stopped = estimateWheelBasePwm(0, 2, 50);
+    eq(stopped.raw, 0, '零速基础PWM');
+    eq(stopped.clamped, 0, '零速限幅值');
+});
+
+check('22. 速度→基础PWM：超过±1000时明确报告饱和', () => {
+    const result = estimateWheelBasePwm(800, 2, 0);
+    eq(result.raw, 1600, '限幅前PWM');
+    eq(result.clamped, 1000, '限幅后PWM');
+    eq(result.saturated, true, '必须标记饱和');
+    eq(estimateWheelBasePwm(500, 2, 0).saturated, true, '刚好触及1000也没有PI余量');
 });
 
 console.log(`\n通过 ${passed}，失败 ${failed}`);
