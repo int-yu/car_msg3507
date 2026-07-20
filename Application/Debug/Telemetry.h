@@ -21,7 +21,17 @@
 #define TELEMETRY_FIELD_PWM      0x80U   /* PL,PR 双轮最终输出 PWM。 */
 #define TELEMETRY_FIELD_NAV      0x100U  /* navT,navE 转向目标角与角误差。 */
 #define TELEMETRY_FIELD_LINE     0x200U  /* lerr 巡线离散权重误差。 */
-#define TELEMETRY_FIELD_ALL      0x3FFU
+
+/* 单侧字段：调单个轮子时只传该侧，行长减半、可用频率翻倍。
+ * 与上方成对字段并存——成对位保持原语义不变，避免既有掩码失效；
+ * 同时置位成对与单侧时，同一列会输出两次，由上位机自行避免。 */
+#define TELEMETRY_FIELD_SPEED_L  0x400U  /* 只输出 LV。 */
+#define TELEMETRY_FIELD_SPEED_R  0x800U  /* 只输出 RV。 */
+#define TELEMETRY_FIELD_TARGET_L 0x1000U /* 只输出 TL。 */
+#define TELEMETRY_FIELD_TARGET_R 0x2000U /* 只输出 TR。 */
+#define TELEMETRY_FIELD_PWM_L    0x4000U /* 只输出 PL。 */
+#define TELEMETRY_FIELD_PWM_R    0x8000U /* 只输出 PR。 */
+#define TELEMETRY_FIELD_ALL      0xFFFFU
 
 void Telemetry_Init(void);
 void Telemetry_Update(uint8_t elapsedTicks, uint8_t pressedKeys);

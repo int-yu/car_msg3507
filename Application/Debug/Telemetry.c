@@ -75,6 +75,31 @@ static uint16_t Telemetry_EstimateRowBytes(void)
     {
         bytes = (uint16_t)(bytes + 6U);   /* ',-6.0' 加 1 字节余量 */
     }
+    /* 单侧字段各占一列，宽度与成对字段的一半相同。 */
+    if ((s_fieldMask & TELEMETRY_FIELD_SPEED_L) != 0U)
+    {
+        bytes = (uint16_t)(bytes + 10U);  /* ',-999999.9' */
+    }
+    if ((s_fieldMask & TELEMETRY_FIELD_SPEED_R) != 0U)
+    {
+        bytes = (uint16_t)(bytes + 10U);
+    }
+    if ((s_fieldMask & TELEMETRY_FIELD_TARGET_L) != 0U)
+    {
+        bytes = (uint16_t)(bytes + 10U);
+    }
+    if ((s_fieldMask & TELEMETRY_FIELD_TARGET_R) != 0U)
+    {
+        bytes = (uint16_t)(bytes + 10U);
+    }
+    if ((s_fieldMask & TELEMETRY_FIELD_PWM_L) != 0U)
+    {
+        bytes = (uint16_t)(bytes + 6U);   /* ',-1000' */
+    }
+    if ((s_fieldMask & TELEMETRY_FIELD_PWM_R) != 0U)
+    {
+        bytes = (uint16_t)(bytes + 6U);
+    }
     return bytes;
 }
 
@@ -169,6 +194,30 @@ static void Telemetry_SendHeader(void)
     {
         Serial1_SendString(",lerr");
     }
+    if ((s_fieldMask & TELEMETRY_FIELD_SPEED_L) != 0U)
+    {
+        Serial1_SendString(",LV");
+    }
+    if ((s_fieldMask & TELEMETRY_FIELD_SPEED_R) != 0U)
+    {
+        Serial1_SendString(",RV");
+    }
+    if ((s_fieldMask & TELEMETRY_FIELD_TARGET_L) != 0U)
+    {
+        Serial1_SendString(",TL");
+    }
+    if ((s_fieldMask & TELEMETRY_FIELD_TARGET_R) != 0U)
+    {
+        Serial1_SendString(",TR");
+    }
+    if ((s_fieldMask & TELEMETRY_FIELD_PWM_L) != 0U)
+    {
+        Serial1_SendString(",PL");
+    }
+    if ((s_fieldMask & TELEMETRY_FIELD_PWM_R) != 0U)
+    {
+        Serial1_SendString(",PR");
+    }
     Serial1_SendString("\r\n");
 }
 
@@ -239,6 +288,30 @@ static void Telemetry_SendRow(uint8_t pressedKeys)
     if ((s_fieldMask & TELEMETRY_FIELD_LINE) != 0U)
     {
         Serial1_Printf(",%.1f", (double)MotionLine_GetLineError());
+    }
+    if ((s_fieldMask & TELEMETRY_FIELD_SPEED_L) != 0U)
+    {
+        Serial1_Printf(",%.1f", (double)Odometry_GetSpeedL());
+    }
+    if ((s_fieldMask & TELEMETRY_FIELD_SPEED_R) != 0U)
+    {
+        Serial1_Printf(",%.1f", (double)Odometry_GetSpeedR());
+    }
+    if ((s_fieldMask & TELEMETRY_FIELD_TARGET_L) != 0U)
+    {
+        Serial1_Printf(",%.1f", (double)MotionWheel_GetTargetSpeedL());
+    }
+    if ((s_fieldMask & TELEMETRY_FIELD_TARGET_R) != 0U)
+    {
+        Serial1_Printf(",%.1f", (double)MotionWheel_GetTargetSpeedR());
+    }
+    if ((s_fieldMask & TELEMETRY_FIELD_PWM_L) != 0U)
+    {
+        Serial1_Printf(",%.0f", (double)MotionWheel_GetLeftCommandPWM());
+    }
+    if ((s_fieldMask & TELEMETRY_FIELD_PWM_R) != 0U)
+    {
+        Serial1_Printf(",%.0f", (double)MotionWheel_GetRightCommandPWM());
     }
     Serial1_SendString("\r\n");
 }
