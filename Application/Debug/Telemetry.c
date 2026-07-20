@@ -103,7 +103,17 @@ uint8_t Telemetry_GetMaxRateHz(void)
 
 static const char *Telemetry_ModeText(void)
 {
-    switch (MotionManager_GetMode())
+    MotionManager_Mode_t mode = MotionManager_GetMode();
+
+    /* 模式在动作完成后仍保留（例如 F 走完 mode 停在 STRAIGHT），
+     * 上位机需要一个明确的"动作已结束"信号来自动收尾一次调参试验。 */
+    if ((mode != MOTION_MANAGER_MODE_IDLE) &&
+        (MotionManager_IsBusy() == 0U))
+    {
+        return "DONE";
+    }
+
+    switch (mode)
     {
         case MOTION_MANAGER_MODE_STRAIGHT: return "STRAIGHT";
         case MOTION_MANAGER_MODE_LINE:     return "LINE";
