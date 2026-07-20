@@ -13,6 +13,7 @@ typedef struct
     uint8_t configured;
     float brakeElapsedSeconds;
     uint8_t brakeFinished;
+    float speedTargetMMps;
 } MotionManager_Context_t;
 
 static MotionManager_Context_t s_context;
@@ -150,6 +151,7 @@ MotionManager_Result_t MotionManager_Init(void)
     s_context.error = MOTION_MANAGER_ERROR_NONE;
     s_context.brakeElapsedSeconds = 0.0f;
     s_context.brakeFinished = 0U;
+    s_context.speedTargetMMps = 0.0f;
 
     if ((MotionManager_BrakeParametersAreValid() == 0U) ||
         (MotionStraight_Init() != MOTION_STRAIGHT_RESULT_OK) ||
@@ -249,6 +251,32 @@ MotionManager_Result_t MotionManager_TurnBy(
         result, MOTION_MANAGER_MODE_TURN, MOTION_MANAGER_ERROR_TURN);
 }
 
+MotionManager_Result_t MotionManager_StartSpeed(float speedMMps)
+{
+    if (s_context.configured == 0U)
+    {
+        return MOTION_MANAGER_RESULT_NOT_CONFIGURED;
+    }
+    if ((!isfinite(speedMMps)) ||
+        (fabsf(speedMMps) > MOTION_MANAGER_SPEED_MAX_MMPS))
+    {
+        return MOTION_MANAGER_RESULT_INVALID_ARGUMENT;
+    }
+
+    /* 已在恒速模式时只改目标：保留双轮 PID 状态，支持链式阶跃。 */
+    if (s_context.mode == MOTION_MANAGER_MODE_SPEED)
+    {
+        s_context.speedTargetMMps = speedMMps;
+        return MOTION_MANAGER_RESULT_OK;
+    }
+
+    MotionManager_Stop();
+    s_context.speedTargetMMps = speedMMps;
+    s_context.mode = MOTION_MANAGER_MODE_SPEED;
+    s_context.error = MOTION_MANAGER_ERROR_NONE;
+    return MOTION_MANAGER_RESULT_OK;
+}
+
 MotionManager_Result_t MotionManager_StartBrake(void)
 {
     if (s_context.configured == 0U)
@@ -307,6 +335,21 @@ void MotionManager_Update(float dt)
             MotionManager_UpdateBrake(dt);
             break;
 
+        case MOTION_MANAGER_MODE_SPEED:
+        {
+            MotionWheel_Command_t command = {0};
+
+            command.targetSpeedLMMps = s_context.speedTargetMMps;
+            command.targetSpeedRMMps = s_context.speedTargetMMps;
+            if (MotionWheel_Update(&command, dt) != MOTION_WHEEL_RESULT_OK)
+            {
+                MotionWheel_Stop();
+                s_context.mode = MOTION_MANAGER_MODE_IDLE;
+                s_context.error = MOTION_MANAGER_ERROR_SPEED;
+            }
+            break;
+        }
+
         case MOTION_MANAGER_MODE_IDLE:
         default:
             break;
@@ -334,6 +377,7 @@ void MotionManager_Stop(void)
             MotionWheel_Stop();
             break;
 
+        case MOTION_MANAGER_MODE_SPEED:
         case MOTION_MANAGER_MODE_IDLE:
         default:
             MotionWheel_Stop();
@@ -344,6 +388,7 @@ void MotionManager_Stop(void)
     s_context.error = MOTION_MANAGER_ERROR_NONE;
     s_context.brakeElapsedSeconds = 0.0f;
     s_context.brakeFinished = 0U;
+    s_context.speedTargetMMps = 0.0f;
 }
 
 uint8_t MotionManager_IsConfigured(void)
@@ -363,6 +408,9 @@ uint8_t MotionManager_IsBusy(void)
             return Nav_IsBusy();
         case MOTION_MANAGER_MODE_BRAKE:
             return (s_context.brakeFinished == 0U) ? 1U : 0U;
+        case MOTION_MANAGER_MODE_SPEED:
+            /* 恒速模式没有完成条件，只能被显式停止。 */
+            return 1U;
         case MOTION_MANAGER_MODE_IDLE:
         default:
             return 0U;
@@ -381,6 +429,7 @@ uint8_t MotionManager_IsFinished(void)
             return MotionLine_IsFinished();
         case MOTION_MANAGER_MODE_BRAKE:
             return s_context.brakeFinished;
+        case MOTION_MANAGER_MODE_SPEED:
         case MOTION_MANAGER_MODE_IDLE:
         default:
             return 0U;

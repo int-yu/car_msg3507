@@ -32,6 +32,12 @@ typedef struct
     uint8_t targetReached;
 } MotionStraight_Context_t;
 
+/* 运行时可调参数，默认值取头文件 #define；范围校验由 Param 模块负责。 */
+float MotionStraight_TuneHeadingKp = MOTION_STRAIGHT_HEADING_KP;
+float MotionStraight_TuneHeadingKd = MOTION_STRAIGHT_HEADING_KD;
+float MotionStraight_TuneAccelerationMMps2 =
+    MOTION_STRAIGHT_ACCELERATION_MMPS2;
+
 static PID_t s_headingPID;
 static MotionStraight_Context_t s_context = {
     .state = MOTION_STRAIGHT_STATE_IDLE,
@@ -250,7 +256,7 @@ static float MotionStraight_UpdateProfileSpeed(
 
     if (fabsf(targetSpeedMMps) > fabsf(s_context.profileSpeedMMps))
     {
-        speedStepMMps = MOTION_STRAIGHT_ACCELERATION_MMPS2 * dt;
+        speedStepMMps = MotionStraight_TuneAccelerationMMps2 * dt;
     }
     else
     {
@@ -332,9 +338,10 @@ MotionStraight_Result_t MotionStraight_Init(void)
         return MOTION_STRAIGHT_RESULT_INVALID_ARGUMENT;
     }
 
+    /* 用运行时参数初始化：同一次上电内重复 Init 不会丢掉已调好的增益。 */
     PID_Init(&s_headingPID,
-             MOTION_STRAIGHT_HEADING_KP, 0.0f,
-             MOTION_STRAIGHT_HEADING_KD,
+             MotionStraight_TuneHeadingKp, 0.0f,
+             MotionStraight_TuneHeadingKd,
              MOTION_STRAIGHT_HEADING_LIMIT_PWM, 0.0f);
     MotionStraight_ResetControllers();
     s_context.remainingDistanceMM = 0.0f;
@@ -447,6 +454,16 @@ void MotionStraight_Update(float dt)
     {
         return;
     }
+}
+
+void MotionStraight_ApplyHeadingTunings(void)
+{
+    if (s_context.configured == 0U)
+    {
+        return;
+    }
+    PID_SetTunings(&s_headingPID, MotionStraight_TuneHeadingKp,
+                   0.0f, MotionStraight_TuneHeadingKd);
 }
 
 void MotionStraight_Stop(void)

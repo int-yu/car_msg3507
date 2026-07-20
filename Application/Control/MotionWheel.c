@@ -6,10 +6,20 @@
 #include <math.h>
 #include <stddef.h>
 
+/* 运行时可调参数，默认值取头文件 #define；范围校验由 Param 模块负责。 */
+float MotionWheel_TuneKp = MOTION_WHEEL_KP;
+float MotionWheel_TuneKi = MOTION_WHEEL_KI;
+float MotionWheel_TuneIntegralLimit = MOTION_WHEEL_INTEGRAL_LIMIT;
+float MotionWheel_TuneFeedforwardPWMPerMMps =
+    MOTION_WHEEL_FEEDFORWARD_PWM_PER_MMPS;
+float MotionWheel_TuneStaticFrictionPWM = MOTION_WHEEL_STATIC_FRICTION_PWM;
+
 static PID_t s_leftPID;
 static PID_t s_rightPID;
 static float s_leftCommandPWM;
 static float s_rightCommandPWM;
+static float s_targetSpeedLMMps;
+static float s_targetSpeedRMMps;
 static uint8_t s_configured;
 
 static float MotionWheel_Clamp(float value, float limit)
@@ -67,10 +77,10 @@ static float MotionWheel_GetFeedforward(float targetSpeedMMps)
         return 0.0f;
     }
 
-    output = targetSpeedMMps * MOTION_WHEEL_FEEDFORWARD_PWM_PER_MMPS;
+    output = targetSpeedMMps * MotionWheel_TuneFeedforwardPWMPerMMps;
     output += (targetSpeedMMps > 0.0f) ?
-                  MOTION_WHEEL_STATIC_FRICTION_PWM :
-                  -MOTION_WHEEL_STATIC_FRICTION_PWM;
+                  MotionWheel_TuneStaticFrictionPWM :
+                  -MotionWheel_TuneStaticFrictionPWM;
     return output;
 }
 
@@ -91,12 +101,13 @@ MotionWheel_Result_t MotionWheel_Init(void)
         return MOTION_WHEEL_RESULT_INVALID_ARGUMENT;
     }
 
-    PID_Init(&s_leftPID, MOTION_WHEEL_KP, MOTION_WHEEL_KI, 0.0f,
+    /* 用运行时参数初始化：同一次上电内重复 Init 不会丢掉已调好的增益。 */
+    PID_Init(&s_leftPID, MotionWheel_TuneKp, MotionWheel_TuneKi, 0.0f,
              MOTION_WHEEL_MAX_COMMAND_PWM,
-             MOTION_WHEEL_INTEGRAL_LIMIT);
-    PID_Init(&s_rightPID, MOTION_WHEEL_KP, MOTION_WHEEL_KI, 0.0f,
+             MotionWheel_TuneIntegralLimit);
+    PID_Init(&s_rightPID, MotionWheel_TuneKp, MotionWheel_TuneKi, 0.0f,
              MOTION_WHEEL_MAX_COMMAND_PWM,
-             MOTION_WHEEL_INTEGRAL_LIMIT);
+             MotionWheel_TuneIntegralLimit);
     s_configured = 1U;
     MotionWheel_Reset();
     return MOTION_WHEEL_RESULT_OK;
@@ -126,6 +137,9 @@ MotionWheel_Result_t MotionWheel_Update(
         return MOTION_WHEEL_RESULT_ODOMETRY_INVALID;
     }
 
+    s_targetSpeedLMMps = command->targetSpeedLMMps;
+    s_targetSpeedRMMps = command->targetSpeedRMMps;
+
     leftFeedbackPWM = PID_Update(
         &s_leftPID, command->targetSpeedLMMps, Odometry_GetSpeedL(), dt);
     rightFeedbackPWM = PID_Update(
@@ -154,6 +168,22 @@ void MotionWheel_Reset(void)
     }
     s_leftCommandPWM = 0.0f;
     s_rightCommandPWM = 0.0f;
+    s_targetSpeedLMMps = 0.0f;
+    s_targetSpeedRMMps = 0.0f;
+}
+
+void MotionWheel_ApplyPidTunings(void)
+{
+    if (s_configured == 0U)
+    {
+        return;
+    }
+    PID_SetTunings(&s_leftPID, MotionWheel_TuneKp,
+                   MotionWheel_TuneKi, 0.0f);
+    PID_SetTunings(&s_rightPID, MotionWheel_TuneKp,
+                   MotionWheel_TuneKi, 0.0f);
+    s_leftPID.integralMax = MotionWheel_TuneIntegralLimit;
+    s_rightPID.integralMax = MotionWheel_TuneIntegralLimit;
 }
 
 void MotionWheel_Stop(void)
@@ -180,4 +210,14 @@ float MotionWheel_GetLeftCommandPWM(void)
 float MotionWheel_GetRightCommandPWM(void)
 {
     return s_rightCommandPWM;
+}
+
+float MotionWheel_GetTargetSpeedL(void)
+{
+    return s_targetSpeedLMMps;
+}
+
+float MotionWheel_GetTargetSpeedR(void)
+{
+    return s_targetSpeedRMMps;
 }

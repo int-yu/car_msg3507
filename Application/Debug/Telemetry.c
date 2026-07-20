@@ -1,6 +1,9 @@
 #include "Application/Debug/Telemetry.h"
 #include "Application/Comms/K230Link.h"
+#include "Application/Control/MotionLine.h"
 #include "Application/Control/MotionManager.h"
+#include "Application/Control/MotionWheel.h"
+#include "Application/Control/Nav.h"
 #include "Application/State/Heading.h"
 #include "Application/State/Odometry.h"
 #include "Hardware/Comms/Serial.h"
@@ -20,41 +23,57 @@
 #define TELEMETRY_MAX_BLOCKING_PERCENT   20U
 
 static uint8_t s_rateHz;
-static uint8_t s_fieldMask;
+static uint16_t s_fieldMask;
 static uint8_t s_tickAccumulator;
 static uint8_t s_headerPending;
 static uint32_t s_elapsedMs;
 
 /* 估算当前掩码下数据行的最坏情况字节数（含行尾 \r\n）。
  * 各字段宽度为 115200 8N1 格式下实际可能输出的最大字符数，含前导逗号。
- * 最大值 98 字节，不会超出 uint8_t 范围。 */
-static uint8_t Telemetry_EstimateRowBytes(void)
+ * 全字段约 160 字节，必须用 uint16_t 累加。 */
+static uint16_t Telemetry_EstimateRowBytes(void)
 {
-    uint8_t bytes = 14U;  /* 行基座：'D,' + 最长 10 位 ms + '\r\n' */
+    uint16_t bytes = 14U;  /* 行基座：'D,' + 最长 10 位 ms + '\r\n' */
 
     if ((s_fieldMask & TELEMETRY_FIELD_YAW) != 0U)
     {
-        bytes = (uint8_t)(bytes + 11U);  /* ',-999999.99' */
+        bytes = (uint16_t)(bytes + 11U);  /* ',-999999.99' */
     }
     if ((s_fieldMask & TELEMETRY_FIELD_SENSOR) != 0U)
     {
-        bytes = (uint8_t)(bytes + 8U);   /* ',FF,255' 实为 7 字节，多留 1 字节余量 */
+        bytes = (uint16_t)(bytes + 8U);   /* ',FF,255' 实为 7 字节，多留 1 字节余量 */
     }
     if ((s_fieldMask & TELEMETRY_FIELD_DISTANCE) != 0U)
     {
-        bytes = (uint8_t)(bytes + 20U);  /* ',-999999.9,-999999.9' */
+        bytes = (uint16_t)(bytes + 20U);  /* ',-999999.9,-999999.9' */
     }
     if ((s_fieldMask & TELEMETRY_FIELD_SPEED) != 0U)
     {
-        bytes = (uint8_t)(bytes + 20U);  /* ',-999999.9,-999999.9' */
+        bytes = (uint16_t)(bytes + 20U);  /* ',-999999.9,-999999.9' */
     }
     if ((s_fieldMask & TELEMETRY_FIELD_MODE) != 0U)
     {
-        bytes = (uint8_t)(bytes + 9U);   /* ',STRAIGHT' */
+        bytes = (uint16_t)(bytes + 9U);   /* ',STRAIGHT' */
     }
     if ((s_fieldMask & TELEMETRY_FIELD_K230) != 0U)
     {
-        bytes = (uint8_t)(bytes + 16U);  /* ',1:-32768:-32768' */
+        bytes = (uint16_t)(bytes + 16U);  /* ',1:-32768:-32768' */
+    }
+    if ((s_fieldMask & TELEMETRY_FIELD_TARGET) != 0U)
+    {
+        bytes = (uint16_t)(bytes + 20U);  /* ',-999999.9,-999999.9' */
+    }
+    if ((s_fieldMask & TELEMETRY_FIELD_PWM) != 0U)
+    {
+        bytes = (uint16_t)(bytes + 12U);  /* ',-1000,-1000' */
+    }
+    if ((s_fieldMask & TELEMETRY_FIELD_NAV) != 0U)
+    {
+        bytes = (uint16_t)(bytes + 22U);  /* ',-999999.99,-999999.99' */
+    }
+    if ((s_fieldMask & TELEMETRY_FIELD_LINE) != 0U)
+    {
+        bytes = (uint16_t)(bytes + 6U);   /* ',-6.0' 加 1 字节余量 */
     }
     return bytes;
 }
@@ -90,6 +109,7 @@ static const char *Telemetry_ModeText(void)
         case MOTION_MANAGER_MODE_LINE:     return "LINE";
         case MOTION_MANAGER_MODE_TURN:     return "TURN";
         case MOTION_MANAGER_MODE_BRAKE:    return "BRAKE";
+        case MOTION_MANAGER_MODE_SPEED:    return "SPEED";
         case MOTION_MANAGER_MODE_IDLE:     return "IDLE";
         default:                           return "ERROR";
     }
@@ -122,6 +142,22 @@ static void Telemetry_SendHeader(void)
     if ((s_fieldMask & TELEMETRY_FIELD_K230) != 0U)
     {
         Serial1_SendString(",k230");
+    }
+    if ((s_fieldMask & TELEMETRY_FIELD_TARGET) != 0U)
+    {
+        Serial1_SendString(",TL,TR");
+    }
+    if ((s_fieldMask & TELEMETRY_FIELD_PWM) != 0U)
+    {
+        Serial1_SendString(",PL,PR");
+    }
+    if ((s_fieldMask & TELEMETRY_FIELD_NAV) != 0U)
+    {
+        Serial1_SendString(",navT,navE");
+    }
+    if ((s_fieldMask & TELEMETRY_FIELD_LINE) != 0U)
+    {
+        Serial1_SendString(",lerr");
     }
     Serial1_SendString("\r\n");
 }
@@ -171,6 +207,28 @@ static void Telemetry_SendRow(uint8_t pressedKeys)
         {
             Serial1_SendString(",0:0:0");
         }
+    }
+    if ((s_fieldMask & TELEMETRY_FIELD_TARGET) != 0U)
+    {
+        Serial1_Printf(",%.1f,%.1f",
+                       (double)MotionWheel_GetTargetSpeedL(),
+                       (double)MotionWheel_GetTargetSpeedR());
+    }
+    if ((s_fieldMask & TELEMETRY_FIELD_PWM) != 0U)
+    {
+        Serial1_Printf(",%.0f,%.0f",
+                       (double)MotionWheel_GetLeftCommandPWM(),
+                       (double)MotionWheel_GetRightCommandPWM());
+    }
+    if ((s_fieldMask & TELEMETRY_FIELD_NAV) != 0U)
+    {
+        Serial1_Printf(",%.2f,%.2f",
+                       (double)Nav_GetTargetYawDeg(),
+                       (double)Nav_GetAngleErrorDeg());
+    }
+    if ((s_fieldMask & TELEMETRY_FIELD_LINE) != 0U)
+    {
+        Serial1_Printf(",%.1f", (double)MotionLine_GetLineError());
     }
     Serial1_SendString("\r\n");
 }
@@ -238,7 +296,7 @@ uint8_t Telemetry_SetRateHz(uint8_t rateHz)
     return 1U;
 }
 
-uint8_t Telemetry_SetFieldMask(uint8_t mask)
+uint8_t Telemetry_SetFieldMask(uint16_t mask)
 {
     uint8_t maxRate;
 
@@ -265,7 +323,7 @@ uint8_t Telemetry_GetRateHz(void)
     return s_rateHz;
 }
 
-uint8_t Telemetry_GetFieldMask(void)
+uint16_t Telemetry_GetFieldMask(void)
 {
     return s_fieldMask;
 }

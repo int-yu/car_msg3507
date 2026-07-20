@@ -10,6 +10,12 @@
 #define MOTION_LINE_MAX_SPEED_MMPS      1000.0f /* MotionLine_Start() 允许的巡线速度上限。 */
 #define MOTION_LINE_LOST_CONFIRM_TICKS  50U     /* 连续全白 50 个控制节拍后确认丢线。 */
 
+/* 运行时可调参数：上电恢复默认值，由 K 命令经 Param 模块读写，写入即生效。
+ * TuneWeightKd 是权重变化率阻尼（mm/s 每 权重单位/s），默认 0 时行为与
+ * 纯离散权重差速完全一致；弧线上左右摆动明显时少量增加以抑制震荡。 */
+extern float MotionLine_TuneMaxAdjustRatio;
+extern float MotionLine_TuneWeightKd;
+
 typedef enum
 {
     MOTION_LINE_STATE_IDLE = 0,

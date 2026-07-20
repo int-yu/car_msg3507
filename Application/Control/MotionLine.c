@@ -9,11 +9,16 @@ typedef struct
     MotionLine_Error_t error;
     float cruiseSpeedMMps;
     float lineError;
+    float previousWeight;
     float lastLeftSpeedMMps;
     float lastRightSpeedMMps;
     uint16_t lostTicks;
     uint8_t configured;
 } MotionLine_Context_t;
+
+/* 运行时可调参数，默认值取头文件 #define；范围校验由 Param 模块负责。 */
+float MotionLine_TuneMaxAdjustRatio = MOTION_LINE_MAX_ADJUST_RATIO;
+float MotionLine_TuneWeightKd = 0.0f;
 
 static MotionLine_Context_t s_context = {
     .state = MOTION_LINE_STATE_IDLE,
@@ -46,6 +51,7 @@ static void MotionLine_ResetControl(void)
 {
     s_context.cruiseSpeedMMps = 0.0f;
     s_context.lineError = 0.0f;
+    s_context.previousWeight = 0.0f;
     s_context.lastLeftSpeedMMps = 0.0f;
     s_context.lastRightSpeedMMps = 0.0f;
     s_context.lostTicks = 0U;
@@ -98,10 +104,10 @@ static int8_t MotionLine_GetWeight(uint8_t grayState)
 }
 
 static uint8_t MotionLine_CalculateTargetSpeeds(
-    float *leftSpeedMMps, float *rightSpeedMMps)
+    float *leftSpeedMMps, float *rightSpeedMMps, float dt)
 {
     uint8_t grayState = Graydetect_GetState();
-    int8_t weight;
+    float weight;
     float speedAdjustMMps;
 
     if (grayState == 0U)
@@ -122,13 +128,27 @@ static uint8_t MotionLine_CalculateTargetSpeeds(
     }
 
     s_context.lostTicks = 0U;
-    weight = MotionLine_GetWeight(grayState);
-    s_context.lineError = (float)weight;
+    weight = (float)MotionLine_GetWeight(grayState);
+    s_context.lineError = weight;
 
-    /* 权重达到正负 6 时，速度增减比例等于头文件中的最大调整比例。 */
+    /* 权重达到正负 6 时，速度增减比例等于最大调整比例；
+     * 微分项对权重跳变（压线切换瞬间）施加一次性阻尼，默认 0 不生效。 */
     speedAdjustMMps = s_context.cruiseSpeedMMps *
-                      MOTION_LINE_MAX_ADJUST_RATIO *
-                      ((float)weight / (float)MOTION_LINE_OUTER_WEIGHT);
+                      MotionLine_TuneMaxAdjustRatio *
+                      (weight / (float)MOTION_LINE_OUTER_WEIGHT);
+    speedAdjustMMps += MotionLine_TuneWeightKd *
+                       ((weight - s_context.previousWeight) / dt);
+    s_context.previousWeight = weight;
+
+    /* 阻尼过强时不允许反向超过巡航速度，防止单轮猛烈倒转。 */
+    if (speedAdjustMMps > s_context.cruiseSpeedMMps)
+    {
+        speedAdjustMMps = s_context.cruiseSpeedMMps;
+    }
+    else if (speedAdjustMMps < -s_context.cruiseSpeedMMps)
+    {
+        speedAdjustMMps = -s_context.cruiseSpeedMMps;
+    }
 
     /* 左侧压线：左轮减速、右轮加速；右侧压线时相反。 */
     *leftSpeedMMps = s_context.cruiseSpeedMMps + speedAdjustMMps;
@@ -210,7 +230,7 @@ void MotionLine_Update(float dt)
         return;
     }
     if (MotionLine_CalculateTargetSpeeds(
-            &leftSpeedMMps, &rightSpeedMMps) == 0U)
+            &leftSpeedMMps, &rightSpeedMMps, dt) == 0U)
     {
         /* 25E 等流程把确认丢线作为巡线任务的正常结束条件。 */
         MotionWheel_Stop();
