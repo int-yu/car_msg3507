@@ -25,7 +25,8 @@ body {
 }
 h1 { font-size: 17px; margin: 0 0 10px; }
 h2 { font-size: 14px; margin: 0 0 8px; color: var(--accent); }
-.grid { display: grid; grid-template-columns: 340px 1fr; gap: 12px; align-items: start; }
+h2 small { color: var(--dim); font-weight: normal; font-size: 12px; }
+.grid { display: grid; grid-template-columns: 360px 1fr; gap: 12px; align-items: start; }
 .panel { background: var(--panel); border: 1px solid var(--line); border-radius: 6px; padding: 12px; margin-bottom: 12px; }
 button {
     background: #2a3040; color: var(--fg); border: 1px solid var(--line);
@@ -35,11 +36,16 @@ button:hover:not(:disabled) { border-color: var(--accent); }
 button:disabled { opacity: .4; cursor: not-allowed; }
 button.primary { background: var(--accent); color: #0d1117; border-color: var(--accent); font-weight: bold; }
 button.danger { background: var(--err); color: #fff; border-color: var(--err); font-weight: bold; }
+button.mini { padding: 2px 8px; font-size: 12px; }
 input[type=number], input[type=text] {
     background: #12141a; color: var(--fg); border: 1px solid var(--line);
     border-radius: 4px; padding: 5px 7px; width: 78px; font-size: 13px;
 }
 input[type=range] { width: 100%; }
+select {
+    background: #12141a; color: var(--fg); border: 1px solid var(--line);
+    border-radius: 4px; padding: 5px 7px; font-size: 13px;
+}
 label { color: var(--dim); font-size: 13px; }
 .row { display: flex; gap: 6px; align-items: center; flex-wrap: wrap; margin-bottom: 8px; }
 .row:last-child { margin-bottom: 0; }
@@ -48,7 +54,7 @@ label { color: var(--dim); font-size: 13px; }
 .status .on { color: var(--ok); }
 .status .off { color: var(--err); }
 #terminal {
-    height: 220px; overflow-y: auto; background: #0e1015; border: 1px solid var(--line);
+    height: 200px; overflow-y: auto; background: #0e1015; border: 1px solid var(--line);
     border-radius: 4px; padding: 8px; font-family: Consolas, monospace; font-size: 12px;
     white-space: pre-wrap; word-break: break-all;
 }
@@ -61,6 +67,14 @@ label { color: var(--dim); font-size: 13px; }
 .sw { display: inline-block; width: 10px; height: 10px; border-radius: 2px; }
 .masks { display: grid; grid-template-columns: 1fr 1fr; gap: 2px 10px; }
 .masks label { display: flex; gap: 4px; align-items: center; color: var(--fg); cursor: pointer; }
+#paramTable { display: grid; grid-template-columns: auto 1fr auto; gap: 4px 6px; align-items: center; }
+#paramTable .pname { font-family: Consolas, monospace; font-size: 12px; }
+#paramTable .pname small { color: var(--dim); }
+#paramTable input { width: 100%; }
+#paramTable .dirty { border-color: var(--accent); }
+.run { display: flex; gap: 6px; align-items: center; padding: 4px 0; border-top: 1px solid var(--line); font-size: 12px; }
+.run:first-child { border-top: none; }
+.run span { flex: 1; }
 </style>
 </head>
 <body>
@@ -99,10 +113,57 @@ label { color: var(--dim); font-size: 13px; }
             <button data-send="A" data-from="angVal" disabled>绝对 A</button>
         </div>
         <div class="row">
+            <label>恒速</label>
+            <input type="number" id="wVal" value="300" min="-800" max="800">
+            <button data-send="W" data-from="wVal" disabled>恒速 W</button>
+            <button data-cmd="W0" disabled>停 W0</button>
+        </div>
+        <div class="row">
+            <label>巡线</label>
+            <input type="number" id="nVal" value="200" min="20" max="800">
+            <button data-send="N" data-from="nVal" disabled>巡线 N</button>
+            <button data-cmd="N0" disabled>停 N0</button>
+        </div>
+        <div class="row">
             <button data-cmd="Z1" disabled>航向归零 Z1</button>
             <span class="hint">当前朝向定为 0°</span>
         </div>
-        <p class="hint">自动运动进行中时固件返回 <code>ERR BUSY</code>；<code>T</code> 是相对转角，<code>A</code> 是绝对航向，两者都不走最短路径。</p>
+        <p class="hint">自动运动进行中时固件返回 <code>ERR BUSY</code>；<code>W</code> 是无规划斜坡的闭环恒速（阶跃激励），运动中重复发 W 可链式改目标。</p>
+    </div>
+
+    <div class="panel">
+        <h2>参数 <small>K 命令 · 写入即生效 · 掉电恢复固件默认</small></h2>
+        <div class="row">
+            <button id="btnParamRefresh" disabled>读取全部 K?</button>
+            <button id="btnParamSave">存到浏览器</button>
+            <button id="btnParamApplyStored" disabled>回写存档</button>
+        </div>
+        <div id="paramTable"><span class="hint">连接后自动读取</span></div>
+        <p class="hint">输入框变蓝表示尚未写入。调好后把数值写回对应 <code>.h</code> 的 <code>#define</code> 固化，或存到浏览器，下次上电一键回写。</p>
+    </div>
+
+    <div class="panel">
+        <h2>标定</h2>
+        <div class="row"><b style="font-size:13px">陀螺仪尺度 gsc</b></div>
+        <div class="row">
+            <button data-cmd="E1" disabled>开始 E1</button>
+            <label>圈数</label>
+            <input type="number" id="calTurns" value="3" min="1" max="20" style="width:52px">
+            <button id="btnCalFinish" disabled>完成 Y</button>
+            <button data-cmd="E0" disabled>取消 E0</button>
+        </div>
+        <p class="hint">开始后把车<strong>原地转 N 整圈</strong>回到起始朝向再点完成；新尺度立即生效并回显，记得存到浏览器。</p>
+        <div class="row" style="margin-top:8px"><b style="font-size:13px">里程标定 cpm</b></div>
+        <div class="row">
+            <button id="btnOdomMark" disabled>① 记录起点</button>
+            <span class="hint" id="odomStartInfo">需开启 LD/RD 字段</span>
+        </div>
+        <div class="row">
+            <label>② 实测 mm</label>
+            <input type="number" id="odomActual" value="1000">
+            <button id="btnOdomCalc" disabled>③ 计算并写入</button>
+        </div>
+        <p class="hint">流程：记录起点 → <code>F1000</code> 跑一段 → 卷尺量实际前进距离填入 → 计算写入 cpm。</p>
     </div>
 
     <div class="panel">
@@ -134,12 +195,32 @@ label { color: var(--dim); font-size: 13px; }
 <div>
 
     <div class="panel">
+        <h2>调参试验 <small>预设掩码高频采样 · 开始前清空日志与曲线，只留本次专属数据</small></h2>
+        <div class="row">
+            <select id="sessLoop">
+                <option value="wheel">轮速 PI（W 阶跃）</option>
+                <option value="straight">直线航向 PD（F 定距）</option>
+                <option value="turn">转向（T 相对角）</option>
+                <option value="line">巡线（N 启动）</option>
+            </select>
+            <label id="sessAmpLabel">目标mm/s</label>
+            <input type="number" id="sessAmp" value="300">
+            <span id="sessDurWrap"><label>时长s</label>
+                <input type="number" id="sessDur" value="3" min="1" max="30" style="width:46px"></span>
+            <button id="btnSessStart" class="primary" disabled>开始试验</button>
+            <button id="btnSessAbort" disabled>结束</button>
+        </div>
+        <p class="hint" id="sessStatus">相关参数在左侧参数面板改，写入后立即生效，再跑下一次试验对比。</p>
+        <div id="runList"><span class="hint">还没有试验记录。每次试验自动存档，可导出 CSV 或复制「AI 调参包」粘给 AI 要参数建议。</span></div>
+    </div>
+
+    <div class="panel">
         <h2>遥测</h2>
         <div class="row">
             <label>频率</label>
             <input type="number" id="gVal" value="20" min="0" max="100">
             <button data-send="G" data-from="gVal" disabled>设定 G</button>
-            <span class="hint">0 为关闭。上限随字段数变化，字段越少可越快——被拒时固件会回报当前上限。</span>
+            <span class="hint">0 为关闭。上限随字段数变化，被拒时固件会回报当前上限。</span>
         </div>
         <div class="row" style="align-items:flex-start">
             <label style="padding-top:2px">字段</label>
@@ -150,14 +231,18 @@ label { color: var(--dim); font-size: 13px; }
                 <label><input type="checkbox" class="mk" value="8" checked>LV/RV 左右速度</label>
                 <label><input type="checkbox" class="mk" value="16" checked>mode 运动模式</label>
                 <label><input type="checkbox" class="mk" value="32" checked>k230 视觉目标</label>
+                <label><input type="checkbox" class="mk" value="64" checked>TL/TR 目标轮速</label>
+                <label><input type="checkbox" class="mk" value="128" checked>PL/PR 输出 PWM</label>
+                <label><input type="checkbox" class="mk" value="256" checked>navT/navE 转向</label>
+                <label><input type="checkbox" class="mk" value="512" checked>lerr 巡线误差</label>
             </div>
             <button id="btnMask" disabled>应用 M</button>
         </div>
-        <p class="hint">减少字段可提高频率上限：全字段约 23 Hz，只留 yaw 可达 92 Hz。固件遥测是阻塞发送，超限会拖慢 100 Hz 主循环里的运动控制。</p>
+        <p class="hint">减少字段可提高频率上限：全字段约 14 Hz，轮速试验子集可到 30 Hz。固件遥测是阻塞发送，超限会拖慢 100 Hz 主循环里的运动控制。</p>
     </div>
 
     <div class="panel">
-        <h2>曲线 <span class="hint" style="font-weight:normal">每条独立归一化，纵轴无统一量纲</span></h2>
+        <h2>曲线 <small>同量纲曲线共享刻度（速度组 / PWM 组 / 角度组 / 路程组），目标 vs 实测可直接对比</small></h2>
         <canvas id="plot"></canvas>
         <div class="row" style="margin-top:8px">
             <div id="series" style="flex:1"><span class="hint">连接后按表头自动列出可画的数值列</span></div>
@@ -166,6 +251,7 @@ label { color: var(--dim); font-size: 13px; }
             <label>窗口</label>
             <input type="number" id="winVal" value="600" min="50" max="20000">
             <span class="hint">条</span>
+            <button id="btnPause">暂停</button>
             <button id="btnClear">清空数据</button>
             <button id="btnExport">导出 CSV</button>
         </div>
@@ -213,6 +299,21 @@ class TelemetryParser {
     /* 冒号分隔的复合列，展开成多个虚拟列后才能进曲线选择器。 */
     static get COMPOSITE_COLUMNS() {
         return { k230: ['k230_valid', 'k230_x', 'k230_y'] };
+    }
+
+    /* 列 → 量纲分组。同组曲线共享纵轴缩放，目标 vs 实测才能直接对比；
+       不在表里的列各自独立归一化（组名就是列名自己）。 */
+    static get UNIT_GROUPS() {
+        return {
+            LV: 'mmps', RV: 'mmps', TL: 'mmps', TR: 'mmps',
+            PL: 'pwm', PR: 'pwm',
+            yaw: 'deg', navT: 'deg', navE: 'deg',
+            LD: 'mm', RD: 'mm',
+        };
+    }
+
+    static unitOf(column) {
+        return TelemetryParser.UNIT_GROUPS[column] || column;
     }
 
     /* 展开复合列后，实际可画图的列名清单。 */
@@ -324,19 +425,98 @@ class TelemetryParser {
 
     /* 导出时把当前样本还原成标准 CSV（复合列已展开，比原始格式更好用）。 */
     toCsv() {
-        if (this.samples.length === 0) {
-            return '';
-        }
-        const cols = Object.keys(this.samples[0]);
-        const head = cols.join(',');
-        const body = this.samples.map((s) => cols.map((c) => s[c]).join(',')).join('\n');
-        return head + '\n' + body + '\n';
+        return samplesToCsv(this.samples);
     }
+}
+
+/* 样本数组 → 标准 CSV 文本；试验记录导出与实时导出共用。 */
+function samplesToCsv(samples) {
+    if (samples.length === 0) {
+        return '';
+    }
+    const cols = Object.keys(samples[0]);
+    const head = cols.join(',');
+    const body = samples.map((s) => cols.map((c) => s[c]).join(',')).join('\n');
+    return head + '\n' + body + '\n';
+}
+
+/*
+ * 生成可直接粘贴给 AI 的调参数据包（Markdown）。
+ * meta: { loop, structure, params, excitation, rateHz, columnsNote, expectation }
+ */
+function buildAiPack(meta, samples) {
+    const lines = [];
+    lines.push('# PID 调参数据包 — ' + meta.loop);
+    lines.push('');
+    lines.push('- 控制结构: ' + meta.structure);
+    lines.push('- 本次参数: ' + meta.params);
+    lines.push('- 激励: ' + meta.excitation);
+    lines.push('- 采样率: ' + meta.rateHz + ' Hz（ms 列为固件毫秒时间戳）');
+    lines.push('- 列说明: ' + meta.columnsNote);
+    lines.push('- 调参目标: ' + meta.expectation);
+    lines.push('');
+    lines.push('请根据以下数据评估本次响应（上升时间、超调、振荡、稳态误差、输出饱和），' +
+               '并给出下一组参数的具体数值建议和理由。');
+    lines.push('');
+    lines.push('```csv');
+    lines.push(samplesToCsv(samples).trimEnd());
+    lines.push('```');
+    return lines.join('\n');
 }
 /* ==PARSER_END== */
 
 const parser = new TelemetryParser();
 const PALETTE = ['#4da3ff', '#46c17a', '#e0a13c', '#e05c5c', '#a97ee0', '#3fc4c4', '#d96ba8', '#8fbf4d'];
+
+/* 各调参试验的预设：掩码只留相关字段换高频，激励与收尾命令成对。
+ * 频率按固件动态上限（20% 带宽）预先算好，改固件常量后需同步。 */
+const SESSIONS = {
+    wheel: {
+        label: '轮速 PI', mask: 0x10 | 0x08 | 0x40 | 0x80, rate: 30,
+        ampLabel: '目标mm/s', ampDefault: 300, timed: true, durDefault: 3,
+        excite: (amp) => 'W' + amp, stopCmd: 'W0',
+        params: ['wkp', 'wki', 'wil', 'wff', 'wsf'],
+        structure: '目标轮速 -> 双轮各自 PI(wkp,wki,积分限wil) + 前馈(wff×v+wsf×sign) -> PWM(±1000)；测量为编码器轮速 mm/s，控制周期 10ms',
+        columnsNote: 'TL/TR=左右目标轮速mm/s，LV/RV=左右实测轮速mm/s，PL/PR=左右输出PWM，mode=运动模式',
+        expectation: '快速跟踪阶跃、无持续振荡、稳态误差接近 0、PWM 不长期饱和',
+    },
+    straight: {
+        label: '直线航向 PD', mask: 0x01 | 0x04 | 0x08 | 0x10 | 0x40 | 0x80, rate: 20,
+        ampLabel: '距离mm', ampDefault: 500, timed: false,
+        excite: (amp) => 'F' + amp, stopCmd: 'C0',
+        params: ['skp', 'skd', 'sac', 'wkp', 'wki'],
+        structure: '定距梯形速度规划(sac 加速度) + 航向 PD(skp,skd) 差速修正 -> 双轮速度环；yaw 应全程保持起始值',
+        columnsNote: 'yaw=航向角°，LD/RD=左右累计路程mm，TL/TR=目标轮速，LV/RV=实测轮速，PL/PR=输出PWM',
+        expectation: 'yaw 波动小且无低频摆动，LD/RD 停在目标距离误差 ±5mm 内',
+    },
+    turn: {
+        label: '转向', mask: 0x01 | 0x08 | 0x10 | 0x40 | 0x100, rate: 20,
+        ampLabel: '角度°', ampDefault: 90, timed: false,
+        excite: (amp) => 'T' + amp, stopCmd: 'C0',
+        params: ['nvx', 'nvn', 'nsa', 'ntl'],
+        structure: '角误差按剩余角生成带低速区的双轮反向速度(上限nvx,下限nvn,减速角nsa)，进入 ±ntl 且轮速归零后连续 3 拍判完成',
+        columnsNote: 'navT=目标角°，navE=角误差°，yaw=当前角°，TL/TR=目标轮速(反向)，LV/RV=实测轮速',
+        expectation: 'navE 单调收敛到 0 附近、无过冲往复，到角时间短',
+    },
+    line: {
+        label: '巡线', mask: 0x02 | 0x08 | 0x10 | 0x40 | 0x200, rate: 25,
+        ampLabel: '巡线mm/s', ampDefault: 200, timed: true, durDefault: 5,
+        excite: (amp) => 'N' + amp, stopCmd: 'N0',
+        params: ['lra', 'lkd', 'wkp', 'wki'],
+        structure: '五路灰度离散权重(-6..+6)×lra 生成差速 + lkd×权重变化率阻尼 -> 双轮速度环；lerr 为权重误差',
+        columnsNote: 'lerr=巡线权重误差，gray=灰度位图(十进制化)，TL/TR=目标轮速，LV/RV=实测轮速',
+        expectation: 'lerr 在 0 附近小幅摆动不发散，弧线段无大幅蛇形，速度不明显掉落',
+    },
+};
+
+const PARAM_LABELS = {
+    wkp: '轮速Kp', wki: '轮速Ki', wil: '轮速积分限', wff: '前馈PWM/mmps', wsf: '静摩擦PWM',
+    skp: '直线航向Kp', skd: '直线航向Kd', sac: '直线加速度',
+    lra: '巡线比例', lkd: '巡线阻尼',
+    nvx: '转向最高速', nvn: '转向最低速', nsa: '转向减速角', ntl: '到角容差',
+    gsc: '陀螺尺度', cpm: '编码计数/mm',
+};
+const PARAM_STORE_KEY = 'carDebugParamsV1';
 
 let port = null;
 let writer = null;
@@ -347,6 +527,14 @@ let readTask = null;
 let readAbort = null;
 let selected = new Set();
 let needsRedraw = false;
+let plotPaused = false;
+
+let paramCache = {};     /* id -> { name, value, min, max, def } */
+let lastRateHz = 20;     /* 最近一次固件回报的遥测频率，写进试验记录 */
+let session = null;      /* 进行中的调参试验 */
+let runs = [];           /* 试验记录，新的在前 */
+let runSeq = 0;
+let odomStart = null;    /* 里程标定起点 {LD, RD} */
 
 const $ = (id) => document.getElementById(id);
 const termEl = $('terminal');
@@ -375,6 +563,27 @@ function logReply(line) {
     log('< ' + line, line.startsWith('OK') ? 'ok' : (line.startsWith('ERR') ? 'err' : ''));
 }
 
+/* 固件文本行统一入口：先提取参数/频率/标定信息更新界面，再进终端。 */
+function handleTextLine(line) {
+    let m;
+    if ((m = line.match(/^K(\d+)=(-?[\d.]+) (\w+) \[(-?[\d.]+),(-?[\d.]+)\]$/))) {
+        upsertParam(+m[1], parseFloat(m[2]), m[3], parseFloat(m[4]), parseFloat(m[5]));
+    } else if ((m = line.match(/^OK K(\d+)=(-?[\d.]+)$/))) {
+        updateParamValue(+m[1], parseFloat(m[2]));
+    } else if ((m = line.match(/^OK M=\d+ G=(\d+)$/))) {
+        lastRateHz = +m[1];
+    } else if ((m = line.match(/^OK G=(\d+)$/))) {
+        lastRateHz = +m[1];
+    } else if ((m = line.match(/^OK Y SCALE=(-?[\d.]+)/))) {
+        /* 标定成功即已生效，把新值同步进参数表（gsc）。 */
+        const entry = paramByName('gsc');
+        if (entry) {
+            updateParamValue(entry.id, parseFloat(m[1]));
+        }
+    }
+    logReply(line);
+}
+
 /* ---------- 串口 ---------- */
 
 function setConnected(on) {
@@ -382,10 +591,16 @@ function setConnected(on) {
     $('connState').className = on ? 'on' : 'off';
     $('btnConnect').disabled = on;
     $('btnDisconnect').disabled = !on;
-    document.querySelectorAll('button[data-send], button[data-cmd], #btnMask, #btnRaw, #btnStop')
+    document.querySelectorAll(
+        'button[data-send], button[data-cmd], #btnMask, #btnRaw, #btnStop, ' +
+        '#btnParamRefresh, #btnParamApplyStored, #btnSessStart, ' +
+        '#btnCalFinish, #btnOdomMark, #btnOdomCalc')
         .forEach((b) => { b.disabled = !on; });
     $('servoO').disabled = !on;
     $('servoD').disabled = !on;
+    if (!on && session) {
+        endSession('串口断开');
+    }
 }
 
 async function connect() {
@@ -401,6 +616,8 @@ async function connect() {
         log('串口已连接 115200 8N1', 'ok');
         readAbort = false;
         readTask = readLoop();
+        /* 稍等固件把 READY 横幅吐完，再拉一次完整参数表。 */
+        setTimeout(() => { send('K?'); }, 300);
     } catch (err) {
         log('连接失败：' + err.message, 'err');
     }
@@ -416,9 +633,12 @@ async function readLoop() {
                 break;
             }
             const { textLines, headerChanged } = parser.feed(decoder.decode(value, { stream: true }));
-            textLines.forEach(logReply);
+            textLines.forEach(handleTextLine);
             if (headerChanged) {
                 rebuildSeries();
+            }
+            if (session) {
+                watchSession();
             }
             requestRedraw();
         }
@@ -477,6 +697,347 @@ async function send(cmd) {
     }
 }
 
+/* ---------- 参数面板 ---------- */
+
+function paramByName(name) {
+    for (const id of Object.keys(paramCache)) {
+        if (paramCache[id].name === name) {
+            return paramCache[id];
+        }
+    }
+    return null;
+}
+
+function upsertParam(id, value, name, min, max) {
+    const known = paramCache[id];
+    paramCache[id] = {
+        id, name, value, min, max,
+        /* 第一次见到的值当作"上电默认"；K? 重读不会覆盖它。 */
+        def: known ? known.def : value,
+    };
+    renderParamTable();
+}
+
+function updateParamValue(id, value) {
+    if (paramCache[id]) {
+        paramCache[id].value = value;
+        renderParamTable();
+    }
+}
+
+function fmtParam(v) {
+    /* 去掉无意义的尾零：1.0000 -> 1，0.2500 -> 0.25。 */
+    return String(parseFloat(v.toFixed(4)));
+}
+
+function renderParamTable() {
+    const box = $('paramTable');
+    const ids = Object.keys(paramCache).map(Number).sort((a, b) => a - b);
+    if (ids.length === 0) {
+        box.innerHTML = '<span class="hint">连接后自动读取</span>';
+        return;
+    }
+    /* 输入框正在编辑时不要整表重建，否则会打断输入。 */
+    if (box.contains(document.activeElement) && document.activeElement.tagName === 'INPUT') {
+        return;
+    }
+    box.innerHTML = '';
+    for (const id of ids) {
+        const p = paramCache[id];
+        const nameEl = document.createElement('span');
+        nameEl.className = 'pname';
+        nameEl.title = `K${id} 范围 ${p.min}~${p.max}，上电默认 ${fmtParam(p.def)}`;
+        nameEl.innerHTML = `${p.name} <small>${PARAM_LABELS[p.name] || ''}</small>`;
+        const input = document.createElement('input');
+        input.type = 'number';
+        input.step = 'any';
+        input.value = fmtParam(p.value);
+        input.oninput = () => {
+            input.classList.toggle('dirty', parseFloat(input.value) !== p.value);
+        };
+        const btn = document.createElement('button');
+        btn.className = 'mini';
+        btn.textContent = '写';
+        const writeIt = () => {
+            const v = parseFloat(input.value);
+            if (!Number.isFinite(v)) {
+                log(`K${id} 输入不是数字`, 'err');
+                return;
+            }
+            send(`K${id}=${v}`);
+            input.classList.remove('dirty');
+        };
+        btn.onclick = writeIt;
+        input.onkeydown = (e) => { if (e.key === 'Enter') { writeIt(); } };
+        box.append(nameEl, input, btn);
+    }
+}
+
+function saveParamsToBrowser() {
+    const out = {};
+    for (const id of Object.keys(paramCache)) {
+        out[paramCache[id].name] = paramCache[id].value;
+    }
+    if (Object.keys(out).length === 0) {
+        log('参数表为空，先读取 K?', 'err');
+        return;
+    }
+    localStorage.setItem(PARAM_STORE_KEY, JSON.stringify(out));
+    log('已存到浏览器：' + Object.entries(out).map(([k, v]) => `${k}=${fmtParam(v)}`).join(' '), 'ok');
+}
+
+async function applyStoredParams() {
+    const raw = localStorage.getItem(PARAM_STORE_KEY);
+    if (!raw) {
+        log('浏览器里没有参数存档', 'err');
+        return;
+    }
+    const stored = JSON.parse(raw);
+    let count = 0;
+    for (const [name, value] of Object.entries(stored)) {
+        const entry = paramByName(name);
+        if (entry && Number.isFinite(value)) {
+            await send(`K${entry.id}=${value}`);
+            count += 1;
+        }
+    }
+    log(`存档回写完成，共 ${count} 项`, 'ok');
+}
+
+/* ---------- 标定 ---------- */
+
+function latestSample() {
+    return parser.samples.length > 0 ? parser.samples[parser.samples.length - 1] : null;
+}
+
+function odomMark() {
+    const s = latestSample();
+    if (!s || typeof s.LD !== 'number' || typeof s.RD !== 'number') {
+        log('没有 LD/RD 数据：请先在遥测里开启「LD/RD 左右路程」并设定频率', 'err');
+        return;
+    }
+    odomStart = { LD: s.LD, RD: s.RD };
+    $('odomStartInfo').textContent = `起点 L=${s.LD.toFixed(1)} R=${s.RD.toFixed(1)}，现在跑 F1000`;
+}
+
+function odomCalc() {
+    const s = latestSample();
+    const cpm = paramByName('cpm');
+    if (!odomStart) {
+        log('先记录起点', 'err');
+        return;
+    }
+    if (!s || typeof s.LD !== 'number') {
+        log('没有 LD/RD 数据', 'err');
+        return;
+    }
+    if (!cpm) {
+        log('参数表里没有 cpm，先读取 K?', 'err');
+        return;
+    }
+    const shown = ((s.LD - odomStart.LD) + (s.RD - odomStart.RD)) / 2;
+    const actual = parseFloat($('odomActual').value);
+    if (!Number.isFinite(actual) || actual <= 10 || Math.abs(shown) <= 10) {
+        log(`数据不足以标定：显示走过 ${shown.toFixed(1)} mm，实测填写 ${actual}`, 'err');
+        return;
+    }
+    /* 显示值 = 计数/cpm。显示偏大说明 cpm 偏小，按比例修正。 */
+    const next = cpm.value * (shown / actual);
+    log(`显示 ${shown.toFixed(1)} mm，实测 ${actual} mm，cpm ${fmtParam(cpm.value)} -> ${fmtParam(next)}`, 'ok');
+    send(`K${cpm.id}=${next.toFixed(4)}`);
+    odomStart = null;
+    $('odomStartInfo').textContent = '已写入，可再跑一次验证';
+}
+
+/* ---------- 调参试验 ---------- */
+
+function sessionPreset() {
+    return SESSIONS[$('sessLoop').value];
+}
+
+function refreshSessionInputs() {
+    const p = sessionPreset();
+    $('sessAmpLabel').textContent = p.ampLabel;
+    $('sessAmp').value = p.ampDefault;
+    $('sessDurWrap').style.display = p.timed ? '' : 'none';
+    if (p.timed) {
+        $('sessDur').value = p.durDefault;
+    }
+    $('sessStatus').textContent =
+        `相关参数：${p.params.map((n) => `${n}(${PARAM_LABELS[n] || ''})`).join(' ')} —— 在左侧参数面板改，写入立即生效。`;
+}
+
+async function startSession() {
+    if (session) {
+        return;
+    }
+    const p = sessionPreset();
+    const amp = parseFloat($('sessAmp').value);
+    if (!Number.isFinite(amp)) {
+        log('激励幅值不是数字', 'err');
+        return;
+    }
+
+    /* 先静默再切掩码，避免旧字段行混进本次数据。 */
+    await send('G0');
+    await send('M' + p.mask);
+    await send('G' + p.rate);
+
+    /* 专属数据：清终端与曲线，本次日志从试验标记开始。 */
+    termEl.innerHTML = '';
+    parser.clear();
+    requestRedraw();
+    const excitation = p.excite(amp);
+    log(`=== 试验开始 ${p.label} · ${excitation} ===`, 'ok');
+
+    const snapshot = p.params
+        .map((n) => paramByName(n))
+        .filter(Boolean)
+        .map((e) => `${e.name}=${fmtParam(e.value)}`)
+        .join(' ') || '（未读取参数表）';
+
+    session = {
+        loop: $('sessLoop').value, preset: p, excitation, snapshot,
+        sawActive: false, done: false, endTimer: null,
+    };
+    $('btnSessStart').disabled = true;
+    $('btnSessAbort').disabled = false;
+    $('sessStatus').textContent = `试验进行中：${excitation} …`;
+
+    await send(excitation);
+    if (p.timed) {
+        const dur = Math.max(1, parseFloat($('sessDur').value) || p.durDefault);
+        session.stopTimer = setTimeout(() => {
+            if (session && !session.done) {
+                send(p.stopCmd);
+            }
+        }, dur * 1000);
+    }
+    /* 无论固件状态如何，30 秒必收尾，防止试验挂死。 */
+    session.guardTimer = setTimeout(() => { endSession('超时'); }, 30000);
+}
+
+/* 每批新样本检查一次：动作启动过且回到 IDLE/DONE，再留 0.5s 尾巴收官。 */
+function watchSession() {
+    if (!session || session.done) {
+        return;
+    }
+    const s = latestSample();
+    if (!s || typeof s.mode !== 'string') {
+        return;
+    }
+    const idle = (s.mode === 'IDLE' || s.mode === 'DONE');
+    if (!idle) {
+        session.sawActive = true;
+        return;
+    }
+    if (session.sawActive && !session.endTimer) {
+        session.endTimer = setTimeout(() => { endSession('完成'); }, 500);
+    }
+}
+
+function endSession(reason) {
+    if (!session || session.done) {
+        return;
+    }
+    session.done = true;
+    clearTimeout(session.stopTimer);
+    clearTimeout(session.guardTimer);
+    clearTimeout(session.endTimer);
+
+    const run = {
+        id: ++runSeq,
+        loop: session.loop,
+        label: session.preset.label,
+        time: new Date(),
+        excitation: session.excitation,
+        params: session.snapshot,
+        rateHz: lastRateHz,
+        samples: parser.samples.slice(),
+    };
+    runs.unshift(run);
+    if (runs.length > 8) {
+        runs.pop();
+    }
+    log(`=== 试验结束（${reason}）· 样本 ${run.samples.length} · ${run.params} ===`, 'ok');
+    $('sessStatus').textContent = `上次试验：${run.label} ${run.excitation}（${reason}，${run.samples.length} 样本）`;
+    $('btnSessStart').disabled = !writer;
+    $('btnSessAbort').disabled = true;
+    session = null;
+    renderRuns();
+}
+
+function abortSession() {
+    if (!session) {
+        return;
+    }
+    send(session.preset.stopCmd);
+    endSession('手动结束');
+}
+
+function runAiPack(run) {
+    const p = SESSIONS[run.loop];
+    return buildAiPack({
+        loop: p.label,
+        structure: p.structure,
+        params: run.params,
+        excitation: run.excitation + (p.timed ? `（随后 ${p.stopCmd} 停止）` : ''),
+        rateHz: run.rateHz,
+        columnsNote: p.columnsNote,
+        expectation: p.expectation,
+    }, run.samples);
+}
+
+function downloadText(text, filename, mime) {
+    const url = URL.createObjectURL(new Blob([text], { type: mime }));
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = filename;
+    a.click();
+    URL.revokeObjectURL(url);
+}
+
+function renderRuns() {
+    const box = $('runList');
+    box.innerHTML = '';
+    if (runs.length === 0) {
+        box.innerHTML = '<span class="hint">还没有试验记录</span>';
+        return;
+    }
+    for (const run of runs) {
+        const div = document.createElement('div');
+        div.className = 'run';
+        const info = document.createElement('span');
+        info.textContent =
+            `#${run.id} ${run.label} · ${run.excitation} · ` +
+            `${run.time.toTimeString().slice(0, 8)} · ${run.samples.length} 样本`;
+        info.title = run.params;
+        const btnCsv = document.createElement('button');
+        btnCsv.className = 'mini';
+        btnCsv.textContent = 'CSV';
+        btnCsv.onclick = () => {
+            downloadText(samplesToCsv(run.samples),
+                `run${run.id}_${run.loop}.csv`, 'text/csv');
+        };
+        const btnAi = document.createElement('button');
+        btnAi.className = 'mini';
+        btnAi.textContent = '复制AI包';
+        btnAi.onclick = async () => {
+            const text = runAiPack(run);
+            try {
+                await navigator.clipboard.writeText(text);
+                log(`试验 #${run.id} 的 AI 调参包已复制，直接粘给 AI 即可`, 'ok');
+            } catch (err) {
+                /* 剪贴板被拒绝就落盘，同样能用。 */
+                downloadText(text, `run${run.id}_${run.loop}_ai.md`, 'text/markdown');
+                log('剪贴板不可用，已改为下载 Markdown 文件', 'err');
+            }
+        };
+        div.append(info, btnCsv, btnAi);
+        box.appendChild(div);
+    }
+}
+
 /* ---------- 绘图 ---------- */
 
 function rebuildSeries() {
@@ -490,7 +1051,15 @@ function rebuildSeries() {
     /* 表头变了，保留仍然存在的勾选项，其余丢弃。 */
     selected = new Set([...selected].filter((c) => cols.includes(c)));
     if (selected.size === 0) {
-        selected.add(cols.includes('yaw') ? 'yaw' : cols[0]);
+        /* 优先勾出「目标 vs 实测」这对最常用的对比。 */
+        for (const c of ['TL', 'LV', 'yaw']) {
+            if (cols.includes(c)) {
+                selected.add(c);
+            }
+        }
+        if (selected.size === 0) {
+            selected.add(cols[0]);
+        }
     }
     cols.forEach((col, i) => {
         const color = PALETTE[i % PALETTE.length];
@@ -510,6 +1079,7 @@ function rebuildSeries() {
         sw.className = 'sw';
         sw.style.background = color;
         label.append(cb, sw, document.createTextNode(col));
+        label.title = '刻度组：' + TelemetryParser.unitOf(col);
         box.appendChild(label);
     });
 }
@@ -550,29 +1120,40 @@ function drawPlot() {
     }
 
     const cols = parser.numericColumns();
-    let legendY = pad.t + 4;
 
+    /* 同量纲曲线共用一组 min/max：目标和实测在同一刻度上才能比。 */
+    const groupRange = {};
     for (const col of selected) {
-        const idx = cols.indexOf(col);
-        const color = PALETTE[(idx < 0 ? 0 : idx) % PALETTE.length];
-
-        /* 每条曲线各自归一化：yaw 量程 ±180、速度 ±500，共用纵轴会把 yaw 压成直线。 */
-        let min = Infinity;
-        let max = -Infinity;
+        const group = TelemetryParser.unitOf(col);
+        let range = groupRange[group];
+        if (!range) {
+            range = { min: Infinity, max: -Infinity };
+            groupRange[group] = range;
+        }
         for (const s of data) {
             const v = s[col];
             if (typeof v === 'number') {
-                if (v < min) { min = v; }
-                if (v > max) { max = v; }
+                if (v < range.min) { range.min = v; }
+                if (v > range.max) { range.max = v; }
             }
         }
-        if (!Number.isFinite(min)) {
-            continue;
+    }
+    for (const group of Object.keys(groupRange)) {
+        const range = groupRange[group];
+        range.span = range.max - range.min;
+        if (!(range.span > 1e-9)) {
+            range.span = 1;
+            range.min -= 0.5;
         }
-        let span = max - min;
-        if (span < 1e-9) {
-            span = 1;
-            min -= 0.5;
+    }
+
+    let legendY = pad.t + 4;
+    for (const col of selected) {
+        const idx = cols.indexOf(col);
+        const color = PALETTE[(idx < 0 ? 0 : idx) % PALETTE.length];
+        const range = groupRange[TelemetryParser.unitOf(col)];
+        if (!Number.isFinite(range.min)) {
+            continue;
         }
 
         ctx.strokeStyle = color;
@@ -585,7 +1166,7 @@ function drawPlot() {
                 continue;
             }
             const x = pad.l + (plotW * i) / (data.length - 1);
-            const y = pad.t + plotH - ((v - min) / span) * plotH;
+            const y = pad.t + plotH - ((v - range.min) / range.span) * plotH;
             if (started) {
                 ctx.lineTo(x, y);
             } else {
@@ -606,12 +1187,12 @@ function drawPlot() {
 }
 
 /*
- * 遥测最高 92 Hz，每收一行就重绘会卡死页面，所以合并到下一个渲染帧再画。
+ * 遥测最高可达数十 Hz，每收一行就重绘会卡死页面，所以合并到下一个渲染帧再画。
  * 这里不用常驻的 rAF 循环——那样页面空闲时也会满帧空转，白耗 CPU 和电池。
- * 只有真正有新数据时才排一帧，画完自然停下。
+ * 只有真正有新数据时才排一帧，画完自然停下。暂停时数据照常累积，只是不画。
  */
 function requestRedraw() {
-    if (needsRedraw) {
+    if (needsRedraw || plotPaused) {
         return;
     }
     needsRedraw = true;
@@ -643,6 +1224,18 @@ $('btnMask').onclick = () => {
     }
     send('M' + mask);
 };
+
+$('btnParamRefresh').onclick = () => send('K?');
+$('btnParamSave').onclick = saveParamsToBrowser;
+$('btnParamApplyStored').onclick = applyStoredParams;
+
+$('btnCalFinish').onclick = () => send('Y' + $('calTurns').value);
+$('btnOdomMark').onclick = odomMark;
+$('btnOdomCalc').onclick = odomCalc;
+
+$('sessLoop').onchange = refreshSessionInputs;
+$('btnSessStart').onclick = startSession;
+$('btnSessAbort').onclick = abortSession;
 
 /* 拖动滑块会每像素触发一次，不节流会瞬间发出几十条命令挤满串口。 */
 function throttleServo(slider, valueEl, letter) {
@@ -678,6 +1271,13 @@ $('rawCmd').onkeydown = (e) => {
 $('btnClearTerm').onclick = () => { termEl.innerHTML = ''; };
 /* 改窗口条数要立刻看到效果，不能等下一条遥测到达才重绘。 */
 $('winVal').oninput = () => { requestRedraw(); };
+$('btnPause').onclick = () => {
+    plotPaused = !plotPaused;
+    $('btnPause').textContent = plotPaused ? '继续' : '暂停';
+    if (!plotPaused) {
+        requestRedraw();
+    }
+};
 $('btnClear').onclick = () => {
     parser.clear();
     requestRedraw();
@@ -689,16 +1289,14 @@ $('btnExport').onclick = () => {
         log('没有数据可导出', 'err');
         return;
     }
-    const url = URL.createObjectURL(new Blob([csv], { type: 'text/csv' }));
-    const a = document.createElement('a');
-    a.href = url;
-    a.download = 'telemetry_' + new Date().toISOString().replace(/[:.]/g, '-') + '.csv';
-    a.click();
-    URL.revokeObjectURL(url);
+    downloadText(csv,
+        'telemetry_' + new Date().toISOString().replace(/[:.]/g, '-') + '.csv',
+        'text/csv');
 };
 
 window.addEventListener('resize', () => { requestRedraw(); });
 setConnected(false);
+refreshSessionInputs();
 log('等待连接。浏览器需支持 Web Serial（Chrome / Edge）。');
 </script>
 </body>
