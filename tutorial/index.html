@@ -292,7 +292,7 @@ body.all-code-collapsed .source-code { display: none; }
             <span class="chip">逐行源码注释</span>
             <span class="chip">术语与生活化类比</span>
             <span class="chip">完全离线可打开</span>
-            <span class="chip" id="reading-time">约 697 分钟精读</span>
+            <span class="chip" id="reading-time">约 698 分钟精读</span>
         </div>
     </header>
 
@@ -12726,39 +12726,39 @@ exit /b %FLASH_EXIT_CODE%</code></pre>
     <li><strong>第 7 行：</strong><code>main.syscfg</code> 是外设配置源；Debug/Release、ti_msp 配置、device.opt/linker.cmd 是生成结果。</li>
   </ol>
   <p>README 第 335～361 行是工程职责总表，列出 main/syscfg、网页、测试、CCS 元数据、各源码层和生成目录；它适合找入口，但其中“当前启用 25H”的描述已滞后。</p>
-  <pre class="source-code"><code data-source="README.md" data-lines="446-471">### 4.2 `car_debug.html` 调试网页
+  <pre class="source-code"><code data-source="README.md" data-lines="501-526">### 4.2 `car_debug.html` 调试网页
 
 **打开方式。** 双击 `car_debug.html` 即可，`file://` 下 Web Serial 可用（该协议属于安全上下文），不需要架本地服务器。只支持 **Chrome / Edge** 等 Chromium 内核浏览器，Firefox 与 Safari 没有实现 Web Serial API。点「连接串口」后在弹出的设备列表里选无线 DAPLink 对应的串口，波特率固定 115200 8N1。
 
 **与固件的约定。** 网页只依赖第 3.3 节那套 ASCII 命令和第 5.7 节的遥测 CSV，不假设任何固件内部实现。因此改动固件时只要保持这两个契约不变，网页无需同步修改；反过来，一旦新增命令或调整 CSV 字段，必须同步更新第 3.3 / 5.7 节，网页按表头列名解析，不硬编码列位置。
 
-页面分七块：连接与急停、运动控制（含 `W` 恒速与 `N` 巡线）、参数面板、标定向导、调参试验、遥测与曲线、原始终端。核心工作流是**调参试验**：
+页面服务**两个目的**：遥控采集数据（供后续视觉/决策任务使用）和闭环调参。分为八块：连接与急停、运动控制（含 `W` 恒速与 `N` 巡线）、**遥控采集**、参数面板、标定向导、调参试验、遥测与曲线、原始终端。
 
-1. 选择环路（轮速 W 阶跃 / 直线 F / 转向 T / 巡线 N），点「开始试验」；
-2. 网页自动 `G0` 静默 → 发预设字段掩码与安全高频 → **清空终端与曲线**（本次日志只含专属数据）→ 记录当前参数快照 → 发激励命令；
-3. 遥测 `mode` 列回到 `IDLE`/`DONE`（或定时/手动结束）后自动收尾成一条**试验记录**；
-4. 每条记录可导出 CSV，或一键复制 **AI 调参包**（Markdown：控制结构 + 本次参数 + 激励 + 列说明 + 完整数据），直接粘给 AI 要下一组参数建议；
-5. 在参数面板改 `K` 参数（写入立即生效），再跑下一次试验对比。
+**工作流一：调参试验。**
+
+1. 用「任务→对象→阶段」导航选定要调什么（如 轮速 → 左轮 → P），点「开始试验」；
+2. 网页自动完成：`G0` 静默 → 发本阶段的**最优掩码**（调左轮只传 TL/LV/PL）→ 用 `Q` 命令问出固件真实频率上限并自动设频 → **arm 板载捕获** → **清空终端与曲线** → 记录参数快照 → 发激励命令；
+3. 动作结束后自动 `X0` 取回 **100 Hz 无损捕获数据**，用它计算阶跃指标（上升时间、超调、稳定时间、稳态误差）；
+4. 指标卡明确标注数据来源：`板载 100 Hz 捕获` 表示与控制环同频、指标可信；`实时流 xx Hz` 表示峰值可能漏采、仅供参考；
+5. 每条记录可设为基准（虚线叠加对比）、导出 CSV，或一键复制 **AI 调参包**（含控制结构、参数、激励、列说明、自动指标和完整数据），直接粘给 AI 要下一组参数；
+6. 在阶段参数区就地微调（`−`/`+` 按钮或直接输入，写入立即生效），再跑下一次对比。
+
+**工作流二：遥控采集。** 启用键盘驾驶后用 &lt;kbd&gt;W&lt;/kbd&gt;&lt;kbd&gt;A&lt;/kbd&gt;&lt;kbd&gt;S&lt;/kbd&gt;&lt;kbd&gt;D&lt;/kbd&gt; 驾驶（W/S 走恒速命令，A/D 走相对转角），点「开始录制」整段记录遥测流；录制中按 &lt;kbd&gt;1&lt;/kbd&gt;~&lt;kbd&gt;5&lt;/kbd&gt; 打场景标记（直道/弯道/路口/障碍/异常），标记写入 CSV 的 `mark` 列。停止后可导出整段 CSV，或**按标记分段导出**——每个场景一个文件，便于后续分类使用。&lt;kbd&gt;Esc&lt;/kbd&gt; 全局急停。
 
 参数面板连接后自动 `K?` 拉取全表，悬浮显示范围与上电默认值，支持存到浏览器 localStorage、下次上电一键回写（固件参数掉电不保存）。标定向导包装陀螺尺度 `E1`/`Y`/`E0` 流程和里程 `cpm` 换算写入。
 
 几个实现上的取舍：
 
-- **频率上限不在前端校验。** 上限随字段数动态变化（见第 3.3 节），网页直接把 `G` 发给固件，被拒时显示固件回报的 `ERR RANGE MAX=&lt;上限&gt;`，避免前端和固件各存一份阈值而失配；调参试验的预设频率按固件 20% 带宽公式预先算好，改固件常量后需同步 `SESSIONS` 表。
-- **舵机滑块节流 100 ms。** 拖动会逐像素触发事件，不节流会瞬间发出几十条命令占满串口，把遥测流挤垮。
-- **曲线按量纲分组共享刻度。** `LV/RV/TL/TR` 同为 mm/s、`PL/PR` 同为 PWM、`yaw/navT/navE` 同为度、`LD/RD` 同为 mm，各组内共用一套 min/max，目标与实测才能直接对比；不在分组表里的列仍各自独立归一化。
-- **`ms` 和 `mode` 不进曲线选择器。** 前者是横轴，画出来是单调直线；后者是文本。两者仍会写进导出的 CSV。
-- **重绘按帧合并。** 每收一行就重绘会卡死页面，所以只在有新数据时排一个渲染帧；暂停按钮只冻结画面，数据仍照常累积。
-- **列数与表头不符的行直接丢弃。** 掉电重连和掩码切换瞬间会出现半截行，宁可丢也不猜。
-
-**测试。** `node tests/test_csv_parse.mjs` 直接从 `car_debug.html` 抽取解析器源码运行，测的是页面里的真代码而非副本，避免两边漂移。</code></pre>
+- **频率上限由固件说了算，网页不各存一份阈值。** 改掩码后网页主动发 `Q` 查询，用固件回报的 `MAX` 自动设频；勾选字段的瞬间另有一份本地复算用于即时显示（公式与 `Telemetry.c` 相同），两者不一致就说明固件与网页失配。
+- **指标优先用捕获数据，且必须标注来源。** 实时流受串口带宽限制低于 100 Hz 控制环，阶跃峰值会落在采样点之间；用低采样率数据算出的超调值可能偏差数倍，因此界面上必须让用户看见这次结论是基于哪种数据得出的。
+- **捕获与实时流分开解析、分开存储。** 前缀 `CH,`/`C,` 与 `H,`/`D,` 互不冲突，两者列集和采样率都不同，混在一起会让指标取到错误的时间基准。</code></pre>
   <ol class="line-notes">
     <li><strong>第 446～450 行：</strong>记录 Web Serial 打开方式、115200 8N1 和网页依赖命令/CSV 契约。</li>
     <li><strong>第 452～460 行：</strong>当前页面已扩成七块，并提供轮速、直线、转向、巡线调参会话、参数快照、AI 调参包和标定向导。</li>
     <li><strong>第 462～469 行：</strong>说明动态频率、舵机节流、同量纲共享刻度、列过滤、暂停重绘和坏行丢弃。</li>
     <li><strong>第 471 行：</strong>Node 测试仍直接抽取网页真代码。</li>
   </ol>
-  <pre class="source-code"><code data-source="README.md" data-lines="723-737">### 5.6.4 `Accomplish/25H.h`
+  <pre class="source-code"><code data-source="README.md" data-lines="796-810">### 5.6.4 `Accomplish/25H.h`
 
 ```c
 const Mission_GraphDefinition_t *Accomplish25H_GetMissionGraph(void);
@@ -12777,7 +12777,7 @@ const Mission_GraphDefinition_t *AccomplishTest_GetMissionGraph(void);
     <li><strong>第 723～729 行：</strong>README 仍把 25H 写成当前 main 调用。</li>
     <li><strong>第 731～737 行：</strong>仍把 Test 写成临时任务，与当前 main.c 相反。</li>
   </ol>
-  <pre class="source-code"><code data-source="README.md" data-lines="1161-1168">### 6.7 `Accomplish/Test.h` 参数
+  <pre class="source-code"><code data-source="README.md" data-lines="1279-1286">### 6.7 `Accomplish/Test.h` 参数
 
 `Test.c/.h` 只用于上机观察短刹时的滑行量。它已包含在 CCS 工程中，但默认 `main.c` 仍加载 25H；测试时按头文件注释临时改为加载 `AccomplishTest_GetMissionGraph()`，完成后恢复 25H。
 
