@@ -1,0 +1,732 @@
+<section class="lesson-section" id="module-08" data-title="通用任务状态机引擎" data-group="任务编排">
+  <h2>08　通用任务状态机引擎：用静态状态图编排整车动作</h2>
+
+  <div class="module-map">
+    <h3>先看它在整车中的位置</h3>
+    <dl>
+      <dt>一句话职责</dt>
+      <dd>Mission 不知道“25H 应该走几毫米”，它只校验并执行 Accomplish 提供的静态状态图：进入状态、调用动作更新、按顺序检查转换、退出旧状态，再进入新状态。</dd>
+      <dt>上游输入</dt>
+      <dd><code>main</code> 选择的一张 <code>Mission_GraphDefinition_t</code> 静态图，以及 App 每个有效节拍提供的 <code>App_UpdateContext_t</code> 时间、按键和蓝牙事件快照。</dd>
+      <dt>下游输出</dt>
+      <dd>当前状态编号、状态内经过时间、动作 RUNNING/FINISHED/ERROR、Mission 总体状态；转换时调用 Accomplish 回调并统一停止 MotionManager。</dd>
+      <dt>依赖模块</dt>
+      <dd><code>Application/Core/App</code> 的更新上下文，<code>MotionManager</code> 的动作状态与停止接口，以及 Accomplish 提供的回调、状态表、转换表。</dd>
+      <dt>主要调用者</dt>
+      <dd><code>main.c</code> 开机调用 <code>Mission_Init</code>，每次 <code>App_Update</code> 返回有效节拍后调用 <code>Mission_Update</code>。</dd>
+      <dt>总体位置</dt>
+      <dd><code>main/App → Mission 引擎 → Accomplish 状态回调 → MotionManager → 直行/巡线/转向/刹车</code>。</dd>
+    </dl>
+  </div>
+
+  <h3>初学者需要先知道</h3>
+  <div class="concept-grid">
+    <p><dfn data-term="finite-state machine / FSM">有限状态机</dfn>：系统任一时刻只处在有限个状态中的一个。每个状态有进入、持续更新、退出三个阶段，并通过转换跳到另一个状态。</p>
+    <p><dfn data-term="enum">枚举</dfn>：给整数取有意义的名字。写 <code>MISSION_ACTION_RUNNING</code> 比写裸数字 0 更不容易把含义弄错。</p>
+    <p><dfn data-term="struct">结构体</dfn>：把一组相关字段装成一个类型。转换结构体像一条路线说明，状态结构体像一个站点说明。</p>
+    <p><dfn data-term="function pointer">函数指针</dfn>：保存函数地址的变量。Mission 不直接知道题目函数名，而是通过 <code>onEnter/onUpdate/onExit/condition</code> 指针调用 Accomplish 提供的函数。</p>
+    <p><dfn data-term="callback">回调</dfn>：把函数交给另一个模块，在合适时机由那个模块反过来调用。这里是题目把回调交给 Mission 引擎。</p>
+    <p><dfn data-term="static graph definition">静态图定义</dfn>：编译后长期存在、只描述“有哪些状态和边”的只读表。它不记录现在走到哪里。</p>
+    <p><dfn data-term="runtime cursor">运行时游标</dfn>：当前状态、该状态经过时间、当前动作结果。它像地图上的“你在这里”标记，与地图本身分开。</p>
+    <p><dfn data-term="const pointer">只读指针</dfn>：<code>const Mission_GraphDefinition_t *</code> 表示 Mission 只读取图，不修改题目静态表；图本身必须一直有效。</p>
+    <p><dfn data-term="interrupt transition">打断转换</dfn>：动作仍 RUNNING 时，由传感器、按键或信号提前切换；只有状态允许 <code>interruptible</code> 才检查。</p>
+    <p><dfn data-term="normal transition">正常转换</dfn>：动作 FINISHED 后检查的转换，例如直线走完后进入刹车。</p>
+    <p><dfn data-term="short-circuit">短路求值</dfn>：<code>&amp;&amp;</code> 左边为假时不再算右边，<code>||</code> 左边为真时不再算右边；大量空指针防护依赖它。</p>
+    <p><dfn data-term="one-shot event">单拍事件</dfn>：只在当前 App 更新上下文中有效的信号。本拍没有条件接收，就不会由 Mission 自动缓存到以后。</p>
+  </div>
+
+  <h3>文件导读</h3>
+  <table>
+    <thead><tr><th>文件</th><th>角色</th><th>阅读重点</th></tr></thead>
+    <tbody>
+      <tr><td><code>Application/Mission/Mission.h</code></td><td>状态机数据语言</td><td>五组枚举、运行时结构、四种回调签名、转换/状态/图结构，以及公共接口。</td></tr>
+      <tr><td><code>Application/Mission/Mission.c</code></td><td>通用执行引擎</td><td>图校验、状态生命周期、按类型顺序扫描转换、全局 C0、错误状态和 MotionManager 适配。</td></tr>
+      <tr><td><code>状态机.md</code></td><td>题目作者指南</td><td>规定 Accomplish 如何画图、写回调和转换表。它是设计说明；当“当前加载哪个题目”等事实与源码不同，应以源码为准。</td></tr>
+    </tbody>
+  </table>
+
+  <h3>逐行讲解</h3>
+
+  <h4>Application/Mission/Mission.h：先定义一张状态图需要哪些“零件”</h4>
+  <pre class="source-code"><code data-source="Application/Mission/Mission.h" data-lines="1-92">#ifndef APPLICATION_MISSION_MISSION_H
+#define APPLICATION_MISSION_MISSION_H
+
+#include "Application/Core/App.h"
+#include &lt;stdint.h&gt;
+
+typedef enum
+{
+    MISSION_CALLBACK_OK = 0,
+    MISSION_CALLBACK_ERROR
+} Mission_CallbackResult_t;
+
+typedef enum
+{
+    MISSION_ACTION_RUNNING = 0,
+    MISSION_ACTION_FINISHED,
+    MISSION_ACTION_ERROR
+} Mission_ActionStatus_t;
+
+typedef enum
+{
+    MISSION_EXIT_COMPLETED = 0,
+    MISSION_EXIT_INTERRUPTED,
+    MISSION_EXIT_STOPPED,
+    MISSION_EXIT_ERROR
+} Mission_ExitReason_t;
+
+typedef enum
+{
+    MISSION_TRANSITION_NORMAL = 0,
+    MISSION_TRANSITION_INTERRUPT
+} Mission_TransitionType_t;
+
+typedef enum
+{
+    MISSION_STATUS_UNINITIALIZED = 0,
+    MISSION_STATUS_RUNNING,
+    MISSION_STATUS_COMPLETED,
+    MISSION_STATUS_ERROR
+} Mission_Status_t;
+
+typedef struct
+{
+    uint16_t currentState;
+    float stateElapsedSeconds;
+    Mission_ActionStatus_t actionStatus;
+} Mission_Runtime_t;
+
+typedef Mission_CallbackResult_t (*Mission_EnterCallback_t)(void);
+typedef Mission_ActionStatus_t (*Mission_UpdateCallback_t)(float dt);
+typedef void (*Mission_ExitCallback_t)(Mission_ExitReason_t reason);
+typedef uint8_t (*Mission_ConditionCallback_t)(
+    const Mission_Runtime_t *runtime,
+    const App_UpdateContext_t *updateContext);
+
+typedef struct
+{
+    Mission_ConditionCallback_t condition;
+    uint16_t targetState;
+    Mission_TransitionType_t type;
+} Mission_Transition_t;
+
+typedef struct
+{
+    Mission_EnterCallback_t onEnter;
+    Mission_UpdateCallback_t onUpdate;
+    Mission_ExitCallback_t onExit;
+    const Mission_Transition_t *transitions;
+    uint8_t transitionCount;
+    uint8_t interruptible;
+} Mission_StateDefinition_t;
+
+/* 题目层提供静态状态表，Mission 只负责校验和执行。 */
+typedef struct
+{
+    const Mission_StateDefinition_t *states;
+    uint16_t stateCount;
+    uint16_t startState;
+    uint16_t errorState;
+} Mission_GraphDefinition_t;
+
+void Mission_Init(const Mission_GraphDefinition_t *graph);
+void Mission_Update(const App_UpdateContext_t *updateContext);
+void Mission_Stop(void);
+
+Mission_Status_t Mission_GetStatus(void);
+const Mission_Runtime_t *Mission_GetRuntime(void);
+Mission_ActionStatus_t Mission_GetMotionActionStatus(void);
+uint8_t Mission_ContextHasBluetoothSignal(
+    const App_UpdateContext_t *updateContext, uint8_t signal);
+
+#endif</code></pre>
+  <ol class="line-notes">
+    <li><strong>第 1～2 行：</strong>头文件保护，避免类型定义被重复展开。</li>
+    <li><strong>第 4～5 行：</strong>引入 App 更新上下文和固定宽度整数；条件回调要读取按键、dt、蓝牙等字段。</li>
+    <li><strong>第 7～11 行：</strong>进入回调只需回答“启动成功还是失败”。OK 显式为 0，ERROR 自动为下一个整数。</li>
+    <li><strong>第 13～18 行：</strong>动作更新有三态：仍运行、已完成、发生错误；Mission 根据它决定检查哪类转换。</li>
+    <li><strong>第 20～23 行：</strong>退出原因先区分动作自然完成和被条件打断。</li>
+    <li><strong>第 24～26 行：</strong>STOPPED 表示外部停止/重置，ERROR 表示故障离开；onExit 可按原因做不同清理。</li>
+    <li><strong>第 28～32 行：</strong>转换类型只有 NORMAL 和 INTERRUPT。它们不是优先级数字，而是两个不同检查时机。</li>
+    <li><strong>第 34～40 行：</strong>Mission 总体状态区分未初始化、正在运行、当前状态动作已完成但未必有后继、以及错误。</li>
+    <li><strong>第 42～47 行：</strong>运行时结构只保存“当前状态编号、状态内秒数、动作结果”，没有复制整张图。</li>
+    <li><strong>第 49 行：</strong>进入回调签名固定为“无参数，返回 OK/ERROR”；通常在此启动一次 MotionManager 动作。</li>
+    <li><strong>第 50 行：</strong>更新回调每拍收到秒单位 dt，并返回 RUNNING/FINISHED/ERROR。</li>
+    <li><strong>第 51 行：</strong>退出回调没有返回值，只接收离开原因，适合清题目自己的计数和标志。</li>
+    <li><strong>第 52～54 行：</strong>条件回调同时收到只读运行时和只读 App 快照，返回 1 表示本条边成立。</li>
+    <li><strong>第 56～61 行：</strong>一条转换由条件函数、目标状态编号和转换类型组成。条件可为 NULL，代码把它解释为无条件成立。</li>
+    <li><strong>第 63～67 行：</strong>一个状态可选配进入、更新和退出回调；三个函数指针都允许 NULL。</li>
+    <li><strong>第 68～71 行：</strong>状态还引用转换数组、数组数量和是否允许运行中打断。Mission 不拥有这些数组内存。</li>
+    <li><strong>第 73～76 行：</strong>注释划清职责；整张图首先指向题目提供的状态定义数组。</li>
+    <li><strong>第 77～80 行：</strong>图记录状态数、合法起点和错误状态。状态编号本质上是数组下标。</li>
+    <li><strong>第 82～84 行：</strong>公共生命周期接口：加载一张图、每拍推进、外部停止并回起点。</li>
+    <li><strong>第 86～88 行：</strong>查询 Mission 总体状态、只读运行时地址，并把 MotionManager 状态翻译成动作三态。</li>
+    <li><strong>第 89～90 行：</strong>蓝牙信号辅助函数安全检查上下文和单拍事件标志。</li>
+    <li><strong>第 92 行：</strong>结束头文件保护。</li>
+  </ol>
+
+  <h4>Application/Mission/Mission.c（1/4）：静态图的结构合法性校验</h4>
+  <pre class="source-code"><code data-source="Application/Mission/Mission.c" data-lines="1-53">#include "Application/Mission/Mission.h"
+#include "Application/Control/MotionManager.h"
+#include &lt;stddef.h&gt;
+
+static Mission_Runtime_t s_runtime;
+static Mission_Status_t s_status = MISSION_STATUS_UNINITIALIZED;
+static const Mission_GraphDefinition_t *s_graph;
+static uint8_t s_graphValid;
+static uint8_t s_stateActive;
+
+static uint8_t Mission_GraphIsValid(
+    const Mission_GraphDefinition_t *graph)
+{
+    uint16_t stateIndex;
+
+    if ((graph == NULL) || (graph-&gt;states == NULL) ||
+        (graph-&gt;stateCount == 0U) ||
+        (graph-&gt;startState &gt;= graph-&gt;stateCount) ||
+        (graph-&gt;errorState &gt;= graph-&gt;stateCount))
+    {
+        return 0U;
+    }
+
+    for (stateIndex = 0U; stateIndex &lt; graph-&gt;stateCount; stateIndex++)
+    {
+        const Mission_StateDefinition_t *state =
+            &amp;graph-&gt;states[stateIndex];
+        uint8_t transitionIndex;
+
+        if ((state-&gt;transitionCount != 0U) &amp;&amp;
+            (state-&gt;transitions == NULL))
+        {
+            return 0U;
+        }
+
+        for (transitionIndex = 0U;
+             transitionIndex &lt; state-&gt;transitionCount;
+             transitionIndex++)
+        {
+            const Mission_Transition_t *transition =
+                &amp;state-&gt;transitions[transitionIndex];
+
+            if ((transition-&gt;targetState &gt;= graph-&gt;stateCount) ||
+                ((transition-&gt;type != MISSION_TRANSITION_NORMAL) &amp;&amp;
+                 (transition-&gt;type != MISSION_TRANSITION_INTERRUPT)))
+            {
+                return 0U;
+            }
+        }
+    }
+
+    return 1U;
+}</code></pre>
+  <ol class="line-notes">
+    <li><strong>第 1～3 行：</strong>引入自身类型、运动管理器和 <code>NULL</code> 定义。</li>
+    <li><strong>第 5～6 行：</strong>运行时游标与总体状态是引擎私有全局；状态显式从 UNINITIALIZED 开始。</li>
+    <li><strong>第 7～9 行：</strong><code>s_graph</code> 只保存题目静态图地址；另存校验结果和“当前状态是否已进入且尚未退出”。</li>
+    <li><strong>第 11～14 行：</strong>图校验是私有函数，接收只读图指针并准备遍历状态数组的 16 位下标。</li>
+    <li><strong>第 16～19 行：</strong>第一层防护：图和 states 都不能空，状态数不能为 0，起点和错误状态都必须落在数组范围内。</li>
+    <li><strong>第 20～22 行：</strong>任一基础条件失败就返回无效。</li>
+    <li><strong>第 24～28 行：</strong>逐个状态取只读指针，并准备遍历该状态转换表的 8 位下标。</li>
+    <li><strong>第 30～34 行：</strong>若 transitionCount 非 0，就必须提供 transitions 地址；否则循环会解引用空指针。</li>
+    <li><strong>第 36～39 行：</strong>按数组下标 0、1、2……遍历全部转换。这个声明顺序稍后就是同类型转换的优先顺序。</li>
+    <li><strong>第 40～41 行：</strong>取出当前转换项的只读地址。</li>
+    <li><strong>第 43～45 行：</strong>目标状态必须在范围内，类型必须恰好是 NORMAL 或 INTERRUPT。</li>
+    <li><strong>第 46～49 行：</strong>发现非法转换立即失败；否则继续检查下一项和下一状态。</li>
+    <li><strong>第 50 行：</strong>结束状态遍历。</li>
+    <li><strong>第 52～53 行：</strong>所有结构检查通过才返回有效。</li>
+  </ol>
+
+  <h4>Application/Mission/Mission.c（2/4）：退出、进入与统一错误状态</h4>
+  <pre class="source-code"><code data-source="Application/Mission/Mission.c" data-lines="55-131">static void Mission_CallExit(Mission_ExitReason_t reason)
+{
+    const Mission_StateDefinition_t *state;
+
+    if ((s_stateActive == 0U) || (s_graph == NULL) ||
+        (s_runtime.currentState &gt;= s_graph-&gt;stateCount))
+    {
+        return;
+    }
+
+    state = &amp;s_graph-&gt;states[s_runtime.currentState];
+    if (state-&gt;onExit != NULL)
+    {
+        state-&gt;onExit(reason);
+    }
+    s_stateActive = 0U;
+}
+
+static uint8_t Mission_EnterState(uint16_t stateId)
+{
+    const Mission_StateDefinition_t *state;
+
+    if ((s_graphValid == 0U) || (s_graph == NULL) ||
+        (stateId &gt;= s_graph-&gt;stateCount))
+    {
+        return 0U;
+    }
+
+    state = &amp;s_graph-&gt;states[stateId];
+    s_runtime.currentState = stateId;
+    s_runtime.stateElapsedSeconds = 0.0f;
+    s_runtime.actionStatus = (state-&gt;onUpdate == NULL) ?
+        MISSION_ACTION_FINISHED : MISSION_ACTION_RUNNING;
+    s_stateActive = 1U;
+
+    if ((state-&gt;onEnter != NULL) &amp;&amp;
+        (state-&gt;onEnter() != MISSION_CALLBACK_OK))
+    {
+        s_runtime.actionStatus = MISSION_ACTION_ERROR;
+        return 0U;
+    }
+
+    s_status = (s_runtime.actionStatus == MISSION_ACTION_FINISHED) ?
+        MISSION_STATUS_COMPLETED : MISSION_STATUS_RUNNING;
+    return 1U;
+}
+
+static void Mission_SetError(void)
+{
+    const Mission_StateDefinition_t *errorState;
+
+    Mission_CallExit(MISSION_EXIT_ERROR);
+    MotionManager_Stop();
+
+    if ((s_graphValid == 0U) || (s_graph == NULL) ||
+        (s_graph-&gt;errorState &gt;= s_graph-&gt;stateCount))
+    {
+        s_runtime.currentState = 0U;
+        s_runtime.stateElapsedSeconds = 0.0f;
+        s_runtime.actionStatus = MISSION_ACTION_ERROR;
+        s_stateActive = 0U;
+        s_status = MISSION_STATUS_ERROR;
+        return;
+    }
+
+    s_runtime.currentState = s_graph-&gt;errorState;
+    s_runtime.stateElapsedSeconds = 0.0f;
+    s_runtime.actionStatus = MISSION_ACTION_ERROR;
+    s_stateActive = 1U;
+    s_status = MISSION_STATUS_ERROR;
+
+    errorState = &amp;s_graph-&gt;states[s_graph-&gt;errorState];
+    if (errorState-&gt;onEnter != NULL)
+    {
+        (void)errorState-&gt;onEnter();
+    }
+}</code></pre>
+  <ol class="line-notes">
+    <li><strong>第 55～57 行：</strong>退出辅助函数接收离开原因并准备当前状态定义指针。</li>
+    <li><strong>第 59～63 行：</strong>只有状态确实 active、图存在且当前下标有效才允许退出；重复退出会被挡住。</li>
+    <li><strong>第 65～69 行：</strong>找到当前状态；若 onExit 非空就把 completed/interrupted/stopped/error 原因传给题目回调。</li>
+    <li><strong>第 70～71 行：</strong>无论有没有退出回调，都把 active 清 0，表示生命周期已关闭。</li>
+    <li><strong>第 73～80 行：</strong>进入函数先检查图已校验、图指针存在且目标下标合法。</li>
+    <li><strong>第 81 行：</strong>结束非法目标的提前返回分支。</li>
+    <li><strong>第 83～85 行：</strong>选中目标状态，移动运行时游标，并把该状态计时归零。</li>
+    <li><strong>第 86～88 行：</strong>没有 onUpdate 的状态被预设为立即 FINISHED；有 onUpdate 才从 RUNNING 开始。随后先标记 active。</li>
+    <li><strong>第 90～95 行：</strong>若存在 onEnter 就调用一次；返回非 OK 时把动作标 ERROR 并报告进入失败。</li>
+    <li><strong>第 97～100 行：</strong>进入成功后，根据动作是否已立即完成设置 Mission 总体 COMPLETED 或 RUNNING。</li>
+    <li><strong>第 102～106 行：</strong>统一错误处理先对旧状态调用 ERROR 退出，再无条件停止 MotionManager。</li>
+    <li><strong>第 107 行：</strong>执行统一停车，保证后续错误状态不会继承旧运动。</li>
+    <li><strong>第 109～117 行：</strong>若图本身无效或错误状态不合法，使用安全兜底运行时：状态 0、计时 0、动作 ERROR、无 active、总体 ERROR。</li>
+    <li><strong>第 118 行：</strong>结束无有效错误状态时的兜底分支。</li>
+    <li><strong>第 120～124 行：</strong>有效图则把运行时游标直接放到 graph 指定的 errorState，动作与总体都标 ERROR。</li>
+    <li><strong>第 126～130 行：</strong>若错误状态有 onEnter，就调用一次，但用 <code>(void)</code> 明确忽略返回值；错误状态不会因自身进入失败再递归报错。</li>
+    <li><strong>第 131 行：</strong>结束错误处理。</li>
+  </ol>
+
+  <h4>Application/Mission/Mission.c（3/4）：回起点、按表转换与初始化</h4>
+  <pre class="source-code"><code data-source="Application/Mission/Mission.c" data-lines="133-205">static void Mission_ResetToStart(void)
+{
+    Mission_CallExit(MISSION_EXIT_STOPPED);
+    MotionManager_Stop();
+
+    if (Mission_EnterState(s_graph-&gt;startState) == 0U)
+    {
+        Mission_SetError();
+    }
+}
+
+static uint8_t Mission_TryTransition(
+    Mission_TransitionType_t transitionType,
+    const App_UpdateContext_t *updateContext)
+{
+    const Mission_StateDefinition_t *state =
+        &amp;s_graph-&gt;states[s_runtime.currentState];
+    uint8_t transitionIndex;
+
+    for (transitionIndex = 0U;
+         transitionIndex &lt; state-&gt;transitionCount;
+         transitionIndex++)
+    {
+        const Mission_Transition_t *transition =
+            &amp;state-&gt;transitions[transitionIndex];
+        Mission_ExitReason_t exitReason;
+
+        if (transition-&gt;type != transitionType)
+        {
+            continue;
+        }
+        if ((transition-&gt;condition != NULL) &amp;&amp;
+            (transition-&gt;condition(&amp;s_runtime, updateContext) == 0U))
+        {
+            continue;
+        }
+
+        exitReason = (transitionType == MISSION_TRANSITION_INTERRUPT) ?
+            MISSION_EXIT_INTERRUPTED : MISSION_EXIT_COMPLETED;
+        Mission_CallExit(exitReason);
+        MotionManager_Stop();
+        if (Mission_EnterState(transition-&gt;targetState) == 0U)
+        {
+            Mission_SetError();
+        }
+        return 1U;
+    }
+
+    return 0U;
+}
+
+void Mission_Init(const Mission_GraphDefinition_t *graph)
+{
+    s_graph = graph;
+    s_graphValid = Mission_GraphIsValid(graph);
+    s_runtime.currentState = 0U;
+    s_runtime.stateElapsedSeconds = 0.0f;
+    s_runtime.actionStatus = MISSION_ACTION_ERROR;
+    s_status = MISSION_STATUS_UNINITIALIZED;
+    s_stateActive = 0U;
+
+    if (s_graphValid == 0U)
+    {
+        MotionManager_Stop();
+        s_status = MISSION_STATUS_ERROR;
+        return;
+    }
+
+    if (Mission_EnterState(s_graph-&gt;startState) == 0U)
+    {
+        Mission_SetError();
+    }
+}</code></pre>
+  <ol class="line-notes">
+    <li><strong>第 133～137 行：</strong>回起点先以 STOPPED 原因退出当前状态，并停止任何运动。</li>
+    <li><strong>第 138～142 行：</strong>再进入图定义的 startState；起点 onEnter 失败就转统一错误状态。</li>
+    <li><strong>第 144～150 行：</strong>转换尝试接收本次只检查的类型和 App 快照，并取得当前状态及遍历下标。</li>
+    <li><strong>第 152～157 行：</strong>严格按转换数组声明顺序逐项读取，这就是“第一条满足者优先”的实现。</li>
+    <li><strong>第 158 行：</strong>为命中的转换准备正确退出原因。</li>
+    <li><strong>第 160～163 行：</strong>不是本次请求类型就 continue，跳过它但保留数组内后续同类型项的顺序。</li>
+    <li><strong>第 164～168 行：</strong>condition 非空时调用；返回 0 表示不成立并继续。condition 为 NULL 时整段为假，因此无条件通过。</li>
+    <li><strong>第 170～173 行：</strong>打断边使用 INTERRUPTED，正常边使用 COMPLETED；随后先退出旧状态，再统一停止旧运动。</li>
+    <li><strong>第 174～177 行：</strong>进入目标状态；失败时立即进入统一错误处理。</li>
+    <li><strong>第 178～182 行：</strong>只要执行了一条转换就马上返回 1；整张表没有命中才返回 0。因此单次调用最多转换一次。</li>
+    <li><strong>第 184～187 行：</strong>初始化保存图地址并立即做结构校验；Mission 不复制图。</li>
+    <li><strong>第 188～192 行：</strong>把运行时设置为安全默认：状态 0、计时 0、动作 ERROR、总体未初始化、当前状态未激活。</li>
+    <li><strong>第 194～199 行：</strong>图无效时停车并把总体状态置 ERROR，不尝试访问 startState。</li>
+    <li><strong>第 201～205 行：</strong>图有效时进入起点；起点进入失败则走统一错误状态。</li>
+  </ol>
+
+  <h4>Application/Mission/Mission.c（4/4）：每拍推进、全局停止与上下文辅助</h4>
+  <pre class="source-code"><code data-source="Application/Mission/Mission.c" data-lines="207-311">void Mission_Update(const App_UpdateContext_t *updateContext)
+{
+    const Mission_StateDefinition_t *state;
+
+    if ((updateContext == NULL) || (s_graphValid == 0U) ||
+        (s_status == MISSION_STATUS_UNINITIALIZED))
+    {
+        return;
+    }
+
+    if (Mission_ContextHasBluetoothSignal(updateContext, 0U) != 0U)
+    {
+        Mission_ResetToStart();
+        return;
+    }
+
+    if (s_status == MISSION_STATUS_ERROR)
+    {
+        return;
+    }
+
+    state = &amp;s_graph-&gt;states[s_runtime.currentState];
+    s_runtime.stateElapsedSeconds += updateContext-&gt;dt;
+
+    if ((s_runtime.actionStatus == MISSION_ACTION_RUNNING) &amp;&amp;
+        (state-&gt;onUpdate != NULL))
+    {
+        s_runtime.actionStatus = state-&gt;onUpdate(updateContext-&gt;dt);
+    }
+
+    if (((s_runtime.actionStatus != MISSION_ACTION_RUNNING) &amp;&amp;
+         (s_runtime.actionStatus != MISSION_ACTION_FINISHED) &amp;&amp;
+         (s_runtime.actionStatus != MISSION_ACTION_ERROR)) ||
+        (s_runtime.actionStatus == MISSION_ACTION_ERROR) ||
+        (MotionManager_GetError() != MOTION_MANAGER_ERROR_NONE))
+    {
+        Mission_SetError();
+        return;
+    }
+
+    if (s_runtime.actionStatus == MISSION_ACTION_RUNNING)
+    {
+        s_status = MISSION_STATUS_RUNNING;
+        if (state-&gt;interruptible != 0U)
+        {
+            (void)Mission_TryTransition(
+                MISSION_TRANSITION_INTERRUPT, updateContext);
+        }
+        return;
+    }
+
+    s_status = MISSION_STATUS_COMPLETED;
+    (void)Mission_TryTransition(MISSION_TRANSITION_NORMAL, updateContext);
+}
+
+void Mission_Stop(void)
+{
+    if ((s_graphValid == 0U) ||
+        (s_status == MISSION_STATUS_UNINITIALIZED))
+    {
+        MotionManager_Stop();
+        return;
+    }
+
+    Mission_ResetToStart();
+}
+
+Mission_Status_t Mission_GetStatus(void)
+{
+    return s_status;
+}
+
+const Mission_Runtime_t *Mission_GetRuntime(void)
+{
+    return &amp;s_runtime;
+}
+
+Mission_ActionStatus_t Mission_GetMotionActionStatus(void)
+{
+    if (MotionManager_GetError() != MOTION_MANAGER_ERROR_NONE)
+    {
+        return MISSION_ACTION_ERROR;
+    }
+    if (MotionManager_IsFinished() != 0U)
+    {
+        return MISSION_ACTION_FINISHED;
+    }
+    if (MotionManager_IsBusy() != 0U)
+    {
+        return MISSION_ACTION_RUNNING;
+    }
+    return MISSION_ACTION_FINISHED;
+}
+
+uint8_t Mission_ContextHasBluetoothSignal(
+    const App_UpdateContext_t *updateContext, uint8_t signal)
+{
+    if ((updateContext == NULL) ||
+        (updateContext-&gt;hasBluetoothSignal == 0U))
+    {
+        return 0U;
+    }
+
+    return (updateContext-&gt;bluetoothSignal == signal) ? 1U : 0U;
+}</code></pre>
+  <ol class="line-notes">
+    <li><strong>第 207～214 行：</strong>每拍入口先拒绝空上下文、无效图和尚未初始化状态。</li>
+    <li><strong>第 215 行：</strong>结束无效 Update 输入的提前返回分支。</li>
+    <li><strong>第 217～221 行：</strong>最先检查蓝牙 C0（数值 0）；命中就无视普通 interruptible，回起点并立即结束本拍。</li>
+    <li><strong>第 223～226 行：</strong>总体已 ERROR 时保持错误状态，不再调用错误状态的 onUpdate 或普通转换。</li>
+    <li><strong>第 228～229 行：</strong>取当前状态定义，并按 App 提供的真实 dt 累加状态内秒数。</li>
+    <li><strong>第 231～235 行：</strong>只有动作仍 RUNNING 且 onUpdate 存在才调用一次；回调结果覆盖 runtime.actionStatus。</li>
+    <li><strong>第 237～241 行：</strong>先检查回调是否返回三种合法枚举；再检查动作 ERROR 和 MotionManager 的独立错误。</li>
+    <li><strong>第 242～245 行：</strong>任何异常都统一停车、退出并进入 errorState。</li>
+    <li><strong>第 247～250 行：</strong>动作仍 RUNNING 时总体保持 RUNNING；只有 interruptible 非 0 才允许查打断边。</li>
+    <li><strong>第 251 行：</strong>开始 interruptible 成立时的转换检查分支。</li>
+    <li><strong>第 252～255 行：</strong>调用一次 INTERRUPT 转换扫描后无论命中与否都 return，因此本拍不会再查正常边或连跳第二次。</li>
+    <li><strong>第 256 行：</strong>结束 RUNNING 动作分支。</li>
+    <li><strong>第 258～260 行：</strong>动作不是 RUNNING 且已通过错误检查，只能是 FINISHED；总体先标 COMPLETED，再扫描一次 NORMAL 转换。</li>
+    <li><strong>第 262～268 行：</strong>外部 Stop 在图无效或未初始化时只停车，不访问图。</li>
+    <li><strong>第 269 行：</strong>结束无效/未初始化 Stop 的提前返回分支。</li>
+    <li><strong>第 271～272 行：</strong>有效 Mission 的 Stop 不是停在原状态，而是按 STOPPED 生命周期回到 startState。</li>
+    <li><strong>第 274～277 行：</strong>返回 Mission 总体状态。</li>
+    <li><strong>第 279～282 行：</strong>返回运行时对象的只读指针；调用者可观察，不能通过此接口修改。</li>
+    <li><strong>第 284～289 行：</strong>运动动作适配先查 Manager error，错误优先级最高。</li>
+    <li><strong>第 290～293 行：</strong>再查 finished。必须放在 busy 前，因为 Straight CONTINUING 可同时 finished 与 busy。</li>
+    <li><strong>第 294～299 行：</strong>忙则 RUNNING；既不忙、未报错、也没显式 finished 的 IDLE 兜底视为 FINISHED，避免状态永久卡住。</li>
+    <li><strong>第 301～307 行：</strong>信号辅助函数先检查上下文存在且本拍确实带一个蓝牙事件。</li>
+    <li><strong>第 308 行：</strong>结束“本拍没有可用信号”的分支。</li>
+    <li><strong>第 310～311 行：</strong>事件值与请求 signal 相等才返回 1；函数不消费、不排队，只读当前快照。</li>
+  </ol>
+
+  <h3><code>状态机.md</code> 与当前代码逐项对照</h3>
+  <p>设计文档不需要背诵全文。下面先保留最核心的运行顺序原文，再把规则逐项落回 <code>Mission.c</code>。源码决定实际执行，文档负责说明题目作者应该怎样使用它。</p>
+  <pre class="source-code"><code data-source="状态机.md" data-lines="40-51">每个有效系统节拍依次发生：
+
+1. `App_Update()` 取得真实累计节拍并计算 `dt`。
+2. App 更新航向、里程、按键边沿和蓝牙单次事件。
+3. App 只更新 MotionManager 当前选中的运动模式。
+4. `Mission_Update()` 调用当前题目状态的 `onUpdate(dt)`。
+5. 动作仍在运行时，只检查打断转换。
+6. 动作完成后，只检查正常转换。
+7. 第一条满足条件的转换生效；每拍最多转换一次。
+8. 转换时依次执行旧状态 `onExit()`、`MotionManager_Stop()` 和新状态 `onEnter()`。
+
+`C0` 是通用全局停车信号，不受 `interruptible` 限制。它会停止车辆并回到题目状态图的 `startState`。</code></pre>
+  <ol class="line-notes">
+    <li><strong>第 40～44 行：</strong>描述 App 先完成状态估计、事件采集和 MotionManager 更新，再把同一拍快照交给 Mission；当前 <code>App.c</code> 与 <code>main.c</code> 调用顺序一致。</li>
+    <li><strong>第 45～47 行：</strong>与 <code>Mission_Update</code> 第 231～259 行一致：先更新动作，RUNNING 只查 interrupt，FINISHED 只查 normal。</li>
+    <li><strong>第 48～49 行：</strong>与 <code>Mission_TryTransition</code> 第 152～178 行一致：数组从前到后，命中一条便 return；生命周期顺序是 exit、stop、enter。</li>
+    <li><strong>第 51 行：</strong>与 <code>Mission_Update</code> 第 217～220 行一致：C0 在 error 和 interruptible 检查之前处理。</li>
+  </ol>
+
+  <table>
+    <thead><tr><th>文档规则</th><th>源码证据</th><th>结论或边界</th></tr></thead>
+    <tbody>
+      <tr><td>Mission 只执行静态图，不保存具体题目流程（第 5～15 行）</td><td><code>Mission.c</code> 只有通用 runtime、graph 指针和执行函数；题目回调由函数指针提供。</td><td>一致。距离、速度、状态编号应留在 <code>Accomplish</code>。</td></tr>
+      <tr><td>图初始化时检查状态数量、起点、错误状态和转换目标（第 127、384 行）</td><td><code>Mission_GraphIsValid</code> 第 16～49 行。</td><td>一致，但校验范围有限：不检查不可达状态、重复边、condition 逻辑、start 与 error 是否相同，也不检查 interruptible 必须是 0/1。</td></tr>
+      <tr><td>onEnter 只调用一次，失败进入错误状态（第 129～155 行）</td><td><code>Mission_EnterState</code> 第 90～95 行；调用者随后 <code>Mission_SetError</code>。</td><td>一致。失败状态仍是 active，因此 SetError 会先用 ERROR 原因调用它的 onExit。</td></tr>
+      <tr><td>空 onUpdate 立即完成（第 179～187 行）</td><td><code>Mission_EnterState</code> 第 86～87 行。</td><td>一致。等待状态若省略 onUpdate，会马上进入 COMPLETED，只会检查正常转换。</td></tr>
+      <tr><td>转换数组声明顺序就是优先级（第 259 行）</td><td><code>Mission_TryTransition</code> 从 index 0 向后扫描，第一条命中立即返回。</td><td>一致，但没有“排序合法性校验”。引擎先按本拍请求的类型过滤，所以优先级只在同一 NORMAL 或同一 INTERRUPT 扫描内比较。</td></tr>
+      <tr><td>condition 为 NULL 时无条件成立（第 261～263 行）</td><td>第 164～168 行只在 condition 非空且返回 0 时跳过。</td><td>一致。无条件兜底应放在同类型转换表后面，否则会遮住后续条件边。</td></tr>
+      <tr><td>interruptible=0 不屏蔽 C0（第 307 行）</td><td>C0 在第 217 行先处理；interruptible 到第 250 行才检查。</td><td>一致，即使错误状态也能通过 C0 尝试回起点。</td></tr>
+      <tr><td>onExit 不必自己停止 MotionManager（第 309 行）</td><td>TryTransition 第 172～174 行和 ResetToStart 第 135～138 行都在 exit 后统一 Stop。</td><td>一致。onExit 应只清题目私有计数/标志。</td></tr>
+      <tr><td>图和表必须静态存储（第 328 行）</td><td><code>Mission_Init</code> 只把传入地址保存到 <code>s_graph</code>，没有复制。</td><td>一致且非常关键。返回函数栈上的局部图会留下悬空指针，校验无法发现生命周期错误。</td></tr>
+      <tr><td>传感器确认应累加 elapsedTicks（第 220～222 行）</td><td>Mission 只把 App context 原样交给条件回调。</td><td>这是 Accomplish 编写规范，不由引擎强制；题目回调仍可能错误地每次只加 1。</td></tr>
+      <tr><td>当前 main 加载 25H（第 352～370 行，示例第 27 行）</td><td>当前 <code>main.c</code> 第 11 行是 <code>Mission_Init(AccomplishTest_GetMissionGraph())</code>。</td><td>文档此处已滞后，应以当前源码为准；25H 章节仍可作为状态图范例。</td></tr>
+      <tr><td>MotionManager 只调度直线、巡线、转向（第 12 行）</td><td>当前 MotionManager 还包含 BRAKE 模式。</td><td>核心“唯一运动所有权”规则一致，但文档层级表没有列出后来加入的刹车模式。</td></tr>
+    </tbody>
+  </table>
+
+  <h4>用离线文字流程看懂每个有效节拍</h4>
+  <div class="relation-chain">
+    <p><code>main: App_Update 返回有效</code> → App 已更新状态与 MotionManager → <code>Mission_Update(context)</code></p>
+    <ol>
+      <li>若收到 C0：当前状态以 STOPPED 退出 → MotionManager_Stop → 重新进入 startState，本拍结束。</li>
+      <li>否则若 Mission 已是 ERROR：保持错误并等待 C0。</li>
+      <li>否则累加 elapsed，按需调用当前状态 <code>onUpdate(dt)</code>。</li>
+      <li>若动作或 MotionManager 报错：以 ERROR 退出 → 停车 → 进入 errorState。</li>
+      <li>若动作仍 RUNNING 且状态可打断：按声明顺序找第一条满足的 INTERRUPT 转换。</li>
+      <li>若动作 FINISHED：按声明顺序找第一条满足的 NORMAL 转换。</li>
+      <li>命中转换时执行旧状态 exit → Stop → 新状态 enter；每拍最多完成一次转换。</li>
+    </ol>
+  </div>
+
+  <h3>难点函数拆解</h3>
+
+  <div class="deep-dive">
+    <h4>难点一：静态图定义与运行时为什么必须分离</h4>
+    <p><strong>输入：</strong>Accomplish 提供的 states 数组、转换数组和 graph 描述；Mission 自己维护的 runtime。</p>
+    <p><strong>过程：</strong>图定义只回答“可能有哪些状态和边”，运行时只回答“现在在哪、待了多久、动作怎样”。一张只读图可以由同一个通用引擎解释。</p>
+    <p><strong>输出：</strong>换题目时只换 <code>Accomplish...GetMissionGraph()</code> 的返回图，不改 Mission 执行代码。</p>
+    <p><strong>边界条件：</strong>Mission 只保存指针，因此 graph、states、transitions 必须具有静态存储期；不能在函数局部变量里创建后返回。</p>
+    <p><strong>设计原因：</strong>数据描述与执行算法解耦，避免把 25E、25H、Test 的流程硬编码进公共模块。</p>
+  </div>
+
+  <div class="deep-dive">
+    <h4>难点二：四种函数指针回调在生命周期中的位置</h4>
+    <p><strong>输入：</strong><code>onEnter</code>、<code>onUpdate</code>、<code>onExit</code>、<code>condition</code> 四类函数地址。</p>
+    <p><strong>过程：</strong>进入状态只调用一次 onEnter；每拍且动作 RUNNING 时调用 onUpdate；准备离开时调用一次 onExit；只有扫描某条转换时才调用该条 condition。</p>
+    <p><strong>输出：</strong>题目代码控制动作启动、动作状态和转换条件，却不直接控制引擎循环。</p>
+    <p><strong>边界条件：</strong>签名必须完全匹配 typedef。onEnter 不接 dt，condition 不能返回动作三态，onExit 没有返回值。NULL 的含义也不同：空 onUpdate 是立即完成，空 condition 是无条件成立。</p>
+    <p><strong>设计原因：</strong>固定签名让 Mission 能用同一套代码调用任意题目的函数。</p>
+  </div>
+
+  <div class="deep-dive">
+    <h4>难点三：转换表顺序、类型过滤和每拍最多一次转换</h4>
+    <p><strong>输入：</strong>当前状态的转换数组、本拍要检查的 NORMAL 或 INTERRUPT 类型、App 上下文。</p>
+    <p><strong>过程：</strong>从数组第 0 项开始；类型不符跳过；条件非空且返回 0 也跳过；第一条通过者执行并立即 return 1。Mission_Update 的 RUNNING 分支调用一次 interrupt 扫描后立刻 return，FINISHED 分支只调用一次 normal 扫描。</p>
+    <p><strong>输出：</strong>一拍最多走一条边，新状态即使没有 onUpdate 而立即完成，也要等下一拍才能继续走正常边。</p>
+    <p><strong>边界条件：</strong>无条件边必须放在同类型表的最后。引擎没有检查数组是否“按 NORMAL/INTERRUPT 分组”，因为每次会过滤类型；不同类型之间不会在同一拍竞争。</p>
+    <p><strong>设计原因：</strong>阻止一拍内连跳多个状态，避免多个 onEnter 连续启动/停止电机，也让传感器事件与时间推进更可预测。</p>
+  </div>
+
+  <div class="deep-dive">
+    <h4>难点四：RUNNING、FINISHED、ERROR 如何决定下一步</h4>
+    <p><strong>输入：</strong>题目 onUpdate 返回值，以及 MotionManager 的 error/busy/finished。</p>
+    <p><strong>过程：</strong>非法枚举、动作 ERROR 或 Manager error 立即 SetError；RUNNING 只允许可打断状态扫描 INTERRUPT；FINISHED 把 Mission 标 COMPLETED并扫描 NORMAL。</p>
+    <p><strong>输出：</strong>运动状态通常用 <code>Mission_GetMotionActionStatus</code> 适配 Manager；等待状态自行持续返回 RUNNING。</p>
+    <p><strong>边界条件：</strong>适配函数必须先查 finished 再查 busy，因为 Straight CONTINUING 可二者同时为真。Manager IDLE 且无错误时兜底返回 FINISHED。</p>
+    <p><strong>设计原因：</strong>把“动作执行结果”和“转换条件”分开：动作是否完成由状态回调回答，去哪个状态由转换表回答。</p>
+  </div>
+
+  <div class="deep-dive">
+    <h4>难点五：普通 interruptible 与全局 C0 为什么是两条通道</h4>
+    <p><strong>输入：</strong>状态定义的 interruptible、普通条件边，以及 App 快照中的蓝牙 signal 0。</p>
+    <p><strong>过程：</strong>C0 在 Update 最前面直接 ResetToStart；普通打断只有 action RUNNING 且 interruptible 非 0 时才扫描。</p>
+    <p><strong>输出：</strong>关键动作可以屏蔽普通题目切换，却无法屏蔽全局停车。</p>
+    <p><strong>边界条件：</strong>C0 会退出当前状态、停止运动并重新调用 startState 的 onEnter。它不是简单把 mode 设 IDLE；若起点进入失败，仍会进入 errorState。更重要的是，所有合法任务图都必须把 startState 设计成<strong>不会自动启动运动的被动等待状态</strong>，否则 C0 刚停车就可能在同一拍因起点 onEnter 再次发出运动命令；当前图校验没有检查这条安全约束。</p>
+    <p><strong>设计原因：</strong>安全停车权限不能被某道题的 interruptible 配置意外关闭。</p>
+  </div>
+
+  <div class="deep-dive">
+    <h4>难点六：错误状态不是普通状态</h4>
+    <p><strong>输入：</strong>进入回调失败、动作 ERROR、非法动作枚举或 MotionManager error。</p>
+    <p><strong>过程：</strong>先用 ERROR 原因退出当前状态并停车；随后直接设置 runtime 到 errorState，调用它的 onEnter，但忽略返回值。Mission 总体保持 ERROR，后续普通 Update 不执行 errorState 的 onUpdate。</p>
+    <p><strong>输出：</strong>车辆安全停止，调试界面能看到固定错误状态；C0 仍可尝试回起点。</p>
+    <p><strong>边界条件：</strong>errorState 的 onEnter 应简单、不可再依赖可能失败的运动启动。由于返回值被忽略，它更适合蜂鸣、标志或静态错误显示。</p>
+    <p><strong>设计原因：</strong>错误处理必须有终点，不能因“错误状态进入也失败”无限递归。</p>
+  </div>
+
+  <h3>放回总体调用链</h3>
+  <div class="relation-chain">
+    <p><code>main.c</code> → <code>App_Init()</code> → <code>Mission_Init(AccomplishTest_GetMissionGraph())</code> → 校验静态图 → 进入 startState</p>
+    <p>SysTick/事件 → <code>App_Update(&amp;context)</code> → Heading/Odometry/按键/蓝牙/MotionManager 已更新 → <code>Mission_Update(&amp;context)</code></p>
+    <p><code>Mission_Update</code> → 当前 Accomplish <code>onUpdate(dt)</code> / condition(runtime, context) → 命中转换 → 旧 <code>onExit</code> → <code>MotionManager_Stop</code> → 新 <code>onEnter</code></p>
+    <p>Accomplish 运动状态 <code>onEnter</code> → <code>MotionManager_StartForward/Line/Turn/Brake</code>；其 <code>onUpdate</code> → <code>Mission_GetMotionActionStatus</code></p>
+  </div>
+  <p>当前源码中，<code>main.c</code> 第 11 行加载 <code>AccomplishTest</code>，第 16～18 行只在 App 产生有效更新时调用 Mission。<code>Accomplish/25H.c</code> 仍是完整范例：第 69、78 行分别启动巡线和直线，第 109 行用统一运动状态适配，第 144～176 行定义转换表，第 185 行起登记状态表，第 240 行只公开图地址。</p>
+
+  <h3>常见误解与调试提示</h3>
+  <div class="pitfall">
+    <h4>误解：图校验通过就代表流程一定正确</h4>
+    <p>校验只保证指针、数量、目标下标和转换类型不会明显越界。它不检查状态是否可达、无条件边是否遮住后续边、条件是否永远为假、图指针生命周期是否正确。</p>
+  </div>
+  <div class="pitfall">
+    <h4>误解：interruptible=0 会阻止所有外部事件</h4>
+    <p>它只禁止普通 INTERRUPT 转换。蓝牙 C0 在更前面处理，任何状态包括 ERROR 都无法屏蔽。</p>
+  </div>
+  <div class="pitfall">
+    <h4>误解：空 onUpdate 表示“什么都不做，继续等”</h4>
+    <p>源码把空 onUpdate 直接标为 FINISHED。等待按键或蓝牙的状态必须提供一个每拍返回 RUNNING 的更新回调。</p>
+  </div>
+  <div class="pitfall">
+    <h4>误解：onEnter 可以循环等待动作完成</h4>
+    <p>onEnter 只应启动一次动作并迅速返回。阻塞会冻结 App、MotionManager 和传感器更新；完成等待应交给后续 onUpdate。</p>
+  </div>
+  <div class="pitfall">
+    <h4>误解：条件回调里可以顺便启动电机</h4>
+    <p>条件可能每拍、按多条边反复执行，应只回答真假。电机动作只能在目标状态 onEnter 中启动，所有权与生命周期才清晰。</p>
+  </div>
+  <div class="pitfall">
+    <h4>误解：文档写“当前 25H”，固件就一定在跑 25H</h4>
+    <p>文档可能滞后；当前 main 实际加载 AccomplishTest。判断当前行为应查看编译中的 <code>main.c</code>、工程文件和最终构建，而不是只看示例章节。</p>
+  </div>
+
+  <div class="ripple-effect">
+    <h4>修改结构或规则会牵动哪里</h4>
+    <ul>
+      <li>改变回调 typedef 会要求所有 Accomplish 回调同步改签名，否则函数指针类型不匹配。</li>
+      <li>给 <code>Mission_StateDefinition_t</code> 增加字段时，所有静态状态表的指定初始化都要审查默认值与含义。</li>
+      <li>改变转换扫描顺序会改变同拍多个条件同时成立时的实际路径，所有题目的转换表优先级都可能变化。</li>
+      <li>允许一拍多次转换会导致连续 onExit/Stop/onEnter，可能让单拍事件被多个状态重复观察，也会增加电机切换风险。</li>
+      <li>改变空 onUpdate 的语义，会影响所有等待状态、错误状态和只靠正常边自动前进的状态。</li>
+      <li>改变 C0 处理位置可能使 ERROR 或 non-interruptible 状态无法停车，属于安全语义变更。</li>
+      <li>改变 <code>Mission_GetMotionActionStatus</code> 的 finished/busy 检查顺序，会破坏 Straight CONTINUING 的分段完成语义。</li>
+      <li>修改 App 与 Mission 的调用顺序，会决定条件和动作看到的是本拍更新前还是更新后的传感器/运动状态。</li>
+    </ul>
+  </div>
+
+  <h3>学完自测</h3>
+  <details class="quiz"><summary>1. 静态图和 Mission_Runtime 分别保存什么？</summary><p>静态图保存所有状态、转换、起点和错误状态；Runtime 只保存当前状态编号、进入该状态后的秒数和当前动作状态。</p></details>
+  <details class="quiz"><summary>2. 一个状态 onUpdate 为 NULL，进入后 actionStatus 是什么？</summary><p>立即设为 MISSION_ACTION_FINISHED，Mission 总体先变 COMPLETED；下一次 Update 会检查正常转换。</p></details>
+  <details class="quiz"><summary>3. 同一状态两条 INTERRUPT 条件同时为真，哪条生效？一拍会跳几次？</summary><p>转换数组中靠前的同类型条目生效；命中后立即返回，所以一拍最多一次转换。</p></details>
+  <details class="quiz"><summary>4. interruptible=0 时收到 C0 会怎样？</summary><p>仍会以 STOPPED 原因退出、停止 MotionManager 并重新进入 startState；C0 检查早于 interruptible。</p></details>
+  <details class="quiz"><summary>5. 为什么 Mission_GetMotionActionStatus 先检查 finished 再检查 busy？</summary><p>Straight 的 CONTINUING 状态会同时 finished=1、busy=1；先看 finished 才能让 Mission 在分段距离到达后转换到下一状态。</p></details>
+
+  <h3>覆盖清单</h3>
+  <ul class="coverage-list">
+    <li><code>Application/Mission/Mission.h</code>：第 1～92 行；全部枚举、运行时结构、四类函数指针、转换/状态/图结构和公共接口按真实行号覆盖。</li>
+    <li><code>Application/Mission/Mission.c</code>：第 1～311 行；私有状态、图合法性校验、退出/进入/错误生命周期、回起点、按序转换、初始化、每拍更新、全局停止、动作适配和蓝牙上下文读取全部覆盖；空行仅用于源码分组。</li>
+    <li><code>状态机.md</code>：第 1～398 行作为设计文档阅读；没有全文复制。重点逐项对照第 5～15、17～51、127～187、220～265、307～338、340～370、374～397 行，并指出“当前加载 25H”和遗漏 BRAKE 的描述已落后于现有源码。</li>
+  </ul>
+</section>

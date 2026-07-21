@@ -14,6 +14,13 @@
 #define K230_LINK_MESSAGE_READY_ACK      0x02U
 #define K230_LINK_MESSAGE_TARGET         0x10U
 
+#define K230_LINK_MESSAGE_CAPTURE        0x20U
+#define K230_LINK_MESSAGE_CAPTURE_ACK    0x21U
+
+/* 拍照请求的等待上限；100 Hz 下为 1 秒。 */
+#define K230_LINK_CAPTURE_TIMEOUT_TICKS  100U
+#define K230_LINK_CAPTURE_MAX_COUNT      20U
+
 typedef struct
 {
     uint8_t valid;
@@ -26,5 +33,8 @@ void K230Link_Init(void);
 void K230Link_Update(uint8_t elapsedTicks);
 uint8_t K230Link_IsReady(void);
 uint8_t K230Link_GetTarget(K230Link_Target_t *target);
+uint8_t K230Link_RequestCapture(uint8_t count);
+uint8_t K230Link_IsCapturePending(void);
+uint8_t K230Link_PopCaptureAck(uint8_t *ok, uint16_t *index);
 
 #endif

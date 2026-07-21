@@ -13,6 +13,13 @@
 #define NAV_SETTLE_TICKS          3U     /* 连续稳定 30 ms 后完成。 */
 #define NAV_ROTATION_COMMAND_SIGN 1      /* 误差增大时翻转为 -1。 */
 
+/* 运行时可调参数：上电恢复上方 #define 默认值，由 K 命令经 Param 模块读写。
+ * 每拍直接读取变量，写入即生效。调好后把数值写回 #define 固化。 */
+extern float Nav_TuneMaxTurnSpeedMMps;
+extern float Nav_TuneMinTurnSpeedMMps;
+extern float Nav_TuneSlowdownAngleDeg;
+extern float Nav_TuneAngleToleranceDeg;
+
 typedef enum
 {
     NAV_STATE_IDLE = 0,

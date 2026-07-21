@@ -14,6 +14,13 @@
 #define MOTION_STRAIGHT_DISTANCE_TOLERANCE_MM    5.0f   /* 到达距离允许误差。 */
 #define MOTION_STRAIGHT_ZERO_SPEED_HOLD_SECONDS  0.05f  /* 到零速目标后继续闭环保持的时间。 */
 
+/* 运行时可调参数：上电恢复上方 #define 默认值，由 K 命令经 Param 模块读写。
+ * Kp/Kd 写入后必须调用 MotionStraight_ApplyHeadingTunings() 才会进入 PID；
+ * 加速度每次规划直接读取变量。调好后把数值写回 #define 固化。 */
+extern float MotionStraight_TuneHeadingKp;
+extern float MotionStraight_TuneHeadingKd;
+extern float MotionStraight_TuneAccelerationMMps2;
+
 typedef enum
 {
     MOTION_STRAIGHT_STATE_IDLE = 0,
@@ -50,6 +57,9 @@ MotionStraight_Result_t MotionStraight_StartBackward(
     uint32_t distanceMM, float speedMMps, float endSpeedMMps);
 void MotionStraight_Update(float dt);
 void MotionStraight_Stop(void);
+
+/* 把 MotionStraight_TuneHeading* 写入航向 PID，运行中调用也安全。 */
+void MotionStraight_ApplyHeadingTunings(void);
 
 uint8_t MotionStraight_IsConfigured(void);
 uint8_t MotionStraight_IsBusy(void);

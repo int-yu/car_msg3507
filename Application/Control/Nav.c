@@ -15,6 +15,12 @@ typedef struct
     uint8_t configured;
 } Nav_Context_t;
 
+/* 运行时可调参数，默认值取头文件 #define；范围校验由 Param 模块负责。 */
+float Nav_TuneMaxTurnSpeedMMps = NAV_MAX_TURN_SPEED_MMPS;
+float Nav_TuneMinTurnSpeedMMps = NAV_MIN_TURN_SPEED_MMPS;
+float Nav_TuneSlowdownAngleDeg = NAV_SLOWDOWN_ANGLE_DEG;
+float Nav_TuneAngleToleranceDeg = NAV_ANGLE_TOLERANCE_DEG;
+
 static Nav_Context_t s_context = {
     .state = NAV_STATE_IDLE,
     .error = NAV_ERROR_NONE,
@@ -117,7 +123,7 @@ static Nav_Result_t Nav_Start(float targetYawDeg, float speedMMps)
     s_context.targetYawDeg = targetYawDeg;
     s_context.angleErrorDeg = targetYawDeg - Heading_GetYaw();
     s_context.requestedSpeedMMps = Nav_Clamp(
-        speedMMps, 0.0f, NAV_MAX_TURN_SPEED_MMPS);
+        speedMMps, 0.0f, Nav_TuneMaxTurnSpeedMMps);
     s_context.error = NAV_ERROR_NONE;
     s_context.state = NAV_STATE_RUNNING;
     return NAV_RESULT_OK;
@@ -132,16 +138,16 @@ static float Nav_CalculateTargetTurnSpeed(void)
     float speedMagnitudeMMps;
     float direction;
 
-    if (absoluteErrorDeg <= NAV_ANGLE_TOLERANCE_DEG)
+    if (absoluteErrorDeg <= Nav_TuneAngleToleranceDeg)
     {
         return 0.0f;
     }
 
     minimumSpeedMMps = Nav_Clamp(
-        NAV_MIN_TURN_SPEED_MMPS,
+        Nav_TuneMinTurnSpeedMMps,
         0.0f, s_context.requestedSpeedMMps);
     slowdownRatio = Nav_Clamp(
-        absoluteErrorDeg / NAV_SLOWDOWN_ANGLE_DEG,
+        absoluteErrorDeg / Nav_TuneSlowdownAngleDeg,
         0.0f, 1.0f);
     speedMagnitudeMMps = minimumSpeedMMps +
         (s_context.requestedSpeedMMps - minimumSpeedMMps) *
@@ -250,7 +256,7 @@ void Nav_Update(float dt)
     targetTurnSpeedMMps = Nav_CalculateTargetTurnSpeed();
     Nav_UpdateSpeedProfile(targetTurnSpeedMMps, dt);
 
-    if (fabsf(s_context.angleErrorDeg) <= NAV_ANGLE_TOLERANCE_DEG)
+    if (fabsf(s_context.angleErrorDeg) <= Nav_TuneAngleToleranceDeg)
     {
         if (fabsf(s_context.profileTurnSpeedMMps) <= 0.001f)
         {

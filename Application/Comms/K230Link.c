@@ -33,6 +33,11 @@ static uint8_t s_readyAcknowledged;
 static uint8_t s_readySequence;
 static uint8_t s_nextSequence;
 static uint8_t s_readyRetryTicks;
+static uint8_t s_capturePending;
+static uint8_t s_captureTimeoutTicks;
+static uint8_t s_captureAckPending;
+static uint8_t s_captureAckOk;
+static uint16_t s_captureAckIndex;
 
 static uint8_t K230Link_Crc8Update(uint8_t crc, uint8_t data)
 {
@@ -139,6 +144,17 @@ static void K230Link_HandleFrame(void)
         s_target.sequence = s_parser.sequence;
         s_hasTarget = 1U;
     }
+    else if ((s_parser.type == K230_LINK_MESSAGE_CAPTURE_ACK) &&
+             (s_parser.length == 3U) &&
+             (s_capturePending != 0U))
+    {
+        s_captureAckOk = (s_parser.payload[0] != 0U) ? 1U : 0U;
+        s_captureAckIndex = (uint16_t)(
+            (uint16_t)s_parser.payload[1] |
+            ((uint16_t)s_parser.payload[2] << 8U));
+        s_captureAckPending = 1U;
+        s_capturePending = 0U;
+    }
 }
 
 static void K230Link_ParseByte(uint8_t data)
@@ -237,6 +253,11 @@ void K230Link_Init(void)
     s_nextSequence = 0U;
     s_readySequence = K230Link_NextSequence();
     s_readyRetryTicks = K230_LINK_READY_RETRY_TICKS;
+    s_capturePending = 0U;
+    s_captureTimeoutTicks = 0U;
+    s_captureAckPending = 0U;
+    s_captureAckOk = 0U;
+    s_captureAckIndex = 0U;
 }
 
 void K230Link_Update(uint8_t elapsedTicks)
@@ -264,6 +285,25 @@ void K230Link_Update(uint8_t elapsedTicks)
             s_readyRetryTicks = 0U;
         }
     }
+
+    if (s_capturePending != 0U)
+    {
+        uint16_t ticks = (uint16_t)s_captureTimeoutTicks + elapsedTicks;
+
+        if (ticks >= K230_LINK_CAPTURE_TIMEOUT_TICKS)
+        {
+            /* 超时按失败上报，index 固定为 0。 */
+            s_capturePending = 0U;
+            s_captureTimeoutTicks = 0U;
+            s_captureAckOk = 0U;
+            s_captureAckIndex = 0U;
+            s_captureAckPending = 1U;
+        }
+        else
+        {
+            s_captureTimeoutTicks = (uint8_t)ticks;
+        }
+    }
 }
 
 uint8_t K230Link_IsReady(void)
@@ -279,5 +319,52 @@ uint8_t K230Link_GetTarget(K230Link_Target_t *target)
         return 0U;
     }
     *target = s_target;
+    return 1U;
+}
+
+uint8_t K230Link_RequestCapture(uint8_t count)
+{
+    uint8_t payload;
+
+    if ((count == 0U) || (count > K230_LINK_CAPTURE_MAX_COUNT))
+    {
+        return 0U;
+    }
+    if (K230Link_IsReady() == 0U)
+    {
+        return 0U;
+    }
+    if (s_capturePending != 0U)
+    {
+        return 0U;
+    }
+
+    payload = count;
+    K230Link_SendFrame(
+        K230_LINK_MESSAGE_CAPTURE,
+        K230Link_NextSequence(),
+        &payload,
+        1U);
+
+    s_capturePending = 1U;
+    s_captureTimeoutTicks = 0U;
+    return 1U;
+}
+
+uint8_t K230Link_IsCapturePending(void)
+{
+    return s_capturePending;
+}
+
+uint8_t K230Link_PopCaptureAck(uint8_t *ok, uint16_t *index)
+{
+    if ((ok == NULL) || (index == NULL) || (s_captureAckPending == 0U))
+    {
+        return 0U;
+    }
+
+    *ok = s_captureAckOk;
+    *index = s_captureAckIndex;
+    s_captureAckPending = 0U;
     return 1U;
 }

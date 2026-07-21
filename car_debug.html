@@ -1,0 +1,3828 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>小车串口调试台</title>
+<style>
+:root {
+    --bg: #0e1117;
+    --panel: #161b24;
+    --panel2: #10141c;
+    --line: #262d3b;
+    --fg: #e8ecf3;
+    --dim: #8b93a3;
+    --accent: #58a6ff;
+    --accent-dim: #1f3a5f;
+    --ok: #4cc98a;
+    --err: #e8636a;
+    --warn: #e0a13c;
+}
+* { box-sizing: border-box; }
+html { scrollbar-color: #333c4d var(--bg); }
+body {
+    margin: 0;
+    padding: 14px 16px 40px;
+    background:
+        radial-gradient(1200px 400px at 20% -10%, #16233a55, transparent),
+        var(--bg);
+    color: var(--fg);
+    font: 14px/1.55 "Microsoft YaHei", system-ui, sans-serif;
+}
+h1 { font-size: 17px; margin: 0 0 10px; letter-spacing: .5px; }
+h1::before {
+    content: ''; display: inline-block; width: 9px; height: 9px; border-radius: 50%;
+    background: var(--accent); margin-right: 8px; box-shadow: 0 0 8px var(--accent);
+}
+h2 { font-size: 13.5px; margin: 0 0 10px; color: var(--accent); letter-spacing: .5px; }
+h2 small, summary small { color: var(--dim); font-weight: normal; font-size: 12px; }
+.grid { display: grid; grid-template-columns: 370px 1fr; gap: 14px; align-items: start; }
+.panel {
+    background: linear-gradient(180deg, var(--panel), var(--panel2));
+    border: 1px solid var(--line); border-radius: 10px;
+    padding: 13px 14px; margin-bottom: 14px;
+    box-shadow: 0 2px 10px #0006;
+}
+details.panel > summary {
+    cursor: pointer; color: var(--accent); font-size: 13.5px; font-weight: bold;
+    list-style: none; user-select: none;
+}
+details.panel > summary::before { content: '▸ '; color: var(--dim); }
+details.panel[open] > summary::before { content: '▾ '; }
+details.panel[open] > summary { margin-bottom: 10px; }
+.topbar {
+    position: sticky; top: 8px; z-index: 30;
+    background: #151b25;
+    box-shadow: 0 4px 18px #000a;
+}
+button {
+    background: #232b3a; color: var(--fg); border: 1px solid var(--line);
+    border-radius: 6px; padding: 6px 12px; cursor: pointer; font-size: 13px;
+    transition: border-color .15s, background .15s, transform .05s;
+}
+button:hover:not(:disabled) { border-color: var(--accent); background: #283349; }
+button:active:not(:disabled) { transform: translateY(1px); }
+button:disabled { opacity: .35; cursor: not-allowed; }
+button.primary {
+    background: linear-gradient(180deg, #63aeff, #3f8ae0); color: #0a1626;
+    border-color: #3f8ae0; font-weight: bold;
+}
+button.primary:hover:not(:disabled) { background: linear-gradient(180deg, #74baff, #4d95e8); }
+button.danger { background: linear-gradient(180deg, #ef6d74, #d84f57); color: #fff; border-color: #d84f57; font-weight: bold; }
+button.mini { padding: 2px 8px; font-size: 12px; border-radius: 5px; }
+button.mini.active { border-color: var(--accent); background: var(--accent-dim); color: var(--accent); }
+input[type=number], input[type=text] {
+    background: #0d1117; color: var(--fg); border: 1px solid var(--line);
+    border-radius: 6px; padding: 5px 8px; width: 78px; font-size: 13px;
+    font-variant-numeric: tabular-nums;
+}
+input[type=number]:focus, input[type=text]:focus, select:focus {
+    outline: none; border-color: var(--accent); box-shadow: 0 0 0 2px #58a6ff33;
+}
+input[type=range] { width: 100%; accent-color: var(--accent); }
+select {
+    background: #0d1117; color: var(--fg); border: 1px solid var(--line);
+    border-radius: 6px; padding: 5px 8px; font-size: 13px;
+}
+label { color: var(--dim); font-size: 13px; }
+.row { display: flex; gap: 6px; align-items: center; flex-wrap: wrap; margin-bottom: 8px; }
+.row:last-child { margin-bottom: 0; }
+.hint { color: var(--dim); font-size: 12px; margin: 4px 0 0; }
+.status { font-size: 13px; }
+.status .on { color: var(--ok); }
+.status .off { color: var(--err); }
+kbd {
+    font: 11px Consolas, monospace; color: var(--dim);
+    border: 1px solid var(--line); border-bottom-width: 2px; border-radius: 4px;
+    padding: 0 5px; background: #0d1117;
+}
+#terminal {
+    height: 200px; overflow-y: auto; background: #0b0e13; border: 1px solid var(--line);
+    border-radius: 8px; padding: 8px; font-family: Consolas, monospace; font-size: 12px;
+    white-space: pre-wrap; word-break: break-all; contain: content;
+}
+#terminal .tx { color: var(--accent); }
+#terminal .ok { color: var(--ok); }
+#terminal .err { color: var(--err); }
+#plot { width: 100%; height: 320px; display: block; background: #0b0e13; border-radius: 8px; cursor: crosshair; contain: strict; }
+#series { display: flex; gap: 10px; flex-wrap: wrap; }
+#series label { display: flex; gap: 3px; align-items: center; color: var(--fg); cursor: pointer; }
+.sw { display: inline-block; width: 10px; height: 10px; border-radius: 3px; }
+.masks { display: grid; grid-template-columns: 1fr 1fr; gap: 2px 10px; }
+.masks label { display: flex; gap: 4px; align-items: center; color: var(--fg); cursor: pointer; }
+#paramTable { display: grid; grid-template-columns: auto 1fr auto; gap: 4px 6px; align-items: center; }
+#paramTable .pname { font-family: Consolas, monospace; font-size: 12px; }
+#paramTable .pname small { color: var(--dim); }
+#paramTable input { width: 100%; }
+#paramTable .dirty, .qp input.dirty { border-color: var(--warn); }
+#paramTable .pgroup { grid-column: 1 / -1; color: var(--accent); font-size: 12px; font-weight: bold; padding-top: 6px; border-top: 1px solid var(--line); }
+#wheelMap { margin-top: 8px; padding: 9px; border: 1px solid var(--line); border-radius: 7px; background: #0d1117; }
+#wheelMap.warn { border-color: var(--err); color: var(--err); }
+.wheel-map-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 7px; margin-top: 7px; }
+.wheel-map-grid.single { grid-template-columns: 1fr; }
+.wheel-side { border: 1px solid var(--line); border-radius: 6px; padding: 7px 8px; color: var(--fg); }
+.wheel-side b { color: var(--accent); }
+.wheel-side code { color: var(--ok); }
+.wheel-warning { color: var(--warn); font-size: 12px; margin-top: 6px; }
+.quick-speeds { display: flex; gap: 4px; flex-wrap: wrap; align-items: center; margin: 4px 0 8px; }
+.quick-speeds button { padding: 2px 7px; font-size: 12px; }
+.known-hardware { color: var(--warn); }
+#sessParams { display: flex; gap: 6px 10px; flex-wrap: wrap; margin: 6px 0 2px; }
+.focus-shell { border: 1px solid var(--accent-dim); border-radius: 9px; padding: 10px; background: #0e1724; margin-bottom: 10px; }
+.focus-head { display: flex; align-items: center; gap: 8px; margin-bottom: 8px; flex-wrap: wrap; }
+.focus-path { color: var(--fg); font-size: 15px; font-weight: bold; }
+.focus-nav { display: flex; gap: 5px; flex-wrap: wrap; margin: 5px 0; }
+.focus-nav-label { width: 50px; color: var(--dim); font-size: 12px; align-self: center; }
+.focus-nav button { padding: 4px 10px; font-size: 12px; }
+.focus-nav button.active { color: #08131f; background: var(--accent); border-color: var(--accent); font-weight: bold; }
+.focus-nav button.secondary.active { color: var(--accent); background: var(--accent-dim); border-color: var(--accent); }
+.focus-param-grid { display: grid !important; grid-template-columns: repeat(2, minmax(220px, 1fr)); gap: 8px !important; margin: 9px 0 !important; }
+.qp { display: grid; grid-template-columns: 1fr auto auto auto auto; gap: 5px; align-items: center; border: 1px solid var(--line); border-radius: 7px; padding: 8px; background: #0b111a; }
+.qp label { font-family: Consolas, monospace; font-size: 13px; font-weight: bold; color: var(--accent); }
+.qp input { width: 86px; padding: 5px 7px; font-size: 13px; }
+.qp button { padding: 4px 7px; font-size: 12px; border-radius: 5px; }
+.qp .param-meta { grid-column: 1 / -1; color: var(--dim); font-size: 11px; font-family: Consolas, monospace; }
+.focus-history-head { display: flex; align-items: center; justify-content: space-between; gap: 8px; margin-top: 9px; border-top: 1px solid var(--line); padding-top: 8px; }
+#sessResult { margin-top: 8px; padding: 8px 10px; border: 1px solid var(--accent-dim); border-radius: 8px; background: #101a2a; display: none; }
+#sessResult .chips { display: flex; gap: 6px; flex-wrap: wrap; margin: 4px 0; }
+.chip {
+    display: inline-block; padding: 1px 9px; border-radius: 20px; font-size: 12px;
+    background: #1d2637; border: 1px solid var(--line); font-variant-numeric: tabular-nums;
+}
+.chip.good { color: var(--ok); border-color: #2c5c44; }
+.chip.bad { color: var(--err); border-color: #6b3237; }
+.drive-pad {
+    display: grid; grid-template-columns: repeat(3, 1fr); gap: 6px;
+    max-width: 240px; margin: 8px 0;
+}
+.drive-key {
+    display: flex; flex-direction: column; align-items: center; gap: 1px;
+    padding: 9px 0; font-weight: bold; font-family: Consolas, monospace;
+}
+.drive-key small { font-weight: normal; font-size: 10px; color: var(--dim); font-family: inherit; }
+.drive-key.held { background: var(--accent-dim); border-color: var(--accent); color: var(--accent); }
+.drive-key.held small { color: var(--accent); }
+#drivePanel.armed { border-color: var(--accent); box-shadow: 0 0 0 1px var(--accent-dim), 0 2px 10px #0006; }
+.mark-row { display: flex; gap: 5px; flex-wrap: wrap; }
+.mark-row button { font-size: 12px; padding: 3px 9px; }
+.mark-row button.hot { border-color: var(--warn); color: var(--warn); }
+.rec-dot {
+    display: inline-block; width: 8px; height: 8px; border-radius: 50%;
+    background: var(--err); margin-right: 5px; animation: pulse 1.2s infinite;
+}
+@keyframes pulse { 0%,100% { opacity: 1; } 50% { opacity: .25; } }
+.session { display: flex; gap: 6px; align-items: center; padding: 5px 0; border-top: 1px solid var(--line); font-size: 12px; flex-wrap: wrap; }
+.session:first-child { border-top: none; }
+.session > span:first-child { flex: 1; min-width: 150px; }
+.run { display: flex; gap: 6px; align-items: center; padding: 5px 0; border-top: 1px solid var(--line); font-size: 12px; flex-wrap: wrap; }
+.run:first-child { border-top: none; }
+.run > span:first-child { flex: 1; min-width: 180px; }
+.run .metrics { flex-basis: 100%; color: var(--dim); font-variant-numeric: tabular-nums; }
+@media (max-width: 900px) {
+    .grid { grid-template-columns: 1fr; }
+    .topbar { position: static; }
+}
+@media (max-width: 540px) {
+    body { padding: 8px; }
+    .wheel-map-grid { grid-template-columns: 1fr; }
+    .focus-param-grid { grid-template-columns: 1fr; }
+    .qp { grid-template-columns: 1fr auto auto auto; }
+    .qp input { grid-column: 1 / 3; width: 100%; }
+}
+</style>
+</head>
+<body>
+
+<h1>小车串口调试台 <span class="hint" style="font-weight:normal">无线 DAPLink 串口 · 115200 8N1</span></h1>
+
+<div class="panel row topbar">
+    <button id="btnConnect" class="primary">连接串口</button>
+    <button id="btnDisconnect" disabled>断开</button>
+    <span class="status">状态：<span id="connState" class="off">未连接</span></span>
+    <span class="status" style="margin-left:auto">模式：<b id="modeVal">—</b> · 样本 <b id="sampleCount">0</b></span>
+    <span class="hint"><kbd>Esc</kbd> 急停</span>
+    <button id="btnStop" class="danger" disabled>急停 C0</button>
+</div>
+
+<div class="grid">
+<div>
+
+    <div class="panel">
+        <h2>运动</h2>
+        <div class="row">
+            <label>速度</label>
+            <input type="number" id="vVal" value="200" min="20" max="800">
+            <button data-send="V" data-from="vVal" disabled>设定 V</button>
+            <span class="hint">20~800 mm/s</span>
+        </div>
+        <div class="row">
+            <label>距离</label>
+            <input type="number" id="distVal" value="500" min="1" max="10000">
+            <button data-send="F" data-from="distVal" disabled>前进 F</button>
+            <button data-send="B" data-from="distVal" disabled>后退 B</button>
+        </div>
+        <div class="row">
+            <label>角度</label>
+            <input type="number" id="angVal" value="90" min="-3600" max="3600">
+            <button data-send="T" data-from="angVal" disabled>相对 T</button>
+            <button data-send="A" data-from="angVal" disabled>绝对 A</button>
+        </div>
+        <div class="row">
+            <label>恒速</label>
+            <input type="number" id="wVal" value="300" min="-800" max="800">
+            <button data-send="W" data-from="wVal" disabled>恒速 W</button>
+            <button data-cmd="W0" disabled>停 W0</button>
+        </div>
+        <p class="hint known-hardware">已知硬件：左轮硬件当前不能反转。网页保留负速度命令，但会醒目提醒，不会替你屏蔽。</p>
+        <div class="row">
+            <label>巡线</label>
+            <input type="number" id="nVal" value="200" min="20" max="800">
+            <button data-send="N" data-from="nVal" disabled>巡线 N</button>
+            <button data-cmd="N0" disabled>停 N0</button>
+        </div>
+        <div class="row">
+            <button data-cmd="Z1" disabled>航向归零 Z1</button>
+            <button data-cmd="Z2" disabled>重新采样航向 Z2</button>
+            <span class="hint">Z1 只把当前朝向定为 0°；Z2 会重采陀螺仪零漂并归零，请保持车辆静止约 0.8 秒</span>
+        </div>
+        <p class="hint">自动运动进行中时固件返回 <code>ERR BUSY</code>；<code>W</code> 是无规划斜坡的闭环恒速（阶跃激励），运动中重复发 W 可链式改目标。</p>
+    </div>
+
+    <div class="panel" id="drivePanel">
+        <h2>遥控采集 <small>键盘驾驶 + 打标记 + 整段录制</small></h2>
+        <div class="row">
+            <button id="btnDriveMode" disabled>启用键盘驾驶</button>
+            <label>档速</label>
+            <input type="number" id="driveSpeed" value="250" min="20" max="800">
+            <label>转向°</label>
+            <input type="number" id="driveTurn" value="30" min="5" max="180">
+        </div>
+        <div class="drive-pad">
+            <span></span>
+            <button class="drive-key" data-drive="forward" disabled>W<small>前进</small></button>
+            <span></span>
+            <button class="drive-key" data-drive="left" disabled>A<small>左转</small></button>
+            <button class="drive-key danger" data-drive="stop" disabled>S<small>停</small></button>
+            <button class="drive-key" data-drive="right" disabled>D<small>右转</small></button>
+        </div>
+        <p class="hint" id="driveHint">启用后用 <kbd>W</kbd><kbd>A</kbd><kbd>S</kbd><kbd>D</kbd> 驾驶；转向是相对角命令，会等它转完再响应下一个键。</p>
+        <div class="row" style="margin-top:10px">
+            <button id="btnRecord" class="primary" disabled>开始录制</button>
+            <span class="hint" id="recordStatus">未录制</span>
+        </div>
+        <div class="row">
+            <label>标记</label>
+            <div id="markButtons" class="mark-row"></div>
+        </div>
+        <p class="hint">录制中按 <kbd>1</kbd>~<kbd>5</kbd> 打标记，写进 CSV 的 <code>mark</code> 列，供后续按场景切分训练数据。</p>
+        <div id="sessionList"><span class="hint">还没有录制会话。</span></div>
+    </div>
+
+    <details class="panel" id="advancedParams">
+        <summary>全部 K 参数 <small>高级工具 · 默认收起 · 写入即生效</small></summary>
+        <div class="row">
+            <button id="btnParamRefresh" disabled>读取全部 K?</button>
+            <button id="btnParamSave">存到浏览器</button>
+            <button id="btnParamApplyStored" disabled>回写存档</button>
+        </div>
+        <div id="paramTable"><span class="hint">连接后自动读取</span></div>
+        <p class="hint">输入框变蓝表示尚未写入。调好后把数值写回对应 <code>.h</code> 的 <code>#define</code> 固化，或存到浏览器，下次上电一键回写。</p>
+    </details>
+
+    <div class="panel">
+        <h2>标定</h2>
+        <div class="row"><b style="font-size:13px">陀螺仪尺度 gsc</b></div>
+        <div class="row">
+            <button data-cmd="E1" disabled>开始 E1</button>
+            <label>圈数</label>
+            <input type="number" id="calTurns" value="3" min="1" max="20" style="width:52px">
+            <button id="btnCalFinish" disabled>完成 Y</button>
+            <button data-cmd="E0" disabled>取消 E0</button>
+        </div>
+        <p class="hint">开始后把车<strong>原地转 N 整圈</strong>回到起始朝向再点完成；新尺度立即生效并回显，记得存到浏览器。</p>
+        <div class="row" style="margin-top:8px"><b style="font-size:13px">里程标定 cpm</b></div>
+        <div class="row">
+            <button id="btnOdomMark" disabled>① 记录起点</button>
+            <span class="hint" id="odomStartInfo">需开启 LD/RD 字段</span>
+        </div>
+        <div class="row">
+            <label>② 实测 mm</label>
+            <input type="number" id="odomActual" value="1000">
+            <button id="btnOdomCalc" disabled>③ 计算并写入</button>
+        </div>
+        <p class="hint">流程：记录起点 → <code>F1000</code> 跑一段 → 卷尺量实际前进距离填入 → 计算写入 cpm。</p>
+    </div>
+
+    <details class="panel">
+        <summary>舵机 <small>当前不参与调试</small></summary>
+        <div class="row">
+            <label style="width:38px">纵向</label>
+            <input type="range" id="servoO" min="0" max="270" value="135" style="flex:1" disabled>
+            <b id="servoOVal" style="width:34px;text-align:right">135</b>
+        </div>
+        <div class="row">
+            <label style="width:38px">横向</label>
+            <input type="range" id="servoD" min="0" max="270" value="135" style="flex:1" disabled>
+            <b id="servoDVal" style="width:34px;text-align:right">135</b>
+        </div>
+        <p class="hint">拖动已节流至 100 ms 一条，避免刷屏挤占遥测带宽。</p>
+    </details>
+
+    <details class="panel">
+        <summary>拍照 <small>K230 联调用</small></summary>
+        <div class="row">
+            <label>张数</label>
+            <input type="number" id="capVal" value="1" min="1" max="20">
+            <button data-send="P" data-from="capVal" disabled>拍照 P</button>
+        </div>
+        <p class="hint">存到 K230 的 TF 卡 <code>/sdcard/pic/</code>，不走串口回传。链路未就绪返回 <code>ERR CAP NOLINK</code>。</p>
+    </details>
+
+</div>
+<div>
+
+    <div class="panel">
+        <h2>聚焦调参工作台 <small>一次只看当前任务、对象和阶段</small></h2>
+        <div class="focus-shell">
+            <div class="focus-head">
+                <span class="hint">当前路径</span>
+                <span id="focusPath" class="focus-path">轮速 → 左轮 → P</span>
+            </div>
+            <div id="focusTaskNav" class="focus-nav"></div>
+            <div id="focusObjectNav" class="focus-nav"></div>
+            <div id="focusStageNav" class="focus-nav"></div>
+            <p id="focusStageHelp" class="hint">先只调左轮 Kp，曲线自动显示 TL / LV / PL。</p>
+            <div id="sessParams" class="focus-param-grid"><span class="hint">当前阶段参数正在准备。</span></div>
+        </div>
+        <select id="sessLoop" hidden>
+            <option value="wheel">轮速 PI（W 阶跃）</option>
+            <option value="straight">直线航向 PD（F 定距）</option>
+            <option value="turn">转向（T 相对角）</option>
+            <option value="line">巡线（N 启动）</option>
+        </select>
+        <div class="row">
+            <label id="sessAmpLabel">目标mm/s</label>
+            <input type="number" id="sessAmp" value="300">
+            <span id="sessDurWrap"><label>时长s</label>
+                <input type="number" id="sessDur" value="3" min="1" max="30" style="width:46px"></span>
+            <button id="btnSessStart" class="primary" disabled>开始试验</button>
+            <button id="btnSessAbort" disabled>结束</button>
+        </div>
+        <div id="wheelSessionTools">
+            <div class="quick-speeds">
+                <span class="hint">轮速快捷目标</span>
+                <button type="button" data-wheel-speed="50">50</button>
+                <button type="button" data-wheel-speed="75">75</button>
+                <button type="button" data-wheel-speed="100">100</button>
+                <button type="button" data-wheel-speed="150">150</button>
+                <button type="button" data-wheel-speed="200">200</button>
+                <button type="button" data-wheel-speed="300">300</button>
+                <button type="button" data-wheel-speed="400">400</button>
+                <button type="button" data-wheel-speed="500">500</button>
+                <button type="button" data-wheel-speed="600">600</button>
+            </div>
+            <p class="hint">轮速精测默认 8 秒、30 Hz，约 240 个样本。负目标和较高 PWM 只提示，不替你禁止操作。</p>
+        </div>
+        <div id="wheelMap" class="hint">读取左右轮参数后，这里分别显示基础 PWM、静止首拍 P 修正和安全余量。</div>
+        <p class="hint" id="sessStatus">流程：改参数 → 开始试验 → 自动出指标 → 对比上一组。</p>
+        <div id="sessResult"></div>
+        <div class="focus-history-head">
+            <b id="focusHistoryTitle">左轮 · P 试验记录</b>
+            <button id="btnClearRuns" class="mini">清空试验存档</button>
+        </div>
+        <div id="runList"><span class="hint">还没有试验记录。每次试验自动计算响应指标并存档，可导出 CSV、复制「AI 调参包」，或设为基准曲线叠加对比。</span></div>
+    </div>
+
+    <div class="panel">
+        <h2>遥测</h2>
+        <div class="row">
+            <label>频率</label>
+            <input type="number" id="gVal" value="20" min="0" max="100">
+            <button data-send="G" data-from="gVal" disabled>设定 G</button>
+            <button id="btnMaxRate" disabled>用满上限</button>
+            <span class="hint" id="rateLimitHint">上限：勾选字段后自动计算</span>
+        </div>
+        <div class="row" style="align-items:flex-start">
+            <label style="padding-top:2px">通道</label>
+            <div class="masks" id="maskBoxes" style="flex:1">
+                <!-- 由 CH_LIST 动态生成，避免与固件通道定义漂移 -->
+            </div>
+            <button id="btnMask" disabled>应用 M</button>
+        </div>
+        <p class="hint">勾选后上限实时更新。二进制帧每通道 4 字节，通道越少帧越短、频率越高。DMA 发送不阻塞主循环，全 12 通道也能 100Hz 直传。</p>
+        <p class="hint">调 PID 时不必纠结这里：试验会自动切到本阶段的最优通道，并用板载捕获算指标。</p>
+    </div>
+
+    <div class="panel">
+        <h2>曲线 <small>原始数据完整保存；绘图自动抽样降载，目标 vs 实测仍共用同一刻度</small></h2>
+        <canvas id="plot"></canvas>
+        <div class="row" style="margin-top:8px">
+            <div id="series" style="flex:1"><span class="hint">连接后按表头自动列出可画的数值列</span></div>
+            <button id="btnFocusSeries" type="button">恢复当前阶段曲线</button>
+        </div>
+        <div class="row">
+            <label>窗口</label>
+            <input type="number" id="winVal" value="600" min="50" max="20000">
+            <span class="hint">条</span>
+            <button id="btnPause">暂停</button>
+            <button id="btnClear">清空数据</button>
+            <button id="btnExport">导出 CSV</button>
+        </div>
+    </div>
+
+    <div class="panel">
+        <h2>原始终端</h2>
+        <div id="terminal"></div>
+        <div class="row" style="margin-top:8px">
+            <input type="text" id="rawCmd" placeholder="直接输入命令，回车发送" style="flex:1;width:auto">
+            <button id="btnRaw" disabled>发送</button>
+            <button id="btnClearTerm">清屏</button>
+        </div>
+    </div>
+
+</div>
+</div>
+
+<script>
+/* ==PARSER_BEGIN== */
+/*
+ * 二进制遥测解析器（字节流状态机）。
+ *
+ * 固件遥测已从 ASCII 改为二进制帧（见 docs/superpowers/specs/2026-07-21-二进制DMA架构-design.md）：
+ *   0xAA 0x55 | VER | TYPE | SEQ | LEN | PAYLOAD | CRC8
+ * 而命令回应（OK/ERR/K?）仍是 ASCII 文本行。两者共用同一串口，靠 0xAA 区分：
+ * 0xAA 是非 ASCII 可打印字符，绝不出现在文本里；见到 0xAA 进二进制帧解析，
+ * 否则把字节累积成文本行（遇 \n 交出）。
+ *
+ * 关键难点：二进制 PAYLOAD 里可能恰好有 0x0A(\n) 或 0xAA 字节，所以绝不能用
+ * 换行去切分二进制段——必须严格按 LEN 读满 PAYLOAD。状态机天然解决这点。
+ *
+ * 对外接口（samples/captureSamples 是 {ms,TL,...} 对象数组，columns 是列名数组）
+ * 与旧 ASCII 解析器保持一致，因此下游的曲线、指标、导出、录制全部无需改动。
+ */
+const FRAME_MAGIC_0 = 0xAA;
+const FRAME_MAGIC_1 = 0x55;
+const FRAME_VERSION = 0x01;
+const FRAME_TYPE_SCHEMA = 0x30;
+const FRAME_TYPE_SAMPLE = 0x31;
+const FRAME_TYPE_CAP_META = 0x32;
+const FRAME_TYPE_CAP_SAMPLE = 0x33;
+const FRAME_TYPE_CAP_END = 0x34;
+const UNIT_NAMES = ['raw', 'mmps', 'pwm', 'deg', 'mm', 'bits'];
+
+/* CRC-8/ATM，与固件 TelemFrame_Crc8Update 完全一致。 */
+function crc8Update(crc, data) {
+    crc ^= data;
+    for (let bit = 0; bit < 8; bit += 1) {
+        crc = (crc & 0x80) ? (((crc << 1) ^ 0x07) & 0xFF) : ((crc << 1) & 0xFF);
+    }
+    return crc;
+}
+
+class TelemetryParser {
+    constructor() {
+        this.samples = [];
+        this.maxSamples = 20000;
+        this.trimBatch = 1000;
+        this.columns = [];          /* 实时流当前列名，来自 SCHEMA 帧 */
+        this.units = {};            /* 列名 → 单位码字符串 */
+        /* 板载捕获与实时流分开保存：列集和采样率可能不同。 */
+        this.captureColumns = [];
+        this.captureUnits = {};
+        this.captureSamples = [];
+
+        /* 字节流状态机。 */
+        this._reset();
+        this.textBuffer = '';       /* 累积中的 ASCII 文本行 */
+        this.lastSeq = null;        /* 上一帧 SEQ，用于丢帧检测 */
+        this.droppedFrames = 0;     /* CRC 失败或 SEQ 跳变累计 */
+    }
+
+    _reset() {
+        this.state = 'idle';        /* idle → magic1 → header → payload → crc */
+        this.frameType = 0;
+        this.frameSeq = 0;
+        this.frameLen = 0;
+        this.headerBytes = [];      /* VER TYPE SEQ LEN，用于算 CRC */
+        this.payload = [];
+        this.crc = 0;
+    }
+
+    static get AXIS_COLUMNS() { return ['ms']; }
+
+    /* 单位码 → 量纲分组名。同组曲线共享纵轴缩放，目标 vs 实测才能直接对比。
+       gray(bits) 与 lerr(raw) 各自独立归一化（组名用列名，互不共享）。 */
+    unitOf(column) {
+        const unit = this.units[column] || this.captureUnits[column];
+        if (unit === 'mmps' || unit === 'pwm' || unit === 'deg' || unit === 'mm') {
+            return unit;
+        }
+        return column;   /* raw/bits 或未知：各自独立 */
+    }
+
+    /* 静态版保留给早期无实例上下文的调用；优先用实例方法 unitOf。 */
+    static unitOf(column) {
+        const g = { LV: 'mmps', RV: 'mmps', TL: 'mmps', TR: 'mmps',
+            PL: 'pwm', PR: 'pwm', yaw: 'deg', navE: 'deg', navT: 'deg',
+            LD: 'mm', RD: 'mm' };
+        return g[column] || column;
+    }
+
+    numericColumns() {
+        return this.columns.filter(
+            (col) => !TelemetryParser.AXIS_COLUMNS.includes(col));
+    }
+
+    captureNumericColumns() {
+        return this.captureColumns.filter(
+            (col) => !TelemetryParser.AXIS_COLUMNS.includes(col));
+    }
+
+    /*
+     * 喂入一段字节（Uint8Array 或 number[]）。返回 { textLines, schemaChanged,
+     * samplesAdded, captureStarted, captureAdded, captureEnded }。
+     */
+    feed(bytes) {
+        const textLines = [];
+        let schemaChanged = false;
+        let samplesAdded = 0;
+        let captureStarted = false;
+        let captureAdded = 0;
+        let captureEnded = false;
+
+        for (let i = 0; i < bytes.length; i += 1) {
+            const b = bytes[i] & 0xFF;
+
+            if (this.state === 'idle') {
+                if (b === FRAME_MAGIC_0) {
+                    this.state = 'magic1';
+                } else {
+                    this._feedTextByte(b, textLines);
+                }
+                continue;
+            }
+            if (this.state === 'magic1') {
+                if (b === FRAME_MAGIC_1) {
+                    this.state = 'header';
+                    this.headerBytes = [];
+                } else if (b === FRAME_MAGIC_0) {
+                    /* 连续两个 0xAA：留在 magic1 等下一个字节。 */
+                } else {
+                    /* 不是帧头，0xAA 与这个字节都回退成文本。 */
+                    this._feedTextByte(FRAME_MAGIC_0, textLines);
+                    this._feedTextByte(b, textLines);
+                    this.state = 'idle';
+                }
+                continue;
+            }
+            if (this.state === 'header') {
+                this.headerBytes.push(b);
+                if (this.headerBytes.length === 4) {
+                    const [ver, type, seq, len] = this.headerBytes;
+                    if (ver !== FRAME_VERSION) {
+                        this.droppedFrames += 1;
+                        this._reset();
+                        continue;
+                    }
+                    this.frameType = type;
+                    this.frameSeq = seq;
+                    this.frameLen = len;
+                    this.crc = 0;
+                    for (const hb of this.headerBytes) {
+                        this.crc = crc8Update(this.crc, hb);
+                    }
+                    this.payload = [];
+                    this.state = (len === 0) ? 'crc' : 'payload';
+                }
+                continue;
+            }
+            if (this.state === 'payload') {
+                this.payload.push(b);
+                this.crc = crc8Update(this.crc, b);
+                if (this.payload.length >= this.frameLen) {
+                    this.state = 'crc';
+                }
+                continue;
+            }
+            if (this.state === 'crc') {
+                if (b === this.crc) {
+                    const r = this._handleFrame();
+                    schemaChanged = schemaChanged || r.schemaChanged;
+                    samplesAdded += r.samplesAdded;
+                    captureStarted = captureStarted || r.captureStarted;
+                    captureAdded += r.captureAdded;
+                    captureEnded = captureEnded || r.captureEnded;
+                } else {
+                    this.droppedFrames += 1;
+                }
+                this._reset();
+                continue;
+            }
+        }
+
+        return {
+            textLines, schemaChanged, samplesAdded,
+            captureStarted, captureAdded, captureEnded,
+        };
+    }
+
+    _feedTextByte(b, textLines) {
+        if (b === 0x0A) {            /* \n 结束一行 */
+            const line = this.textBuffer.replace(/\r$/, '');
+            if (line !== '') {
+                textLines.push(line);
+            }
+            this.textBuffer = '';
+        } else if (b >= 0x09 && b < 0x7F) {
+            this.textBuffer += String.fromCharCode(b);
+            /* 防御：命令回应异常长时不无限增长。 */
+            if (this.textBuffer.length > 512) {
+                this.textBuffer = this.textBuffer.slice(-256);
+            }
+        }
+        /* 其余不可打印字节丢弃：文本流里不该出现。 */
+    }
+
+    _handleFrame() {
+        const out = {
+            schemaChanged: false, samplesAdded: 0,
+            captureStarted: false, captureAdded: 0, captureEnded: false,
+        };
+
+        /* SEQ 跳变检测（仅对样本类帧，schema/meta/end 不算数据丢失）。 */
+        if (this.lastSeq !== null &&
+            ((this.lastSeq + 1) & 0xFF) !== this.frameSeq) {
+            this.droppedFrames += 1;
+        }
+        this.lastSeq = this.frameSeq;
+
+        if (this.frameType === FRAME_TYPE_SCHEMA) {
+            const parsed = this._parseSchema();
+            if (parsed) {
+                this.columns = parsed.columns;
+                this.units = parsed.units;
+                this.samples = [];   /* 列定义变了，旧样本对不上。 */
+                out.schemaChanged = true;
+            }
+        } else if (this.frameType === FRAME_TYPE_SAMPLE) {
+            const sample = this._parseSample(this.columns);
+            if (sample) {
+                this.samples.push(sample);
+                out.samplesAdded = 1;
+                if (this.samples.length > this.maxSamples) {
+                    this.samples.splice(0, Math.min(this.trimBatch,
+                        this.samples.length - 1));
+                }
+            }
+        } else if (this.frameType === FRAME_TYPE_CAP_META) {
+            const parsed = this._parseSchema();
+            if (parsed) {
+                this.captureColumns = parsed.columns;
+                this.captureUnits = parsed.units;
+                this.captureSamples = [];
+                out.captureStarted = true;
+            }
+        } else if (this.frameType === FRAME_TYPE_CAP_SAMPLE) {
+            const sample = this._parseSample(this.captureColumns);
+            if (sample) {
+                this.captureSamples.push(sample);
+                out.captureAdded = 1;
+            }
+        } else if (this.frameType === FRAME_TYPE_CAP_END) {
+            out.captureEnded = true;
+        }
+        return out;
+    }
+
+    /* SCHEMA/CAP_META payload：mask(u16) + 每通道 {nameLen(u8), name[], unit(u8)}。 */
+    _parseSchema() {
+        const p = this.payload;
+        if (p.length < 2) {
+            return null;
+        }
+        const columns = ['ms'];
+        const units = { ms: 'ms' };
+        let offset = 2;   /* 跳过 mask（列序由帧本身给出，掩码仅供参考） */
+        while (offset < p.length) {
+            const nameLen = p[offset];
+            offset += 1;
+            if (offset + nameLen + 1 > p.length) {
+                return null;   /* 长度自洽性检查 */
+            }
+            let name = '';
+            for (let k = 0; k < nameLen; k += 1) {
+                name += String.fromCharCode(p[offset + k]);
+            }
+            offset += nameLen;
+            const unitCode = p[offset];
+            offset += 1;
+            columns.push(name);
+            units[name] = UNIT_NAMES[unitCode] || 'raw';
+        }
+        return { columns, units };
+    }
+
+    /* SAMPLE payload：ms(u32) + 各通道 float32，小端。列名由 schema 提供。 */
+    _parseSample(columns) {
+        const p = this.payload;
+        const dataCols = columns.length - 1;   /* 去掉 ms */
+        if (dataCols < 0 || p.length !== 4 + dataCols * 4) {
+            return null;   /* 长度与列数不符，多半是错帧，整帧丢弃。 */
+        }
+        const view = new DataView(new Uint8Array(p).buffer);
+        const sample = { ms: view.getUint32(0, true) };
+        for (let c = 0; c < dataCols; c += 1) {
+            const v = view.getFloat32(4 + c * 4, true);
+            if (!Number.isFinite(v)) {
+                return null;
+            }
+            sample[columns[c + 1]] = v;
+        }
+        return sample;
+    }
+
+    clear() {
+        this.samples = [];
+    }
+
+    clearCapture() {
+        this.captureSamples = [];
+        this.captureColumns = [];
+        this.captureUnits = {};
+    }
+
+    toCsv() {
+        return samplesToCsv(this.samples);
+    }
+}
+
+/* 样本数组 → 标准 CSV 文本；试验记录导出与实时导出共用。 */
+function samplesToCsv(samples) {
+    if (samples.length === 0) {
+        return '';
+    }
+    const cols = Object.keys(samples[0]);
+    const head = cols.join(',');
+    const body = samples.map((s) => cols.map((c) => s[c]).join(',')).join('\n');
+    return head + '\n' + body + '\n';
+}
+
+/*
+ * 生成可直接粘贴给 AI 的调参数据包（Markdown）。
+ * meta: { loop, structure, params, excitation, rateHz, columnsNote, expectation }
+ */
+function buildAiPack(meta, samples) {
+    const lines = [];
+    lines.push('# PID 调参数据包 — ' + meta.loop);
+    lines.push('');
+    lines.push('- 控制结构: ' + meta.structure);
+    lines.push('- 本次参数: ' + meta.params);
+    lines.push('- 激励: ' + meta.excitation);
+    lines.push('- 采样率: ' + meta.rateHz + ' Hz（ms 列为固件毫秒时间戳）');
+    lines.push('- 列说明: ' + meta.columnsNote);
+    lines.push('- 调参目标: ' + meta.expectation);
+    if (meta.metricsNote) {
+        lines.push('- 网页自动指标: ' + meta.metricsNote);
+    }
+    lines.push('');
+    lines.push('请根据以下数据评估本次响应（上升时间、超调、振荡、稳态误差、输出饱和），' +
+               '并给出下一组参数的具体数值建议和理由。');
+    lines.push('');
+    lines.push('```csv');
+    lines.push(samplesToCsv(samples).trimEnd());
+    lines.push('```');
+    return lines.join('\n');
+}
+
+/*
+ * 解析 Q 命令回应：
+ * "OK Q MAX=57 MASK=5136 RATE=50 CAPST=0 CAPN=0 CAPMAX=1024"
+ * 返回 null 表示不是合法的 Q 回应（例如老固件不支持）。
+ */
+function parseCapabilityReply(line) {
+    const m = /^OK Q MAX=(\d+) MASK=(\d+) RATE=(\d+)(?: CAPST=(\d+) CAPN=(\d+) CAPMAX=(\d+))?/
+        .exec(line || '');
+    if (!m) {
+        return null;
+    }
+    return {
+        max: Number(m[1]),
+        mask: Number(m[2]),
+        rate: Number(m[3]),
+        captureState: m[4] === undefined ? null : Number(m[4]),
+        captureCount: m[5] === undefined ? null : Number(m[5]),
+        capMax: m[6] === undefined ? null : Number(m[6]),
+    };
+}
+
+/*
+ * 本地复算固件的行长与安全频率上限（Telemetry.c 的同一套公式）。
+ * 用途有二：一是老固件没有 Q 命令时兜底；二是勾选字段的瞬间就能显示预估上限，
+ * 不必等一个串口往返。数值应与固件 Q 回报一致，不一致说明两边失配。
+ */
+const TELEMETRY_BAUD = 115200;
+/* DMA 后不再阻塞主循环，带宽预算从旧 20% 放宽到 70%，与固件 Telemetry.c 一致。 */
+const TELEMETRY_BANDWIDTH_PERCENT = 70;
+const TELEMETRY_RATE_HARD_LIMIT = 100;
+
+/* 通道数：12 位里被置位的个数。 */
+function countCaptureChannels(mask) {
+    let count = 0;
+    for (let bit = 1; bit <= 0x800; bit <<= 1) {
+        if ((mask & bit) !== 0) {
+            count += 1;
+        }
+    }
+    return count;
+}
+
+/* 二进制 SAMPLE 帧字节数 = 帧开销(7) + payload(ms:4 + 通道数×4)，与固件一致。 */
+function estimateRowBytes(mask) {
+    return 7 + 4 + countCaptureChannels(mask) * 4;
+}
+
+function estimateMaxRateHz(mask) {
+    const bytesPerSecond = TELEMETRY_BAUD / 10;   /* 8N1 每字节 10 位时 */
+    const rate = Math.floor(
+        (bytesPerSecond * TELEMETRY_BANDWIDTH_PERCENT) /
+        (estimateRowBytes(mask) * 100));
+    return Math.max(1, Math.min(TELEMETRY_RATE_HARD_LIMIT, rate));
+}
+
+/*
+ * 录制会话：把实时流样本按标记切分成段。
+ * 每个样本带 mark 列（0 = 未标记），相邻同 mark 的样本归为一段。
+ * 用途是把一次遥控跑批出的长数据按场景（直道/弯道/障碍）拆开，
+ * 供后续训练或分析分别取用。
+ */
+function segmentByMark(samples) {
+    const segments = [];
+    let current = null;
+    for (const s of samples) {
+        const mark = s.mark || 0;
+        if (!current || current.mark !== mark) {
+            current = {
+                mark,
+                startMs: s.ms,
+                endMs: s.ms,
+                samples: [s],
+            };
+            segments.push(current);
+        } else {
+            current.endMs = s.ms;
+            current.samples.push(s);
+        }
+    }
+    return segments;
+}
+
+/* 会话摘要：时长、样本数、各标记的样本占比，用于列表展示与导出命名。 */
+function summarizeSession(samples) {
+    if (!Array.isArray(samples) || samples.length === 0) {
+        return { count: 0, durationMs: 0, markCounts: {}, rateHz: 0 };
+    }
+    const durationMs = samples[samples.length - 1].ms - samples[0].ms;
+    const markCounts = {};
+    for (const s of samples) {
+        const mark = s.mark || 0;
+        markCounts[mark] = (markCounts[mark] || 0) + 1;
+    }
+    return {
+        count: samples.length,
+        durationMs,
+        markCounts,
+        /* 实际到达率，可能低于设定频率（丢行、掩码切换）。 */
+        rateHz: durationMs > 0 ?
+            Math.round((samples.length - 1) / (durationMs / 1000)) : 0,
+    };
+}
+
+/* 只估算前馈部分，不含 PI 反馈和航向/巡线 trim；最终固件仍会夹到 ±1000。 */
+function estimateWheelBasePwm(speedMMps, feedforwardPWMPerMMps, staticFrictionPWM) {
+    if (![speedMMps, feedforwardPWMPerMMps, staticFrictionPWM].every(Number.isFinite)) {
+        return null;
+    }
+    let raw = 0;
+    if (Math.abs(speedMMps) >= 0.001) {
+        raw = speedMMps * feedforwardPWMPerMMps +
+              (speedMMps > 0 ? staticFrictionPWM : -staticFrictionPWM);
+    }
+    return {
+        raw,
+        clamped: Math.max(-1000, Math.min(1000, raw)),
+        saturated: Math.abs(raw) >= 1000,
+    };
+}
+
+/*
+ * 阶跃响应指标（单轮）：在 targetCol 从 0 跳变到恒值的窗口内，
+ * 对 actualCol 计算上升时间(到 90%)、超调%、±5% 带稳定时间和稳态误差%。
+ * 时间一律取固件 ms 列的差值；没有可分析的阶跃时返回 null。
+ */
+function computeStepMetrics(samples, targetCol, actualCol) {
+    let startIdx = -1;
+    let target = 0;
+    for (let i = 0; i < samples.length; i += 1) {
+        const t = samples[i][targetCol];
+        if (typeof t === 'number' && Math.abs(t) > 1e-6) {
+            startIdx = i;
+            target = t;
+            break;
+        }
+    }
+    if (startIdx < 0) {
+        return null;
+    }
+
+    /* 分析窗口：目标保持恒值的区段（链式阶跃只分析第一段）。 */
+    let endIdx = samples.length;
+    for (let i = startIdx; i < samples.length; i += 1) {
+        const t = samples[i][targetCol];
+        if (typeof t !== 'number' ||
+            Math.abs(t - target) > Math.abs(target) * 0.01 + 1e-6) {
+            endIdx = i;
+            break;
+        }
+    }
+    const win = samples.slice(startIdx, endIdx);
+    if (win.length < 3) {
+        return null;
+    }
+
+    const sign = target >= 0 ? 1 : -1;
+    const magnitude = Math.abs(target);
+    const baseMs = win[0].ms;
+
+    let riseMs = null;
+    for (const s of win) {
+        const v = s[actualCol];
+        if (typeof v === 'number' && sign * v >= 0.9 * magnitude) {
+            riseMs = s.ms - baseMs;
+            break;
+        }
+    }
+
+    let peak = -Infinity;
+    for (const s of win) {
+        const v = s[actualCol];
+        if (typeof v === 'number' && sign * v > peak) {
+            peak = sign * v;
+        }
+    }
+    const overshootPct = Number.isFinite(peak) ?
+        Math.max(0, ((peak - magnitude) / magnitude) * 100) : null;
+
+    /* 稳定时间：从该时刻起直到窗口结束都停在 ±5% 带内。 */
+    const band = 0.05 * magnitude;
+    let settleIdx = win.length;
+    for (let i = win.length - 1; i >= 0; i -= 1) {
+        const v = win[i][actualCol];
+        if (typeof v !== 'number' || Math.abs(sign * v - magnitude) > band) {
+            settleIdx = i + 1;
+            break;
+        }
+        settleIdx = i;
+    }
+    const settleMs = settleIdx < win.length ? win[settleIdx].ms - baseMs : null;
+
+    /* 稳态：窗口最后 30% 样本的平均值。 */
+    const tail = win.slice(Math.floor(win.length * 0.7));
+    let sum = 0;
+    let count = 0;
+    for (const s of tail) {
+        const v = s[actualCol];
+        if (typeof v === 'number') {
+            sum += v;
+            count += 1;
+        }
+    }
+    const steadyValue = count > 0 ? sum / count : null;
+    const ssePct = steadyValue !== null ?
+        ((steadyValue - target) / target) * 100 : null;
+
+    return { target, riseMs, overshootPct, settleMs, ssePct, steadyValue };
+}
+
+/* 转向指标：基于 navE（目标角 − 当前角）。tolDeg 为到角容差（ntl）。 */
+function computeTurnMetrics(samples, tolDeg) {
+    let startIdx = -1;
+    let initial = 0;
+    for (let i = 0; i < samples.length; i += 1) {
+        const e = samples[i].navE;
+        if (typeof e === 'number' && Math.abs(e) > tolDeg) {
+            startIdx = i;
+            initial = e;
+            break;
+        }
+    }
+    if (startIdx < 0) {
+        return null;
+    }
+    const sign = initial >= 0 ? 1 : -1;
+    const baseMs = samples[startIdx].ms;
+    let overshootDeg = 0;
+    let lastOutIdx = startIdx;
+    for (let i = startIdx; i < samples.length; i += 1) {
+        const e = samples[i].navE;
+        if (typeof e !== 'number') {
+            continue;
+        }
+        const crossing = -sign * e;   /* 反向越过目标角的量 */
+        if (crossing > overshootDeg) {
+            overshootDeg = crossing;
+        }
+        if (Math.abs(e) > tolDeg) {
+            lastOutIdx = i;
+        }
+    }
+    const settled = lastOutIdx < samples.length - 1;
+    const settleMs = settled ? samples[lastOutIdx + 1].ms - baseMs : null;
+    /* 残差只统计到角之后的样本；从未到角时退化为最后 10 个。 */
+    const tail = settled ? samples.slice(lastOutIdx + 1) : samples.slice(-10);
+    let sum = 0;
+    let count = 0;
+    for (const s of tail) {
+        if (typeof s.navE === 'number') {
+            sum += Math.abs(s.navE);
+            count += 1;
+        }
+    }
+    return {
+        initialErrDeg: initial,
+        settleMs,
+        overshootDeg,
+        finalErrDeg: count > 0 ? sum / count : null,
+    };
+}
+
+/* 直线指标：航向保持质量 + 实际里程与目标距离的偏差。 */
+function computeStraightMetrics(samples, targetDistanceMM) {
+    let yaw0 = null;
+    let ld0 = null;
+    let rd0 = null;
+    for (const s of samples) {
+        if (yaw0 === null && typeof s.yaw === 'number') {
+            yaw0 = s.yaw;
+        }
+        if (ld0 === null && typeof s.LD === 'number' &&
+            typeof s.RD === 'number') {
+            ld0 = s.LD;
+            rd0 = s.RD;
+        }
+        if (yaw0 !== null && ld0 !== null) {
+            break;
+        }
+    }
+    if (yaw0 === null && ld0 === null) {
+        return null;
+    }
+
+    let maxDev = 0;
+    let sumSq = 0;
+    let count = 0;
+    if (yaw0 !== null) {
+        for (const s of samples) {
+            if (typeof s.yaw !== 'number') {
+                continue;
+            }
+            const dev = s.yaw - yaw0;
+            if (Math.abs(dev) > Math.abs(maxDev)) {
+                maxDev = dev;
+            }
+            sumSq += dev * dev;
+            count += 1;
+        }
+    }
+
+    let distErrMM = null;
+    if (ld0 !== null) {
+        for (let i = samples.length - 1; i >= 0; i -= 1) {
+            const s = samples[i];
+            if (typeof s.LD === 'number' && typeof s.RD === 'number') {
+                const travelled = ((s.LD - ld0) + (s.RD - rd0)) / 2;
+                distErrMM = Number.isFinite(targetDistanceMM) ?
+                    travelled - targetDistanceMM : null;
+                break;
+            }
+        }
+    }
+    return {
+        yawMaxDevDeg: count > 0 ? maxDev : null,
+        yawRmsDeg: count > 0 ? Math.sqrt(sumSq / count) : null,
+        distErrMM,
+    };
+}
+
+/* 巡线指标：权重误差的 RMS、最大值和顶格（|lerr|=6）时间占比。 */
+function computeLineMetrics(samples) {
+    let sumSq = 0;
+    let count = 0;
+    let maxAbs = 0;
+    let extreme = 0;
+    for (const s of samples) {
+        const e = s.lerr;
+        if (typeof e !== 'number') {
+            continue;
+        }
+        sumSq += e * e;
+        count += 1;
+        if (Math.abs(e) > maxAbs) {
+            maxAbs = Math.abs(e);
+        }
+        if (Math.abs(e) >= 6) {
+            extreme += 1;
+        }
+    }
+    if (count === 0) {
+        return null;
+    }
+    return {
+        rms: Math.sqrt(sumSq / count),
+        maxAbs,
+        extremePct: (extreme / count) * 100,
+    };
+}
+
+/* 按环路分派指标计算；amp 是激励幅值（直线用作目标距离），tolDeg 是转向容差。 */
+function analyzeRun(loop, samples, amp, tolDeg) {
+    if (!Array.isArray(samples) || samples.length < 3) {
+        return null;
+    }
+    if (loop === 'wheel') {
+        const side = (targetCol, actualCol, pwmCol) => {
+            const step = computeStepMetrics(samples, targetCol, actualCol);
+            const steady = computeWheelSteadyStats(
+                samples, targetCol, actualCol, pwmCol, 2500);
+            if (!step && !steady) {
+                return null;
+            }
+            return { ...(step || {}), steady };
+        };
+        return {
+            left: side('TL', 'LV', 'PL'),
+            right: side('TR', 'RV', 'PR'),
+        };
+    }
+    if (loop === 'turn') {
+        return computeTurnMetrics(samples, Number.isFinite(tolDeg) ? tolDeg : 2);
+    }
+    if (loop === 'straight') {
+        return computeStraightMetrics(samples, amp);
+    }
+    if (loop === 'line') {
+        return computeLineMetrics(samples);
+    }
+    return null;
+}
+
+/* 指标 → 一行中文摘要；试验结果卡、记录列表和 AI 包共用。 */
+function describeRunMetrics(loop, metrics, focusSide = 'both') {
+    const ms = (v) => (v === null || v === undefined) ? '—' : Math.round(v) + 'ms';
+    if (!metrics) {
+        return '样本不足，未能计算指标';
+    }
+    if (loop === 'wheel') {
+        const side = (tag, m) => !m ? `${tag}:无阶跃` :
+            `${tag} 上升${ms(m.riseMs)} 超调${m.overshootPct === null ? '—' : m.overshootPct.toFixed(1) + '%'} ` +
+            `稳定${ms(m.settleMs)} 稳态差${m.ssePct === null ? '—' : m.ssePct.toFixed(1) + '%'} ` +
+            (!m.steady ? '' :
+                `均值${m.steady.mean.toFixed(1)}±${m.steady.sd.toFixed(1)} ` +
+                `MAE${m.steady.mae.toFixed(1)} PWM均/峰${m.steady.meanPwm.toFixed(0)}/${m.steady.maxAbsPwm.toFixed(0)} ` +
+                `>600占${m.steady.above600Pct.toFixed(0)}% 饱和${m.steady.saturatedPct.toFixed(0)}% ` +
+                `N=${m.steady.samples}`);
+        if (focusSide === 'left') return side('左', metrics.left);
+        if (focusSide === 'right') return side('右', metrics.right);
+        return side('左', metrics.left) + '；' + side('右', metrics.right);
+    }
+    if (loop === 'turn') {
+        return `到角${ms(metrics.settleMs)} 过冲${metrics.overshootDeg.toFixed(1)}° ` +
+               `残差${metrics.finalErrDeg === null ? '—' : metrics.finalErrDeg.toFixed(2) + '°'}`;
+    }
+    if (loop === 'straight') {
+        return `航向最大偏移${metrics.yawMaxDevDeg === null ? '—' : metrics.yawMaxDevDeg.toFixed(2) + '°'} ` +
+               `RMS${metrics.yawRmsDeg === null ? '—' : metrics.yawRmsDeg.toFixed(2) + '°'} ` +
+               `距离误差${metrics.distErrMM === null ? '—' : metrics.distErrMM.toFixed(1) + 'mm'}`;
+    }
+    if (loop === 'line') {
+        return `lerr RMS ${metrics.rms.toFixed(2)} 最大${metrics.maxAbs.toFixed(0)} ` +
+               `顶格${metrics.extremePct.toFixed(0)}%`;
+    }
+    return '';
+}
+
+/*
+ * 前馈自动建议：稳态实测偏离目标时按比例修正 ff。
+ * 只在 ki≈0（稳态差全由前馈不足/过量造成）时有意义；返回 null 表示不建议。
+ */
+function suggestFeedforward(currentFF, targetSpeed, steadySpeed) {
+    if (![currentFF, targetSpeed, steadySpeed].every(Number.isFinite)) {
+        return null;
+    }
+    if (currentFF <= 0 || Math.abs(targetSpeed) < 1e-6) {
+        return null;
+    }
+    /* 稳态不足两成大概率是堵转或打滑，比例外推会得到荒谬值。 */
+    if (Math.abs(steadySpeed) < Math.abs(targetSpeed) * 0.2) {
+        return null;
+    }
+    const next = currentFF * (targetSpeed / steadySpeed);
+    if (!Number.isFinite(next) || next <= 0) {
+        return null;
+    }
+    /* 3% 以内属于正常波动，不值得动参数。 */
+    if (Math.abs(next - currentFF) / currentFF < 0.03) {
+        return null;
+    }
+    return next;
+}
+
+/*
+ * 仅对画布使用的 min/max 桶抽样。原始 samples 不变，CSV、指标和 AI 包仍使用完整数据。
+ * 每个桶保留选中列绝对值最小/最大的两个点，能比简单步进更可靠地保住窄尖峰。
+ */
+function downsampleForPlot(samples, maxPoints, columns) {
+    if (!Array.isArray(samples) || samples.length <= maxPoints || maxPoints < 4) {
+        return samples;
+    }
+    const keys = Array.isArray(columns) && columns.length > 0 ? columns : ['ms'];
+    const bucketCount = Math.max(1, Math.floor((maxPoints - 2) / 2));
+    const interiorLength = samples.length - 2;
+    const out = [samples[0]];
+
+    for (let bucket = 0; bucket < bucketCount; bucket += 1) {
+        const start = 1 + Math.floor((interiorLength * bucket) / bucketCount);
+        const end = 1 + Math.floor((interiorLength * (bucket + 1)) / bucketCount);
+        let minIndex = start;
+        let maxIndex = start;
+        let minScore = Infinity;
+        let maxScore = -Infinity;
+        for (let i = start; i < Math.max(start + 1, end); i += 1) {
+            let score = 0;
+            for (const key of keys) {
+                const value = samples[i][key];
+                if (typeof value === 'number') {
+                    score = Math.max(score, Math.abs(value));
+                }
+            }
+            if (score < minScore) { minScore = score; minIndex = i; }
+            if (score > maxScore) { maxScore = score; maxIndex = i; }
+        }
+        if (minIndex <= maxIndex) {
+            out.push(samples[minIndex]);
+            if (maxIndex !== minIndex) out.push(samples[maxIndex]);
+        } else {
+            out.push(samples[maxIndex], samples[minIndex]);
+        }
+    }
+    out.push(samples[samples.length - 1]);
+    return out.slice(0, maxPoints - 1).concat(samples[samples.length - 1]);
+}
+
+/* 最后 steadyWindowMs 的轮速精测统计；目标变化过的旧样本自动排除。 */
+function computeWheelSteadyStats(
+    samples, targetCol, actualCol, pwmCol, steadyWindowMs = 2500) {
+    if (!Array.isArray(samples) || samples.length === 0) {
+        return null;
+    }
+    const last = samples[samples.length - 1];
+    const target = last[targetCol];
+    const lastMs = last.ms;
+    if (!Number.isFinite(target) || !Number.isFinite(lastMs)) {
+        return null;
+    }
+    const tolerance = Math.abs(target) * 0.01 + 0.5;
+    const tail = samples.filter((s) =>
+        Number.isFinite(s.ms) && s.ms >= lastMs - steadyWindowMs &&
+        Number.isFinite(s[targetCol]) && Math.abs(s[targetCol] - target) <= tolerance &&
+        Number.isFinite(s[actualCol]) && Number.isFinite(s[pwmCol]));
+    if (tail.length === 0) {
+        return null;
+    }
+    const actual = tail.map((s) => s[actualCol]);
+    const pwm = tail.map((s) => s[pwmCol]);
+    const mean = actual.reduce((sum, value) => sum + value, 0) / actual.length;
+    const variance = actual.reduce((sum, value) => {
+        const difference = value - mean;
+        return sum + difference * difference;
+    }, 0) / actual.length;
+    return {
+        samples: tail.length,
+        target,
+        mean,
+        sd: Math.sqrt(variance),
+        mae: actual.reduce((sum, value) => sum + Math.abs(value - target), 0) /
+            actual.length,
+        bias: Math.abs(mean - target),
+        meanPwm: pwm.reduce((sum, value) => sum + value, 0) / pwm.length,
+        maxAbsPwm: Math.max(...pwm.map(Math.abs)),
+        above600Pct: pwm.filter((value) => Math.abs(value) > 600).length /
+            pwm.length * 100,
+        saturatedPct: pwm.filter((value) => Math.abs(value) >= 999.5).length /
+            pwm.length * 100,
+    };
+}
+
+/* 只挑当前固件实际存在的参数；不替用户禁止兼容 K1~K5。 */
+function storedParamsForFirmware(stored, availableNames) {
+    const available = new Set(availableNames || []);
+    return Object.entries(stored || {}).filter(([name, value]) =>
+        available.has(name) && Number.isFinite(value));
+}
+/* ==PARSER_END== */
+
+const parser = new TelemetryParser();
+const PALETTE = ['#4da3ff', '#46c17a', '#e0a13c', '#e05c5c', '#a97ee0', '#3fc4c4', '#d96ba8', '#8fbf4d'];
+
+/* 各调参试验的预设：掩码只留相关字段换高频，激励与收尾命令成对。
+ * 频率按固件动态上限（20% 带宽）预先算好，改固件常量后需同步。 */
+/* 统一 12 通道位定义，与固件 TELEMETRY_CH_*（= CAPTURE_CH_*）完全一致。
+   二进制架构后实时流与捕获共用同一套通道，掩码语义统一。
+   必须定义在 SESSIONS / TUNING_FOCUS 之前——const 不提升，早引用会 TDZ 报错。 */
+const CH = {
+    TL: 0x0001, LV: 0x0002, PL: 0x0004,
+    TR: 0x0008, RV: 0x0010, PR: 0x0020,
+    yaw: 0x0040, navE: 0x0080, lerr: 0x0100,
+    gray: 0x0200, LD: 0x0400, RD: 0x0800,
+};
+const CH_ALL = 0x0FFF;
+/* 捕获别名，保留旧引用可读性；与实时流同一套位。 */
+const CAPTURE_CH = CH;
+/* 固件 CAPTURE_MAX_CHANNELS；超出会被固件拒绝，网页先自查给出清晰提示。 */
+const CAPTURE_MAX_CHANNELS = 8;
+/* 每通道在遥测帧里的名字，供列名/单位/checkbox 生成。位序即帧列序。 */
+const CH_LIST = [
+    ['TL', 'mmps'], ['LV', 'mmps'], ['PL', 'pwm'],
+    ['TR', 'mmps'], ['RV', 'mmps'], ['PR', 'pwm'],
+    ['yaw', 'deg'], ['navE', 'deg'], ['lerr', 'raw'],
+    ['gray', 'bits'], ['LD', 'mm'], ['RD', 'mm'],
+];
+
+const SESSIONS = {
+    wheel: {
+        /* 二进制后不再有 mode/单侧字段之分，一律用 12 通道位。捕获与实时流同掩码。 */
+        label: '轮速 PI', mask: CH.TL | CH.LV | CH.PL | CH.TR | CH.RV | CH.PR,
+        ampLabel: '目标mm/s', ampDefault: 300, timed: true, durDefault: 8,
+        excite: (amp) => 'W' + amp, stopCmd: 'W0',
+        params: ['lwkp', 'lwki', 'lwil', 'lwff', 'lwsf',
+                 'rwkp', 'rwki', 'rwil', 'rwff', 'rwsf'],
+        structure: '左右目标轮速 -> 左 PI(lwkp,lwki,lwil)+左前馈(lwff×v+lwsf×sign)，右 PI(rwkp,rwki,rwil)+右前馈(rwff×v+rwsf×sign) -> 各自 PWM(±1000)；测量为编码器轮速 mm/s，控制周期 10ms',
+        columnsNote: 'TL/TR=左右目标轮速mm/s，LV/RV=左右实测轮速mm/s，PL/PR=左右输出PWM',
+        expectation: '快速跟踪阶跃、无持续振荡、稳态误差接近 0、PWM 不长期饱和',
+    },
+    straight: {
+        label: '直线航向 PD', mask: CH.yaw | CH.LD | CH.RD | CH.LV | CH.RV | CH.TL,
+        ampLabel: '距离mm', ampDefault: 500, timed: false,
+        excite: (amp) => 'F' + amp, stopCmd: 'C0',
+        params: ['skp', 'skd', 'sac', 'lwkp', 'lwki', 'rwkp', 'rwki'],
+        structure: '定距梯形速度规划(sac 加速度) + 航向 PD(skp,skd) 差速修正 -> 双轮速度环；yaw 应全程保持起始值',
+        columnsNote: 'yaw=航向角°，LD/RD=左右累计路程mm，TL=目标轮速，LV/RV=实测轮速',
+        expectation: 'yaw 波动小且无低频摆动，LD/RD 停在目标距离误差 ±5mm 内',
+    },
+    turn: {
+        label: '转向', mask: CH.navE | CH.yaw | CH.LV | CH.RV,
+        ampLabel: '角度°', ampDefault: 90, timed: false,
+        excite: (amp) => 'T' + amp, stopCmd: 'C0',
+        params: ['nvx', 'nvn', 'nsa', 'ntl'],
+        structure: '角误差按剩余角生成带低速区的双轮反向速度(上限nvx,下限nvn,减速角nsa)，进入 ±ntl 且轮速归零后连续 3 拍判完成',
+        columnsNote: 'navE=角误差°，yaw=当前角°，LV/RV=左右实测轮速(反向)',
+        expectation: 'navE 单调收敛到 0 附近、无过冲往复，到角时间短',
+    },
+    line: {
+        label: '巡线', mask: CH.lerr | CH.LV | CH.RV | CH.yaw,
+        ampLabel: '巡线mm/s', ampDefault: 200, timed: true, durDefault: 5,
+        excite: (amp) => 'N' + amp, stopCmd: 'N0',
+        params: ['lra', 'lkd', 'lwkp', 'lwki', 'rwkp', 'rwki'],
+        structure: '五路灰度离散权重(-6..+6)×lra 生成差速 + lkd×权重变化率阻尼 -> 双轮速度环；lerr 为权重误差',
+        columnsNote: 'lerr=巡线权重误差，LV/RV=左右实测轮速，yaw=航向角',
+        expectation: 'lerr 在 0 附近小幅摆动不发散，弧线段无大幅蛇形，速度不明显掉落',
+    },
+};
+
+/*
+ * 调参界面的唯一导航模型：任务 → 对象 → 阶段。
+ * 完整参数仍在“全部 K 参数”里；这里故意只返回当前真正要动的 1~4 项。
+ */
+/* 板载捕获通道位，必须与 Application/Debug/Capture.h 的 CAPTURE_CH_* 一致。 */
+const TUNING_FOCUS = {
+    wheel: {
+        label: '轮速', defaultSide: 'left', defaultStage: 'p',
+        stages: {
+            feedforward: { label: '① 前馈', help: '只调速度→PWM映射：先看 ff 斜率，再看 sf 起步补偿。' },
+            p: { label: '② P', help: '只调 Kp，观察上升速度、超调和振荡。' },
+            i: { label: '③ I', help: '只调 Ki 与积分限，观察长时间稳态误差。' },
+            verify: { label: '④ 验证', help: '不摆参数输入框，只采集完整曲线和左右对比指标。' },
+        },
+        sides: {
+            /* 二进制后实时流与捕获共用同一掩码（mask）：捕获通道即遥测通道。
+               调左轮只订 TL/LV/PL 三通道，帧最短、频率最高、捕获也最省 RAM。 */
+            left: {
+                label: '左轮', series: ['TL', 'LV', 'PL'],
+                mask: CH.TL | CH.LV | CH.PL,
+                params: {
+                    feedforward: ['lwff', 'lwsf'], p: ['lwkp'],
+                    i: ['lwki', 'lwil'], verify: [],
+                },
+            },
+            right: {
+                label: '右轮', series: ['TR', 'RV', 'PR'],
+                mask: CH.TR | CH.RV | CH.PR,
+                params: {
+                    feedforward: ['rwff', 'rwsf'], p: ['rwkp'],
+                    i: ['rwki', 'rwil'], verify: [],
+                },
+            },
+            both: {
+                label: '双轮对比', series: ['TL', 'LV', 'TR', 'RV', 'PL', 'PR'],
+                mask: CH.TL | CH.LV | CH.PL | CH.TR | CH.RV | CH.PR,
+                params: {
+                    feedforward: ['lwff', 'lwsf', 'rwff', 'rwsf'],
+                    p: ['lwkp', 'rwkp'],
+                    i: ['lwki', 'lwil', 'rwki', 'rwil'], verify: [],
+                },
+            },
+        },
+    },
+    straight: {
+        label: '直线', defaultSide: 'main', defaultStage: 'heading',
+        stages: {
+            heading: { label: '① 航向', help: '只调航向 PD：skp / skd。' },
+            profile: { label: '② 速度规划', help: '只调直线加速度 sac。' },
+            wheel: { label: '③ 轮速关联', help: '需要时查看左右轮速度环核心增益。' },
+            verify: { label: '④ 验证', help: '只看 yaw、目标/实测轮速和左右输出。' },
+        },
+        sides: {
+            main: {
+                label: '整车', series: ['yaw', 'TL', 'LV', 'RV', 'LD', 'RD'],
+                mask: CH.yaw | CH.LD | CH.RD | CH.LV | CH.RV | CH.TL,
+                params: {
+                    heading: ['skp', 'skd'], profile: ['sac'],
+                    wheel: ['lwkp', 'lwki', 'rwkp', 'rwki'], verify: [],
+                },
+            },
+        },
+    },
+    turn: {
+        label: '转向', defaultSide: 'main', defaultStage: 'speed',
+        stages: {
+            speed: { label: '① 速度', help: '只调转向最高/最低速度 nvx / nvn。' },
+            approach: { label: '② 收尾', help: '只调减速角 nsa 与到角容差 ntl。' },
+            verify: { label: '③ 验证', help: '只看角误差、航向和轮速。' },
+        },
+        sides: {
+            main: {
+                label: '整车', series: ['navE', 'yaw', 'LV', 'RV'],
+                mask: CH.navE | CH.yaw | CH.LV | CH.RV,
+                params: {
+                    speed: ['nvx', 'nvn'], approach: ['nsa', 'ntl'], verify: [],
+                },
+            },
+        },
+    },
+    line: {
+        label: '巡线', defaultSide: 'main', defaultStage: 'line',
+        stages: {
+            line: { label: '① 巡线', help: '只调巡线比例 lra 与阻尼 lkd。' },
+            wheel: { label: '② 轮速关联', help: '需要时查看左右轮速度环核心增益。' },
+            verify: { label: '③ 验证', help: '只看 lerr 与左右实测轮速。' },
+        },
+        sides: {
+            main: {
+                label: '整车', series: ['lerr', 'LV', 'RV', 'yaw'],
+                mask: CH.lerr | CH.LV | CH.RV | CH.yaw,
+                params: {
+                    line: ['lra', 'lkd'],
+                    wheel: ['lwkp', 'lwki', 'rwkp', 'rwki'], verify: [],
+                },
+            },
+        },
+    },
+};
+
+const PARAM_LABELS = {
+    wkp: '双轮批量Kp（兼容）', wki: '双轮批量Ki（兼容）',
+    wil: '双轮批量积分限（兼容）', wff: '双轮批量前馈（兼容）',
+    wsf: '双轮批量静摩擦（兼容）',
+    lwkp: '左轮Kp', lwki: '左轮Ki', lwil: '左轮积分限',
+    lwff: '左轮前馈 PWM/(mm/s)', lwsf: '左轮静摩擦PWM',
+    rwkp: '右轮Kp', rwki: '右轮Ki', rwil: '右轮积分限',
+    rwff: '右轮前馈 PWM/(mm/s)', rwsf: '右轮静摩擦PWM',
+    skp: '直线航向Kp', skd: '直线航向Kd', sac: '直线加速度',
+    lra: '巡线比例', lkd: '巡线阻尼',
+    nvx: '转向最高速', nvn: '转向最低速', nsa: '转向减速角', ntl: '到角容差',
+    gsc: '陀螺尺度', cpm: '编码计数/mm',
+};
+const PARAM_GROUPS = {
+    lwkp: '左轮速度 PI 与前馈', lwki: '左轮速度 PI 与前馈',
+    lwil: '左轮速度 PI 与前馈', lwff: '左轮速度 PI 与前馈',
+    lwsf: '左轮速度 PI 与前馈',
+    rwkp: '右轮速度 PI 与前馈', rwki: '右轮速度 PI 与前馈',
+    rwil: '右轮速度 PI 与前馈', rwff: '右轮速度 PI 与前馈',
+    rwsf: '右轮速度 PI 与前馈',
+    wkp: '双轮批量兼容参数', wki: '双轮批量兼容参数',
+    wil: '双轮批量兼容参数', wff: '双轮批量兼容参数',
+    wsf: '双轮批量兼容参数',
+};
+const PARAM_STORE_KEY = 'carDebugParamsV1';
+const RUN_STORE_KEY = 'carDebugRunsV1';
+const WHEEL_TESTED_BASELINE = {
+    lwkp: 0.6, lwki: 0, lwil: 0, lwff: 0.43114, lwsf: 19.884,
+    rwkp: 0.6, rwki: 0, rwil: 0, rwff: 0.44289, rwsf: 22.205,
+};
+const PARAM_NUDGE_STEPS = {
+    lwkp: 0.02, rwkp: 0.02,
+    lwki: 0.001, rwki: 0.001,
+    lwil: 5, rwil: 5,
+    lwff: 0.002, rwff: 0.002,
+    lwsf: 0.5, rwsf: 0.5,
+};
+
+let port = null;
+let writer = null;
+/* reader 和读循环本身都要能被 disconnect() 取到：readable 流还锁着时
+   port.close() 会被拒绝，必须先 cancel 再等读循环退出。 */
+let reader = null;
+let readTask = null;
+let readAbort = null;
+let selected = new Set();
+let pendingFocusedSeriesSelection = true;
+let focusedTelemetryApplyChain = Promise.resolve();
+let focusedTelemetryGeneration = 0;
+let needsRedraw = false;
+let plotPaused = false;
+let plotSnapshot = null;   /* 暂停时冻结的样本快照，悬浮读数在暂停时也可用 */
+let hoverX = null;         /* 曲线区悬浮读数的横坐标（CSS 像素） */
+let lastPlotAt = 0;
+let redrawTimer = null;
+const PLOT_MIN_INTERVAL_MS = 50; /* 最多 20 FPS；数据仍按固件频率完整保存。 */
+
+let paramCache = {};     /* id -> { name, value, min, max, def } */
+let paramRenderPending = false;
+let lastRateHz = 20;     /* 最近一次固件回报的遥测频率，写进试验记录 */
+let session = null;      /* 进行中的调参试验 */
+let runs = [];           /* 试验记录，新的在前 */
+let runSeq = 0;
+let referenceRunId = null; /* 设为基准的试验记录，虚线叠加在实时曲线上 */
+let odomStart = null;    /* 里程标定起点 {LD, RD} */
+let replyWaiters = [];
+let focusState = { loop: 'wheel', side: 'left', stage: 'p' };
+
+const $ = (id) => document.getElementById(id);
+const termEl = $('terminal');
+const plotEl = $('plot');
+const ctx = plotEl.getContext('2d');
+
+/* ---------- 终端 ---------- */
+
+function log(text, cls) {
+    const atBottom = termEl.scrollTop + termEl.clientHeight >= termEl.scrollHeight - 4;
+    const span = document.createElement('span');
+    if (cls) {
+        span.className = cls;
+    }
+    span.textContent = text + '\n';
+    termEl.appendChild(span);
+    while (termEl.childElementCount > 300) {
+        termEl.removeChild(termEl.firstChild);
+    }
+    if (atBottom) {
+        termEl.scrollTop = termEl.scrollHeight;
+    }
+}
+
+function logReply(line) {
+    log('< ' + line, line.startsWith('OK') ? 'ok' : (line.startsWith('ERR') ? 'err' : ''));
+}
+
+/* 固件文本行统一入口：先提取参数/频率/标定信息更新界面，再进终端。 */
+function handleTextLine(line) {
+    for (const waiter of [...replyWaiters]) {
+        if (line.startsWith('ERR')) {
+            waiter.reject(new Error(line));
+        } else if (waiter.match(line)) {
+            waiter.resolve(line);
+        }
+    }
+    let m;
+    if ((m = line.match(/^K(\d+)=(-?[\d.]+) (\w+) \[(-?[\d.]+),(-?[\d.]+)\]$/))) {
+        upsertParam(+m[1], parseFloat(m[2]), m[3], parseFloat(m[4]), parseFloat(m[5]));
+    } else if ((m = line.match(/^OK K(\d+)=(-?[\d.]+)$/))) {
+        updateParamValue(+m[1], parseFloat(m[2]));
+    } else if ((m = line.match(/^OK M=\d+ G=(\d+)$/))) {
+        lastRateHz = +m[1];
+    } else if ((m = line.match(/^OK G=(\d+)$/))) {
+        lastRateHz = +m[1];
+    } else if ((m = line.match(/^OK Y SCALE=(-?[\d.]+)/))) {
+        /* 标定成功即已生效，把新值同步进参数表（gsc）。 */
+        const entry = paramByName('gsc');
+        if (entry) {
+            updateParamValue(entry.id, parseFloat(m[1]));
+        }
+    }
+    logReply(line);
+}
+
+/* ---------- 串口 ---------- */
+
+function setConnected(on) {
+    $('connState').textContent = on ? '已连接' : '未连接';
+    $('connState').className = on ? 'on' : 'off';
+    $('btnConnect').disabled = on;
+    $('btnDisconnect').disabled = !on;
+    document.querySelectorAll(
+        'button[data-send], button[data-cmd], button[data-drive], ' +
+        '#btnMask, #btnMaxRate, #btnRaw, #btnStop, #btnDriveMode, #btnRecord, ' +
+        '#btnParamRefresh, #btnParamApplyStored, #btnSessStart, ' +
+        '#btnCalFinish, #btnOdomMark, #btnOdomCalc')
+        .forEach((b) => { b.disabled = !on; });
+    $('servoO').disabled = !on;
+    $('servoD').disabled = !on;
+    if (!on) {
+        /* 断开后键盘不该还在"驾驶"一台连不上的车。 */
+        setDriveEnabled(false);
+        if (recording) {
+            stopRecording();
+        }
+    }
+}
+
+async function connect() {
+    if (!('serial' in navigator)) {
+        alert('当前浏览器不支持 Web Serial API，请用 Chrome 或 Edge 打开。');
+        return;
+    }
+    try {
+        port = await navigator.serial.requestPort();
+        await port.open({ baudRate: 115200, dataBits: 8, stopBits: 1, parity: 'none' });
+        writer = port.writable.getWriter();
+        focusedTelemetryGeneration += 1;
+        /* 新连接可能是另一块板或新固件，不能沿用上次连接捕获的“上电默认”。 */
+        paramCache = {};
+        scheduleParamRender();
+        setConnected(true);
+        log('串口已连接 115200 8N1', 'ok');
+        readAbort = false;
+        readTask = readLoop();
+        await applyFocusedTelemetrySelection(true);
+        /* 稍等固件把 READY 横幅吐完，再拉一次完整参数表。 */
+        setTimeout(() => { send('K?'); }, 300);
+    } catch (err) {
+        log('连接失败：' + err.message, 'err');
+    }
+}
+
+async function readLoop() {
+    reader = port.readable.getReader();
+    try {
+        while (!readAbort) {
+            const { value, done } = await reader.read();
+            if (done) {
+                break;
+            }
+            /* value 是 Uint8Array，直接喂字节流状态机——不再 TextDecoder，
+               因为二进制帧里的 0x0A/0xAA 字节不能当文本换行处理。 */
+            const {
+                textLines, schemaChanged, samplesAdded,
+                captureAdded, captureEnded,
+            } = parser.feed(value);
+            textLines.forEach(handleTextLine);
+            if (schemaChanged) {
+                rebuildSeries();
+            }
+            if (session && samplesAdded > 0) {
+                watchSession();
+            }
+            captureForRecording(samplesAdded);
+            if (captureAdded > 0) {
+                /* dump 可能有上千帧，进度只在状态栏更新，不触发重绘。 */
+                $('sessStatus').textContent =
+                    `正在取回板载 100 Hz 捕获数据… ${parser.captureSamples.length} 样本`;
+            }
+            if (captureEnded && captureEndResolve) {
+                captureEndResolve();
+            }
+            if (schemaChanged || samplesAdded > 0) {
+                requestRedraw();
+            }
+        }
+    } catch (err) {
+        /* cancel() 会让挂起的 read() 以异常结束，这是正常的断开路径。 */
+        if (!readAbort) {
+            log('读取中断：' + err.message, 'err');
+            if (session) {
+                await stopSession('读取中断', true);
+            } else {
+                await emergencyStop();
+            }
+        }
+    } finally {
+        reader.releaseLock();
+        reader = null;
+    }
+}
+
+async function disconnect() {
+    /* 先作废自动遥测队列，防止剩余 M/G 排在急停 C0 后面。 */
+    focusedTelemetryGeneration += 1;
+    try {
+        /* W/N 是持续运动；主动断开前先按当前模式停车，再释放串口。 */
+        if (session) {
+            await stopSession('串口断开', true);
+        } else {
+            await emergencyStop();
+        }
+        readAbort = true;
+        /* 必须先解除挂起的 read() 并等读循环真正退出（它在 finally 里
+           releaseLock），否则 readable 仍处于 locked，port.close() 会被拒绝，
+           port 不会置空，下次连接就会失败。 */
+        if (reader) {
+            await reader.cancel().catch(() => {});
+        }
+        if (readTask) {
+            await readTask.catch(() => {});
+            readTask = null;
+        }
+        if (writer) {
+            writer.releaseLock();
+            writer = null;
+        }
+        if (port) {
+            await port.close();
+            port = null;
+        }
+    } catch (err) {
+        log('断开时出错：' + err.message, 'err');
+    }
+    replyWaiters.forEach((waiter) => waiter.reject(new Error('串口已断开')));
+    replyWaiters = [];
+    setConnected(false);
+    paramCache = {};
+    scheduleParamRender();
+    log('串口已断开');
+}
+
+async function send(cmd) {
+    if (!writer) {
+        return false;
+    }
+    const line = cmd.trim();
+    if (line === '') {
+        return false;
+    }
+    log('> ' + line, 'tx');
+    try {
+        await writer.write(new TextEncoder().encode(line + '\r\n'));
+        return true;
+    } catch (err) {
+        log('发送失败：' + err.message, 'err');
+        return false;
+    }
+}
+
+function waitForReply(match, timeoutMs = 1500) {
+    return new Promise((resolve, reject) => {
+        const waiter = {
+            match,
+            resolve: (line) => {
+                clearTimeout(waiter.timer);
+                replyWaiters = replyWaiters.filter((item) => item !== waiter);
+                resolve(line);
+            },
+            reject: (error) => {
+                clearTimeout(waiter.timer);
+                replyWaiters = replyWaiters.filter((item) => item !== waiter);
+                reject(error);
+            },
+            timer: null,
+        };
+        waiter.timer = setTimeout(() => {
+            waiter.reject(new Error('等待固件回复超时'));
+        }, timeoutMs);
+        replyWaiters.push(waiter);
+    });
+}
+
+async function sendAndWait(cmd, match, timeoutMs = 1500) {
+    const reply = waitForReply(match, timeoutMs);
+    if (!await send(cmd)) {
+        /* reply 自己会在稍后超时；立即吞掉，避免残留未处理 Promise。 */
+        reply.catch(() => {});
+        throw new Error('串口写入失败');
+    }
+    return reply;
+}
+
+/* ---------- 参数面板 ---------- */
+
+function paramByName(name) {
+    for (const id of Object.keys(paramCache)) {
+        if (paramCache[id].name === name) {
+            return paramCache[id];
+        }
+    }
+    return null;
+}
+
+function upsertParam(id, value, name, min, max) {
+    const known = paramCache[id];
+    paramCache[id] = {
+        id, name, value, min, max,
+        /* 第一次见到的值当作"上电默认"；K? 重读不会覆盖它。 */
+        def: known ? known.def : value,
+    };
+    scheduleParamRender();
+}
+
+function scheduleParamRender() {
+    if (paramRenderPending) {
+        return;
+    }
+    paramRenderPending = true;
+    requestAnimationFrame(() => {
+        paramRenderPending = false;
+        renderParamTable();
+    });
+}
+
+function syncWheelCompatibilityCache(changedName) {
+    const groups = [
+        ['wkp', 'lwkp', 'rwkp'], ['wki', 'lwki', 'rwki'],
+        ['wil', 'lwil', 'rwil'], ['wff', 'lwff', 'rwff'],
+        ['wsf', 'lwsf', 'rwsf'],
+    ];
+    for (const [legacyName, leftName, rightName] of groups) {
+        if (changedName !== leftName && changedName !== rightName) {
+            continue;
+        }
+        const legacy = paramByName(legacyName);
+        const left = paramByName(leftName);
+        const right = paramByName(rightName);
+        if (legacy && left && right) {
+            legacy.value = (left.value + right.value) * 0.5;
+        }
+    }
+}
+
+function updateParamValue(id, value) {
+    if (paramCache[id]) {
+        paramCache[id].value = value;
+        const mirrors = {
+            wkp: ['lwkp', 'rwkp'], wki: ['lwki', 'rwki'],
+            wil: ['lwil', 'rwil'], wff: ['lwff', 'rwff'],
+            wsf: ['lwsf', 'rwsf'],
+        }[paramCache[id].name];
+        if (mirrors) {
+            mirrors.forEach((name) => {
+                const entry = paramByName(name);
+                if (entry) entry.value = value;
+            });
+        }
+        syncWheelCompatibilityCache(paramCache[id].name);
+        scheduleParamRender();
+    }
+}
+
+function fmtParam(v) {
+    /* 前馈回归值保留 5 位；去掉无意义尾零。 */
+    return String(parseFloat(v.toFixed(5)));
+}
+
+function wheelParamValue(independentName, legacyName) {
+    const entry = paramByName(independentName) || paramByName(legacyName);
+    return entry ? entry.value : NaN;
+}
+
+function renderWheelMapping() {
+    const box = $('wheelMap');
+    const sessionSpeed = parseFloat($('sessAmp').value);
+    const motionSpeed = parseFloat($('wVal').value);
+    const useSession = $('sessLoop').value === 'wheel' && Number.isFinite(sessionSpeed);
+    const speed = useSession ? sessionSpeed : motionSpeed;
+    const calculate = (prefix) => {
+        const kp = wheelParamValue(prefix + 'kp', 'wkp');
+        const ki = wheelParamValue(prefix + 'ki', 'wki');
+        const limit = wheelParamValue(prefix + 'il', 'wil');
+        const ff = wheelParamValue(prefix + 'ff', 'wff');
+        const sf = wheelParamValue(prefix + 'sf', 'wsf');
+        const base = estimateWheelBasePwm(speed, ff, sf);
+        if (!base || ![kp, ki, limit].every(Number.isFinite)) return null;
+        const proportionalAtRest = kp * speed;
+        const integralWorst = ki === 0 ? 0 :
+            (limit > 0 ? Math.abs(ki * limit) : Infinity);
+        const firstRaw = base.raw + proportionalAtRest;
+        const worstAbs = Math.abs(base.raw) + Math.abs(proportionalAtRest) + integralWorst;
+        return { kp, ki, limit, ff, sf, base, proportionalAtRest, integralWorst, firstRaw, worstAbs };
+    };
+    const left = calculate('lw');
+    const right = calculate('rw');
+    if (!left || !right) {
+        box.textContent = '读取左右轮参数后，这里分别显示基础 PWM、静止首拍 P 修正和安全余量。';
+        box.classList.remove('warn');
+        return;
+    }
+    const card = (side, prefix, result) => {
+        const baselineFF = WHEEL_TESTED_BASELINE[prefix + 'ff'];
+        const baselineSF = WHEEL_TESTED_BASELINE[prefix + 'sf'];
+        const iText = Number.isFinite(result.integralWorst) ?
+            result.integralWorst.toFixed(1) : '无限（积分限=0）';
+        return `<div class="wheel-side"><b>${side}轮</b><br>` +
+            `<code>PWM=${fmtParam(result.ff)}×速度+${fmtParam(result.sf)}</code><br>` +
+            `基础 ${result.base.raw.toFixed(1)}；静止 P 修正 ${result.proportionalAtRest.toFixed(1)}<br>` +
+            `静止首拍估计 <strong>${result.firstRaw.toFixed(1)}</strong>；积分最坏附加 ${iText}<br>` +
+            `已测基线 ff/sf=${fmtParam(baselineFF)}/${fmtParam(baselineSF)}</div>`;
+    };
+    const warnings = [];
+    const showLeft = focusState.side !== 'right';
+    const showRight = focusState.side !== 'left';
+    if (speed < 0 && showLeft) warnings.push('左轮硬件当前不能反转：负目标仅提醒，不拦截。');
+    if ((showLeft && Math.abs(left.firstRaw) > 1000) ||
+        (showRight && Math.abs(right.firstRaw) > 1000)) {
+        warnings.push('静止首拍估计超过固件 ±1000 输出范围，实际会被限幅。');
+    }
+    if ((showLeft && !Number.isFinite(left.integralWorst)) ||
+        (showRight && !Number.isFinite(right.integralWorst))) {
+        warnings.push('Ki>0 但积分限为0时积分不受限；这里只提示，不阻止写入。');
+    }
+    const cards = (showLeft ? card('左', 'lw', left) : '') +
+        (showRight ? card('右', 'rw', right) : '');
+    box.innerHTML =
+        `<div>${useSession ? '精测试验' : '运动面板'}目标 <b>${speed} mm/s</b>` +
+        `（另一处 W=${Number.isFinite(motionSpeed) ? motionSpeed : '—'}）</div>` +
+        `<div class="wheel-map-grid${showLeft && showRight ? '' : ' single'}">${cards}</div>` +
+        (warnings.length ? `<div class="wheel-warning">${warnings.join('<br>')}</div>` : '');
+    box.classList.toggle('warn', warnings.length > 0);
+}
+
+function renderParamTable() {
+    const box = $('paramTable');
+    const groupOrder = {
+        '左轮速度 PI 与前馈': 0,
+        '右轮速度 PI 与前馈': 1,
+        '其他控制与标定': 2,
+        '双轮批量兼容参数': 3,
+    };
+    const ids = Object.keys(paramCache).map(Number).sort((a, b) => {
+        const groupA = PARAM_GROUPS[paramCache[a].name] || '其他控制与标定';
+        const groupB = PARAM_GROUPS[paramCache[b].name] || '其他控制与标定';
+        return (groupOrder[groupA] - groupOrder[groupB]) || (a - b);
+    });
+    if (ids.length === 0) {
+        box.innerHTML = '<span class="hint">连接后自动读取</span>';
+        renderWheelMapping();
+        return;
+    }
+    /* 输入框正在编辑时不要整表重建，否则会打断输入。 */
+    if (box.contains(document.activeElement) && document.activeElement.tagName === 'INPUT') {
+        return;
+    }
+    box.innerHTML = '';
+    let previousGroup = '';
+    for (const id of ids) {
+        const p = paramCache[id];
+        const group = PARAM_GROUPS[p.name] || '其他控制与标定';
+        if (group !== previousGroup) {
+            const groupEl = document.createElement('div');
+            groupEl.className = 'pgroup';
+            groupEl.textContent = group;
+            box.appendChild(groupEl);
+            previousGroup = group;
+        }
+        const nameEl = document.createElement('span');
+        nameEl.className = 'pname';
+        nameEl.title = `K${id} 范围 ${p.min}~${p.max}，上电默认 ${fmtParam(p.def)}`;
+        nameEl.innerHTML = `${p.name} <small>${PARAM_LABELS[p.name] || ''}</small>`;
+        const input = document.createElement('input');
+        input.type = 'number';
+        input.step = 'any';
+        input.value = fmtParam(p.value);
+        input.oninput = () => {
+            input.classList.toggle('dirty', parseFloat(input.value) !== p.value);
+        };
+        const btn = document.createElement('button');
+        btn.className = 'mini';
+        btn.textContent = ['wkp', 'wki', 'wil', 'wff', 'wsf'].includes(p.name) ?
+            '批量写' : '写';
+        const writeIt = () => {
+            const v = parseFloat(input.value);
+            if (!Number.isFinite(v)) {
+                log(`K${id} 输入不是数字`, 'err');
+                return;
+            }
+            if (requestParameterWrite(p, v)) {
+                input.classList.remove('dirty');
+            }
+        };
+        btn.onclick = writeIt;
+        input.onkeydown = (e) => { if (e.key === 'Enter') { writeIt(); } };
+        box.append(nameEl, input, btn);
+    }
+    renderWheelMapping();
+    renderSessionParams();
+}
+
+function requestParameterWrite(entry, value, options = {}) {
+    if (!entry || !Number.isFinite(value)) {
+        return false;
+    }
+    if (session) {
+        log('注意：试验进行中修改参数会立即生效', 'err');
+    }
+    const independentPresent = paramByName('lwkp') && paramByName('rwkp');
+    const legacyWheel = ['wkp', 'wki', 'wil', 'wff', 'wsf'];
+    if (independentPresent && legacyWheel.includes(entry.name)) {
+        log(`${entry.name} 是兼容批量参数，本次写入会同步覆盖左右轮对应值`, 'err');
+    }
+
+    const side = entry.name.startsWith('lw') ? 'lw' :
+        (entry.name.startsWith('rw') ? 'rw' : null);
+    if (side && entry.name === side + 'ki' && value > 0) {
+        const limit = paramByName(side + 'il');
+        if (!limit || limit.value <= 0) {
+            log(`注意：${entry.name}>0 且 ${side}il=0 时积分不受限`, 'err');
+        }
+    }
+    if (side && entry.name === side + 'il' && value <= 0) {
+        const ki = paramByName(side + 'ki');
+        if (ki && ki.value > 0) {
+            log(`注意：${entry.name}=0 且 ${side}ki>0 时积分不受限`, 'err');
+        }
+    }
+
+    send(`K${entry.id}=${parseFloat(value.toFixed(5))}`);
+    return true;
+}
+
+function saveParamsToBrowser() {
+    const out = {};
+    const hasIndependentWheelParams = paramByName('lwkp') && paramByName('rwkp');
+    const legacyWheelNames = new Set(['wkp', 'wki', 'wil', 'wff', 'wsf']);
+    for (const id of Object.keys(paramCache)) {
+        if (hasIndependentWheelParams && legacyWheelNames.has(paramCache[id].name)) {
+            continue;
+        }
+        out[paramCache[id].name] = paramCache[id].value;
+    }
+    if (Object.keys(out).length === 0) {
+        log('参数表为空，先读取 K?', 'err');
+        return;
+    }
+    localStorage.setItem(PARAM_STORE_KEY, JSON.stringify({
+        schema: 2,
+        savedAt: new Date().toISOString(),
+        params: out,
+    }));
+    log('已存到浏览器：' + Object.entries(out).map(([k, v]) => `${k}=${fmtParam(v)}`).join(' '), 'ok');
+}
+
+async function applyStoredParams() {
+    const raw = localStorage.getItem(PARAM_STORE_KEY);
+    if (!raw) {
+        log('浏览器里没有参数存档', 'err');
+        return;
+    }
+    let decoded;
+    try {
+        decoded = JSON.parse(raw);
+    } catch (err) {
+        log('浏览器参数存档损坏，无法解析', 'err');
+        return;
+    }
+    const stored = decoded && decoded.params ? decoded.params : decoded;
+    const availableNames = Object.values(paramCache).map((entry) => entry.name);
+    const writes = storedParamsForFirmware(stored, availableNames);
+    if (writes.length === 0) {
+        log('存档中没有与当前固件匹配的参数', 'err');
+        return;
+    }
+    let count = 0;
+    for (const [name, value] of writes) {
+        const entry = paramByName(name);
+        if (entry) {
+            await send(`K${entry.id}=${value}`);
+            count += 1;
+        }
+    }
+    log(`存档回写完成，共 ${count} 项`, 'ok');
+}
+
+/* ---------- 标定 ---------- */
+
+function latestSample() {
+    return parser.samples.length > 0 ? parser.samples[parser.samples.length - 1] : null;
+}
+
+function odomMark() {
+    const s = latestSample();
+    if (!s || typeof s.LD !== 'number' || typeof s.RD !== 'number') {
+        log('没有 LD/RD 数据：请先在遥测里开启「LD/RD 左右路程」并设定频率', 'err');
+        return;
+    }
+    odomStart = { LD: s.LD, RD: s.RD };
+    $('odomStartInfo').textContent = `起点 L=${s.LD.toFixed(1)} R=${s.RD.toFixed(1)}，现在跑 F1000`;
+}
+
+function odomCalc() {
+    const s = latestSample();
+    const cpm = paramByName('cpm');
+    if (!odomStart) {
+        log('先记录起点', 'err');
+        return;
+    }
+    if (!s || typeof s.LD !== 'number') {
+        log('没有 LD/RD 数据', 'err');
+        return;
+    }
+    if (!cpm) {
+        log('参数表里没有 cpm，先读取 K?', 'err');
+        return;
+    }
+    const shown = ((s.LD - odomStart.LD) + (s.RD - odomStart.RD)) / 2;
+    const actual = parseFloat($('odomActual').value);
+    if (!Number.isFinite(actual) || actual <= 10 || Math.abs(shown) <= 10) {
+        log(`数据不足以标定：显示走过 ${shown.toFixed(1)} mm，实测填写 ${actual}`, 'err');
+        return;
+    }
+    /* 显示值 = 计数/cpm。显示偏大说明 cpm 偏小，按比例修正。 */
+    const next = cpm.value * (shown / actual);
+    log(`显示 ${shown.toFixed(1)} mm，实测 ${actual} mm，cpm ${fmtParam(cpm.value)} -> ${fmtParam(next)}`, 'ok');
+    send(`K${cpm.id}=${next.toFixed(4)}`);
+    odomStart = null;
+    $('odomStartInfo').textContent = '已写入，可再跑一次验证';
+}
+
+/* ---------- 调参试验 ---------- */
+
+/*
+ * 当前试验的预设。掩码优先取 focus 对象自己的 mask（调左轮时只传左轮，
+ * 行长减半、可用频率翻倍），没有才回退到环路级的成对掩码。
+ * rate 不再硬编码——由 Q 命令拿固件真实上限后填入，见 resolveSessionRate()。
+ */
+function sessionPreset() {
+    const base = SESSIONS[focusState.loop];
+    const side = focusSideConfig();
+    /* 二进制后实时流与捕获同掩码：capture 通道 = 遥测通道，不再分两套。 */
+    const mask = (side && side.mask) ? side.mask : base.mask;
+    return { ...base, mask, capture: mask };
+}
+
+/* 固件按当前掩码算出的安全上限，由 Q 命令回报；未查询过时为 null。 */
+let firmwareMaxRateHz = null;
+let firmwareCaptureCapacity = null;
+
+/* 主动查询固件能力。这是"自动给出最大可用频率"的正解：
+   上限只有固件算得准（它知道真实行长和阻塞预算），网页不再各存一份阈值。 */
+async function queryCapability(timeoutMs = 1200) {
+    if (!writer) return null;
+    try {
+        const line = await sendAndWait('Q', (l) => l.startsWith('OK Q '), timeoutMs);
+        const parsed = parseCapabilityReply(line);
+        if (parsed) {
+            firmwareMaxRateHz = parsed.max;
+            firmwareCaptureCapacity = parsed.capMax;
+            lastRateHz = parsed.rate;
+        }
+        return parsed;
+    } catch (err) {
+        /* 老固件没有 Q 命令，退回本地估算，不阻断流程。 */
+        return null;
+    }
+}
+
+/* 期望频率与固件上限取小。上限未知时用本地估算兜底。 */
+function resolveSessionRate(mask, desired) {
+    const cap = firmwareMaxRateHz !== null ?
+        firmwareMaxRateHz : estimateMaxRateHz(mask);
+    return Math.max(1, Math.min(desired, cap));
+}
+
+function focusLoopConfig() {
+    return TUNING_FOCUS[focusState.loop];
+}
+
+function focusSideConfig() {
+    const loop = focusLoopConfig();
+    return loop.sides[focusState.side] || loop.sides[loop.defaultSide];
+}
+
+function focusedParamNames() {
+    const side = focusSideConfig();
+    return side.params[focusState.stage] || [];
+}
+
+function focusedSeriesNames() {
+    return [...focusSideConfig().series];
+}
+
+/* 从 CH_LIST 生成通道勾选框，值即通道位——与固件通道定义单一来源，不会漂移。 */
+function buildMaskCheckboxes() {
+    const box = $('maskBoxes');
+    box.innerHTML = '';
+    for (const [name, unit] of CH_LIST) {
+        const label = document.createElement('label');
+        const cb = document.createElement('input');
+        cb.type = 'checkbox';
+        cb.className = 'mk';
+        cb.value = String(CH[name]);
+        label.append(cb, document.createTextNode(`${name} (${unit})`));
+        box.appendChild(label);
+    }
+}
+
+function syncMaskCheckboxes(mask) {
+    document.querySelectorAll('.mk').forEach((checkbox) => {
+        const bit = parseInt(checkbox.value, 10);
+        checkbox.checked = (mask & bit) !== 0;
+    });
+}
+
+/*
+ * 焦点切换时先停遥测，再换字段和频率，避免用旧的高频率发送更宽的新表头。
+ * 未连接时只同步网页控件；页面初始化不会主动碰串口。
+ */
+async function applyFocusedTelemetrySelection(sendToDevice = true) {
+    const preset = sessionPreset();
+    syncMaskCheckboxes(preset.mask);
+    /* 频率先按本地估算显示，串口确认后会用固件回报的权威值覆盖。 */
+    $('gVal').value = resolveSessionRate(preset.mask, preset.rate);
+    renderRateLimit();
+    if (!sendToDevice || !writer) {
+        return;
+    }
+    const targetWriter = writer;
+    const generation = focusedTelemetryGeneration;
+    focusedTelemetryApplyChain = focusedTelemetryApplyChain.then(async () => {
+        /* 一次切换必须完整串行；若期间已断开/重连，旧请求直接作废。 */
+        if (writer !== targetWriter || generation !== focusedTelemetryGeneration) return;
+        await send('G0');
+        if (writer !== targetWriter || generation !== focusedTelemetryGeneration) return;
+        await send('M' + preset.mask);
+        if (writer !== targetWriter || generation !== focusedTelemetryGeneration) return;
+        /* 掩码变了，上限也变了：问固件要真实上限，别用上一次的。 */
+        await queryCapability();
+        if (writer !== targetWriter || generation !== focusedTelemetryGeneration) return;
+        const rate = resolveSessionRate(preset.mask, preset.rate);
+        $('gVal').value = rate;
+        renderRateLimit();
+        await send('G' + rate);
+    });
+    return focusedTelemetryApplyChain;
+}
+
+function runMatchesFocus(run) {
+    if (!run || run.loop !== focusState.loop) return false;
+    if (!run.focusSide || !run.focusStage) return true; /* 兼容旧存档 */
+    if (focusState.loop === 'wheel' && focusState.side !== 'both' &&
+        run.focusSide !== focusState.side && run.focusSide !== 'both') return false;
+    if (focusState.stage !== 'verify' && run.focusStage !== focusState.stage) return false;
+    return true;
+}
+
+function sameRunGroup(left, right) {
+    if (!left || !right || left.loop !== right.loop) return false;
+    if (!left.focusSide || !right.focusSide) return true;
+    return left.focusSide === right.focusSide && left.focusStage === right.focusStage;
+}
+
+function renderFocusNavGroup(boxId, label, items, activeValue, onSelect, secondary = false) {
+    const box = $(boxId);
+    box.innerHTML = '';
+    const caption = document.createElement('span');
+    caption.className = 'focus-nav-label';
+    caption.textContent = label;
+    box.appendChild(caption);
+    for (const [value, item] of Object.entries(items)) {
+        const button = document.createElement('button');
+        button.type = 'button';
+        button.textContent = item.label;
+        button.className = (secondary ? 'secondary ' : '') +
+            (value === activeValue ? 'active' : '');
+        button.onclick = () => onSelect(value);
+        box.appendChild(button);
+    }
+}
+
+function plainStageLabel(label) {
+    return label.replace(/^[①②③④⑤⑥⑦⑧⑨⑩]\s*/, '');
+}
+
+function renderFocusNavigation() {
+    const loop = focusLoopConfig();
+    const side = focusSideConfig();
+    const stage = loop.stages[focusState.stage] || loop.stages[loop.defaultStage];
+    $('sessLoop').value = focusState.loop;
+    $('focusPath').textContent = `${loop.label} → ${side.label} → ${plainStageLabel(stage.label)}`;
+    $('focusStageHelp').textContent = `${stage.help} 曲线：${focusedSeriesNames().join(' / ')}。`;
+    $('focusHistoryTitle').textContent = `${side.label} · ${plainStageLabel(stage.label)} 试验记录`;
+
+    const taskItems = Object.fromEntries(Object.entries(TUNING_FOCUS)
+        .map(([value, item]) => [value, { label: item.label }]));
+    renderFocusNavGroup('focusTaskNav', '任务', taskItems, focusState.loop, (loopName) => {
+        const next = TUNING_FOCUS[loopName];
+        focusState = {
+            loop: loopName,
+            side: next.defaultSide,
+            stage: next.defaultStage,
+        };
+        pendingFocusedSeriesSelection = true;
+        applyFocusedTelemetrySelection(true);
+        refreshSessionInputs(true);
+        renderFocusNavigation();
+    });
+    renderFocusNavGroup('focusObjectNav', '对象', loop.sides, focusState.side, (sideName) => {
+        focusState.side = sideName;
+        pendingFocusedSeriesSelection = true;
+        applyFocusedTelemetrySelection(true);
+        renderFocusNavigation();
+    }, true);
+    renderFocusNavGroup('focusStageNav', '阶段', loop.stages, focusState.stage, (stageName) => {
+        focusState.stage = stageName;
+        pendingFocusedSeriesSelection = true;
+        applyFocusedTelemetrySelection(true);
+        renderFocusNavigation();
+    }, true);
+
+    $('wheelSessionTools').style.display = focusState.loop === 'wheel' ? '' : 'none';
+    $('wheelMap').style.display = focusState.loop === 'wheel' ? '' : 'none';
+    renderSessionParams();
+    renderWheelMapping();
+    rebuildSeries();
+    renderRuns();
+    const latest = runs.find(runMatchesFocus);
+    if (latest) {
+        renderSessionResult(latest);
+    } else {
+        $('sessResult').style.display = 'none';
+    }
+}
+
+function refreshSessionInputs(resetValues = true) {
+    const p = sessionPreset();
+    $('sessAmpLabel').textContent = p.ampLabel;
+    if (resetValues) $('sessAmp').value = p.ampDefault;
+    $('sessDurWrap').style.display = p.timed ? '' : 'none';
+    if (p.timed && resetValues) {
+        $('sessDur').value = p.durDefault;
+    }
+    $('sessStatus').textContent = '流程：改参数 → 开始试验 → 自动出指标 → 对比上一组。';
+    renderSessionParams();
+}
+
+/* 试验面板内嵌当前环路的相关参数：改完立即写入，不用跳去参数面板。 */
+function renderSessionParams() {
+    const box = $('sessParams');
+    if (box.contains(document.activeElement) &&
+        document.activeElement.tagName === 'INPUT') {
+        return;
+    }
+    const paramNames = [...new Set(focusedParamNames())];
+    box.innerHTML = '';
+    if (paramNames.length === 0) {
+        box.innerHTML = '<span class="hint">当前是验证阶段：不显示参数输入框，只采集曲线和指标。</span>';
+        return;
+    }
+    const previous = runs.find((run) => runMatchesFocus(run) && run.paramValues);
+    for (const paramName of paramNames) {
+        const entry = paramByName(paramName);
+        const wrap = document.createElement('div');
+        wrap.className = 'qp';
+        const name = document.createElement('label');
+        name.textContent = `${paramName} · ${PARAM_LABELS[paramName] || ''}`;
+        const input = document.createElement('input');
+        input.type = 'number';
+        input.step = 'any';
+        if (!entry) {
+            name.title = `${PARAM_LABELS[paramName] || paramName} · 连接后读取参数范围`;
+            input.placeholder = '连接后读取';
+            input.disabled = true;
+            const minus = document.createElement('button');
+            minus.textContent = '−';
+            minus.disabled = true;
+            const plus = document.createElement('button');
+            plus.textContent = '+';
+            plus.disabled = true;
+            const write = document.createElement('button');
+            write.textContent = '写入';
+            write.disabled = true;
+            const meta = document.createElement('span');
+            meta.className = 'param-meta';
+            meta.textContent = '连接后读取 K?，这里就能直接修改当前阶段的值';
+            wrap.append(name, minus, input, plus, write, meta);
+            box.appendChild(wrap);
+            continue;
+        }
+        name.title = `${PARAM_LABELS[entry.name] || ''} · K${entry.id} 范围 ${entry.min}~${entry.max}`;
+        input.value = fmtParam(entry.value);
+        input.oninput = () => {
+            input.classList.toggle('dirty', parseFloat(input.value) !== entry.value);
+        };
+        const writeValue = (v) => {
+            if (!Number.isFinite(v)) {
+                return;
+            }
+            input.value = fmtParam(v);
+            if (requestParameterWrite(entry, v)) {
+                input.classList.remove('dirty');
+            }
+        };
+        input.onkeydown = (e) => {
+            if (e.key === 'Enter') {
+                writeValue(parseFloat(input.value));
+            }
+        };
+        /* 参数专属小步进；Ki 从 0 不再一脚跳到量程 1%（原来会直接变 0.5）。 */
+        const nudge = (direction) => {
+            const current = parseFloat(input.value);
+            const base = Number.isFinite(current) ? current : entry.value;
+            const step = PARAM_NUDGE_STEPS[entry.name] ||
+                Math.max((entry.max - entry.min) * 0.01, 0.001);
+            writeValue(base + direction * step);
+        };
+        const minus = document.createElement('button');
+        minus.textContent = '−';
+        minus.title = '减小一个安全步进并写入';
+        minus.onclick = () => nudge(-1);
+        const plus = document.createElement('button');
+        plus.textContent = '+';
+        plus.title = '增大一个安全步进并写入';
+        plus.onclick = () => nudge(1);
+        const write = document.createElement('button');
+        write.textContent = '写入';
+        write.onclick = () => writeValue(parseFloat(input.value));
+        const meta = document.createElement('span');
+        meta.className = 'param-meta';
+        const previousValue = previous && Number.isFinite(previous.paramValues[entry.name]) ?
+            fmtParam(previous.paramValues[entry.name]) : '—';
+        meta.textContent = `K${entry.id} · 默认 ${fmtParam(entry.def)} · 上一组 ${previousValue} · 步进 ${fmtParam(PARAM_NUDGE_STEPS[entry.name] || Math.max((entry.max - entry.min) * 0.01, 0.001))}`;
+        wrap.append(name, minus, input, plus, write, meta);
+        box.appendChild(wrap);
+    }
+}
+
+async function startSession() {
+    if (session) {
+        return;
+    }
+    const p = sessionPreset();
+    const amp = parseFloat($('sessAmp').value);
+    if (!Number.isFinite(amp)) {
+        log('激励幅值不是数字', 'err');
+        return;
+    }
+
+    if ($('sessLoop').value === 'wheel' && amp < 0) {
+        log('提醒：左轮硬件当前不能反转；仍按你的负目标继续，不做屏蔽', 'err');
+    }
+
+    let duration = null;
+    if (p.timed) {
+        /* HTML 原本声明 1~30 秒，这里把手输值同步回该既有范围。 */
+        duration = Math.min(30, Math.max(1,
+            parseFloat($('sessDur').value) || p.durDefault));
+        $('sessDur').value = duration;
+    }
+
+    $('btnSessStart').disabled = true;
+    $('sessStatus').textContent = '正在确认遥测掩码、频率和表头…';
+
+    let sessionRate = p.rate;
+    let captureArmed = false;
+    try {
+        /* 文案写的是“预设掩码高频采样”，因此必须等固件确认和正确表头后再激励。 */
+        await sendAndWait('G0', (line) => line === 'OK G=0');
+        await sendAndWait('M' + p.mask,
+            (line) => line.startsWith(`OK M=${p.mask} G=`));
+        /* 频率不再用硬编码：先问固件当前掩码下的真实上限，再取小。 */
+        await queryCapability();
+        sessionRate = resolveSessionRate(p.mask, p.rate);
+        await sendAndWait('G' + sessionRate,
+            (line) => line === `OK G=${sessionRate}`);
+        await waitForTelemetryColumns(expectedColumnsForMask(p.mask));
+
+        /* 板载捕获：100 Hz 无损，是指标的可信来源。arm 失败不阻断试验——
+           实时流仍能用，只是指标精度回落，UI 会明确标注来源。 */
+        if (p.capture) {
+            parser.clearCapture();
+            try {
+                await sendAndWait('X' + p.capture,
+                    (line) => line.startsWith('OK X ARM='), 1000);
+                captureArmed = true;
+            } catch (err) {
+                log('板载捕获未启用（固件可能不支持 X 命令），指标将基于实时流', 'err');
+            }
+        }
+    } catch (err) {
+        log('试验准备失败：' + err.message, 'err');
+        await emergencyStop();
+        $('btnSessStart').disabled = !writer;
+        $('sessStatus').textContent = '准备失败，未发送运动激励。';
+        return;
+    }
+
+    /* 专属数据：清终端与曲线，本次日志从试验标记开始。 */
+    termEl.innerHTML = '';
+    parser.clear();
+    requestRedraw();
+    const excitation = p.excite(amp);
+    const focusPath = $('focusPath').textContent;
+    log(`=== 试验开始 ${focusPath} · ${excitation} ===`, 'ok');
+
+    const snapshotNames = focusedParamNames().length > 0 ? focusedParamNames() : p.params;
+    const snapshotEntries = snapshotNames.map((n) => paramByName(n)).filter(Boolean);
+    const snapshot = snapshotEntries
+        .map((e) => `${e.name}=${fmtParam(e.value)}`).join(' ') || '（未读取参数表）';
+    const paramValueEntries = p.params.map((name) => paramByName(name)).filter(Boolean);
+    const paramValues = Object.fromEntries(
+        paramValueEntries.map((entry) => [entry.name, entry.value]));
+
+    session = {
+        loop: focusState.loop, focusSide: focusState.side, focusStage: focusState.stage,
+        focusPath, preset: p, excitation, snapshot, paramValues, amp,
+        rateHz: sessionRate, captureArmed,
+        sawActive: false, done: false, endTimer: null, stopTimer: null,
+        guardTimer: null, stopFallbackTimer: null, finalizing: false,
+    };
+    $('sessResult').style.display = 'none';
+    $('btnSessStart').disabled = true;
+    $('btnSessAbort').disabled = false;
+    $('sessStatus').textContent = `试验进行中：${excitation} …`;
+
+    try {
+        await sendAndWait(excitation, excitationReplyMatcher(p, amp));
+    } catch (err) {
+        await stopSession('激励失败：' + err.message, true);
+        return;
+    }
+    if (p.timed) {
+        session.stopTimer = setTimeout(() => {
+            if (session && !session.done) {
+                requestSessionStop('定时完成');
+            }
+        }, duration * 1000);
+    }
+    /* 原网页已有 30 秒保护；现在保护会先真正停车，再结束网页记录。 */
+    session.guardTimer = setTimeout(() => { stopSession('超时安全收尾', true); }, 30000);
+}
+
+/* 掩码 → 预期列名（按 12 通道位序）。用于等待 schema 帧到达确认切换成功。 */
+function expectedColumnsForMask(mask) {
+    const columns = ['ms'];
+    for (const [name] of CH_LIST) {
+        if ((mask & CH[name]) !== 0) {
+            columns.push(name);
+        }
+    }
+    return columns;
+}
+
+function waitForTelemetryColumns(expected, timeoutMs = 1600) {
+    const wanted = expected.join(',');
+    return new Promise((resolve, reject) => {
+        const deadline = performance.now() + timeoutMs;
+        const poll = () => {
+            if (parser.columns.join(',') === wanted) {
+                resolve();
+            } else if (performance.now() >= deadline) {
+                reject(new Error(`未收到预期 schema：${wanted}`));
+            } else {
+                setTimeout(poll, 20);
+            }
+        };
+        poll();
+    });
+}
+
+function excitationReplyMatcher(p, amp) {
+    if (p.stopCmd === 'W0') {
+        return (line) => /^OK W=-?\d+$/.test(line);
+    }
+    if (p.stopCmd === 'N0') {
+        return (line) => /^OK N=\d+$/.test(line);
+    }
+    return (line) => line === 'OK';
+}
+
+function stopReplyMatcher(command) {
+    if (command === 'W0') return (line) => line === 'OK W=0';
+    if (command === 'N0') return (line) => line === 'OK N=0';
+    return (line) => line === 'OK C=0';
+}
+
+async function requestSessionStop(reason) {
+    if (!session || session.done || session.stopRequested) {
+        return;
+    }
+    session.stopRequested = true;
+    try {
+        await sendAndWait(session.preset.stopCmd,
+            stopReplyMatcher(session.preset.stopCmd));
+        session.stopFallbackTimer = setTimeout(() => {
+            if (session && !session.done) {
+                stopSession('停车状态未确认', true);
+            }
+        }, 1600);
+        $('sessStatus').textContent = `${reason}，等待 IDLE/DONE 尾部数据…`;
+    } catch (err) {
+        await stopSession(reason + '，停车命令失败：' + err.message, true);
+    }
+}
+
+async function emergencyStop() {
+    if (!writer) {
+        return;
+    }
+    const commands = [];
+    if (session && session.preset && session.preset.stopCmd) {
+        commands.push(session.preset.stopCmd);
+    }
+    commands.push('W0', 'N0', 'C0', 'U0');
+    for (const command of [...new Set(commands)]) {
+        await send(command);
+    }
+}
+
+async function stopSession(reason, failed = true) {
+    if (!session) {
+        await emergencyStop();
+        return;
+    }
+    if (session.finalizing) {
+        return;
+    }
+    session.finalizing = true;
+    clearTimeout(session.stopTimer);
+    clearTimeout(session.guardTimer);
+    clearTimeout(session.endTimer);
+    clearTimeout(session.stopFallbackTimer);
+    await emergencyStop();
+    await finalizeSession(reason, failed);
+}
+
+/* 每批新样本检查一次：动作启动过且回到 IDLE/DONE，再留 0.5s 尾巴收官。 */
+function watchSession() {
+    if (!session || session.done) {
+        return;
+    }
+    const s = latestSample();
+    if (!s || typeof s.mode !== 'string') {
+        return;
+    }
+    const idle = (s.mode === 'IDLE' || s.mode === 'DONE');
+    if (!idle) {
+        session.sawActive = true;
+        return;
+    }
+    if (session.sawActive && !session.endTimer) {
+        /* finalizeSession 现在要等板载捕获 dump 完，是异步的；
+           这里不阻塞定时器回调，失败也只影响本次收尾。 */
+        session.endTimer = setTimeout(() => {
+            finalizeSession('完成', false).catch((err) => {
+                log('收尾失败：' + err.message, 'err');
+            });
+        }, 500);
+    }
+}
+
+/* dump 完成信号：CAP_END 是二进制帧，由 readLoop 检测到后 resolve 这个 promise。 */
+let captureEndResolve = null;
+function waitForCaptureEnd(timeoutMs) {
+    return new Promise((resolve, reject) => {
+        const timer = setTimeout(() => {
+            captureEndResolve = null;
+            reject(new Error('capture end timeout'));
+        }, timeoutMs);
+        captureEndResolve = () => {
+            clearTimeout(timer);
+            captureEndResolve = null;
+            resolve();
+        };
+    });
+}
+
+/*
+ * 把板载捕获的数据取回来。车此时已停稳，dump 期间的发送已 DMA 化。
+ * 返回样本数组；失败或未 arm 时返回空数组，调用方回退到实时流。
+ */
+async function fetchCaptureData(timeoutMs = 8000) {
+    if (!writer) {
+        return [];
+    }
+    /* 先挂上 CAP_END 等待，再发 X0——避免 dump 太快、END 帧先于 await 到达。 */
+    const ended = waitForCaptureEnd(timeoutMs);
+    try {
+        await sendAndWait('X0', (line) =>
+            line.startsWith('OK X DUMP=') || line.startsWith('ERR X'), 1500);
+    } catch (err) {
+        captureEndResolve = null;
+        return [];
+    }
+    try {
+        await ended;
+    } catch (err) {
+        log('捕获数据接收不完整，指标改用实时流', 'err');
+        return [];
+    }
+    return parser.captureSamples.slice();
+}
+
+async function finalizeSession(reason, failed = false) {
+    if (!session || session.done) {
+        return;
+    }
+    session.done = true;
+    clearTimeout(session.stopTimer);
+    clearTimeout(session.guardTimer);
+    clearTimeout(session.endTimer);
+    clearTimeout(session.stopFallbackTimer);
+
+    /* 先取捕获数据再定案：指标要基于 100 Hz 数据算才可信。 */
+    let captureSamples = [];
+    if (session.captureArmed) {
+        $('sessStatus').textContent = '正在取回板载 100 Hz 捕获数据…';
+        captureSamples = await fetchCaptureData();
+    }
+
+    const tolEntry = paramByName('ntl');
+    const run = {
+        id: ++runSeq,
+        loop: session.loop,
+        focusSide: session.focusSide,
+        focusStage: session.focusStage,
+        focusPath: session.focusPath,
+        label: session.preset.label,
+        time: new Date(),
+        excitation: session.excitation,
+        params: session.snapshot,
+        paramValues: session.paramValues,
+        amp: session.amp,
+        rateHz: session.rateHz || lastRateHz,
+        samples: parser.samples.slice(),
+        captureSamples,
+        failed,
+    };
+    /*
+     * 指标优先用捕获数据：实时流受串口带宽限制只有 20~50 Hz，低于 100 Hz 控制环，
+     * 阶跃超调峰值会落在采样点之间，算出的超调和上升时间都不可信。
+     */
+    const useCapture = captureSamples.length >= 3;
+    run.metricsSource = useCapture ? 'capture' : 'stream';
+    run.metricsRateHz = useCapture ? 100 : run.rateHz;
+    run.metrics = analyzeRun(run.loop,
+        useCapture ? captureSamples : run.samples, run.amp,
+        tolEntry ? tolEntry.value : 2);
+    run.metricsText = describeRunMetrics(run.loop, run.metrics, run.focusSide);
+    runs.unshift(run);
+    if (runs.length > 8) {
+        if (referenceRunId === runs[runs.length - 1].id) {
+            referenceRunId = null;
+        }
+        runs.pop();
+    }
+    const sourceNote = run.metricsSource === 'capture' ?
+        `板载 100Hz × ${run.captureSamples.length}` :
+        `实时流 ${run.rateHz}Hz × ${run.samples.length}`;
+    log(`=== 试验结束（${reason}）· ${sourceNote} · ${run.metricsText} ===`,
+        failed ? 'err' : 'ok');
+    $('sessStatus').textContent =
+        `上次试验：${run.focusPath || run.label} ${run.excitation}（${reason}，${sourceNote}）`;
+    $('btnSessStart').disabled = !writer;
+    $('btnSessAbort').disabled = true;
+    session = null;
+    persistRuns();
+    renderSessionResult(run);
+    renderRuns();
+}
+
+/* 试验结果卡：指标 + 与基准对比 + 前馈一键建议。 */
+function renderSessionResult(run) {
+    const box = $('sessResult');
+    box.innerHTML = '';
+    box.style.display = 'block';
+
+    const title = document.createElement('div');
+    title.innerHTML = `<b>#${run.id} ${run.focusPath || run.label} · ${run.excitation}</b> 自动指标：`;
+    box.appendChild(title);
+
+    /* 数据来源直接影响指标可信度，必须显式标注：
+       100 Hz 捕获与控制环同频，指标可信；实时流低于控制环，峰值可能被漏掉。 */
+    const source = document.createElement('div');
+    source.className = 'hint';
+    if (run.metricsSource === 'capture') {
+        source.innerHTML =
+            `<span class="chip good">板载 100 Hz 捕获 · ${run.captureSamples.length} 样本</span> ` +
+            '与控制环同频，超调与上升时间可信';
+    } else {
+        source.innerHTML =
+            `<span class="chip bad">实时流 ${run.rateHz} Hz · ${run.samples.length} 样本</span> ` +
+            '低于 100 Hz 控制环，峰值可能落在采样点之间——指标仅供参考';
+    }
+    box.appendChild(source);
+
+    const chips = document.createElement('div');
+    chips.className = 'chips';
+    for (const part of run.metricsText.split(/[；]/)) {
+        const chip = document.createElement('span');
+        chip.className = 'chip';
+        chip.textContent = part;
+        chips.appendChild(chip);
+    }
+    box.appendChild(chips);
+
+    /* 文案承诺“对比上一组”：优先手选基准，没有时自动取上一条同环路记录。 */
+    const selectedRef = runs.find((r) => r.id === referenceRunId);
+    const ref = (selectedRef && sameRunGroup(selectedRef, run)) ? selectedRef :
+        runs.find((candidate) => candidate.id !== run.id && sameRunGroup(candidate, run));
+    if (ref && ref.id !== run.id && ref.metricsText) {
+        const cmp = document.createElement('div');
+        cmp.className = 'hint';
+        cmp.textContent = `基准 #${ref.id}（${ref.params}）：${ref.metricsText}`;
+        box.appendChild(cmp);
+    }
+
+    /* 轮速环：稳态差明显且建议可算时，给一键写入的新前馈。 */
+    for (const s of ffSuggestions(run)) {
+        const row = document.createElement('div');
+        row.className = 'row';
+        row.style.marginTop = '6px';
+        const text = document.createElement('span');
+        text.className = 'hint';
+        text.textContent =
+            `${s.name} 建议 ${fmtParam(s.from)} → ${fmtParam(s.to)}` +
+            '（按稳态差比例修正前馈，适用于 ki=0）';
+        const btn = document.createElement('button');
+        btn.className = 'mini';
+        btn.textContent = `写入 ${s.name}`;
+        btn.onclick = () => {
+            const entry = paramByName(s.name);
+            if (requestParameterWrite(entry, s.to)) {
+                btn.disabled = true;
+            }
+        };
+        row.append(text, btn);
+        box.appendChild(row);
+    }
+}
+
+function ffSuggestions(run) {
+    const out = [];
+    if (run.loop !== 'wheel' || !run.metrics || run.failed ||
+        (run.focusStage && run.focusStage !== 'feedforward')) {
+        return out;
+    }
+    for (const [side, name, kiName] of [
+        ['left', 'lwff', 'lwki'], ['right', 'rwff', 'rwki'],
+    ]) {
+        const m = run.metrics[side];
+        const entry = paramByName(name);
+        const ki = run.paramValues ? run.paramValues[kiName] : null;
+        const from = run.paramValues && Number.isFinite(run.paramValues[name]) ?
+            run.paramValues[name] : null;
+        if (!m || !entry || !Number.isFinite(from) || !Number.isFinite(ki) ||
+            Math.abs(ki) > 1e-9 || m.steadyValue === null) {
+            continue;
+        }
+        const next = suggestFeedforward(from, m.target, m.steadyValue);
+        if (next !== null) {
+            out.push({
+                name: entry.name, id: entry.id, from,
+                to: Math.min(entry.max, Math.max(entry.min, next)),
+            });
+        }
+    }
+    return out;
+}
+
+function abortSession() {
+    if (!session) {
+        return;
+    }
+    stopSession('手动结束', true);
+}
+
+/* AI 分析和 CSV 导出都优先用捕获数据——采样率高 2~5 倍，结论才站得住。 */
+function runAnalysisSamples(run) {
+    return (run.captureSamples && run.captureSamples.length >= 3) ?
+        run.captureSamples : run.samples;
+}
+
+function runAiPack(run) {
+    const p = SESSIONS[run.loop];
+    const useCapture = run.metricsSource === 'capture';
+    return buildAiPack({
+        loop: run.focusPath || p.label,
+        structure: p.structure,
+        params: run.params,
+        excitation: run.excitation + (p.timed ? `（随后 ${p.stopCmd} 停止）` : ''),
+        rateHz: useCapture ? 100 : run.rateHz,
+        columnsNote: p.columnsNote +
+            (useCapture ?
+                '。数据来自板载 100 Hz 捕获，与 100 Hz 控制环同频' :
+                `。数据来自 ${run.rateHz} Hz 实时流，低于 100 Hz 控制环，峰值可能被漏采`),
+        expectation: p.expectation,
+        metricsNote: run.metricsText || undefined,
+    }, runAnalysisSamples(run));
+}
+
+function downloadText(text, filename, mime) {
+    const url = URL.createObjectURL(new Blob([text], { type: mime }));
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = filename;
+    a.click();
+    URL.revokeObjectURL(url);
+}
+
+function persistRuns() {
+    try {
+        localStorage.setItem(RUN_STORE_KEY, JSON.stringify({
+            schema: 1,
+            referenceRunId,
+            runs,
+        }));
+    } catch (err) {
+        log('试验记录存档失败：' + err.message, 'err');
+    }
+}
+
+function restoreRuns() {
+    const raw = localStorage.getItem(RUN_STORE_KEY);
+    if (!raw) return;
+    try {
+        const saved = JSON.parse(raw);
+        const restored = Array.isArray(saved) ? saved : saved.runs;
+        if (!Array.isArray(restored)) return;
+        runs = restored.slice(0, 8).filter((run) =>
+            run && Number.isFinite(run.id) && Array.isArray(run.samples)).map((run) => ({
+                ...run,
+                time: new Date(run.time),
+            }));
+        runSeq = runs.reduce((max, run) => Math.max(max, run.id), 0);
+        referenceRunId = Array.isArray(saved) ? null : saved.referenceRunId;
+        if (!runs.some((run) => run.id === referenceRunId)) referenceRunId = null;
+    } catch (err) {
+        log('试验记录存档损坏，已忽略：' + err.message, 'err');
+    }
+}
+
+function renderRuns() {
+    const box = $('runList');
+    box.innerHTML = '';
+    const visibleRuns = runs.filter(runMatchesFocus);
+    if (visibleRuns.length === 0) {
+        box.innerHTML = `<span class="hint">当前路径“${$('focusPath').textContent}”还没有试验记录。</span>`;
+        return;
+    }
+    for (const run of visibleRuns) {
+        const div = document.createElement('div');
+        div.className = 'run';
+        const info = document.createElement('span');
+        info.textContent =
+            `#${run.id} ${run.failed ? '[中止] ' : ''}${run.focusPath || run.label} · ${run.excitation} · ` +
+            `${run.time.toTimeString().slice(0, 8)} · ${run.samples.length} 样本`;
+        info.title = run.params;
+        const btnRef = document.createElement('button');
+        btnRef.className = 'mini' + (referenceRunId === run.id ? ' active' : '');
+        btnRef.textContent = referenceRunId === run.id ? '基准中' : '设基准';
+        btnRef.title = '把这次试验的曲线用虚线叠加到实时曲线上，同刻度对比两组参数';
+        btnRef.onclick = () => {
+            referenceRunId = (referenceRunId === run.id) ? null : run.id;
+            persistRuns();
+            renderRuns();
+            requestRedraw();
+        };
+        const btnCsv = document.createElement('button');
+        btnCsv.className = 'mini';
+        btnCsv.textContent = 'CSV';
+        btnCsv.onclick = () => {
+            downloadText(samplesToCsv(runAnalysisSamples(run)),
+                `run${run.id}_${run.loop}.csv`, 'text/csv');
+        };
+        const btnAi = document.createElement('button');
+        btnAi.className = 'mini';
+        btnAi.textContent = '复制AI包';
+        btnAi.onclick = async () => {
+            const text = runAiPack(run);
+            try {
+                await navigator.clipboard.writeText(text);
+                log(`试验 #${run.id} 的 AI 调参包已复制，直接粘给 AI 即可`, 'ok');
+            } catch (err) {
+                /* 剪贴板被拒绝就落盘，同样能用。 */
+                downloadText(text, `run${run.id}_${run.loop}_ai.md`, 'text/markdown');
+                log('剪贴板不可用，已改为下载 Markdown 文件', 'err');
+            }
+        };
+        div.append(info, btnRef, btnCsv, btnAi);
+        if (run.metricsText) {
+            const metrics = document.createElement('span');
+            metrics.className = 'metrics';
+            metrics.textContent = run.metricsText;
+            div.appendChild(metrics);
+        }
+        box.appendChild(div);
+    }
+}
+
+/* ---------- 遥控采集 ---------- */
+
+/*
+ * 键盘驾驶。W/S 走恒速命令（W<speed> / W0），A/D 走相对转角（T±angle）。
+ * 转向是"忙则拒绝"的动作命令，所以按键期间要跟踪 busy 状态，避免刷屏 ERR BUSY。
+ */
+const MARK_LABELS = ['直道', '弯道', '路口', '障碍', '异常'];
+let driveEnabled = false;
+let driveTurning = false;
+let currentMark = 0;
+let recording = null;      /* { startedAt, samples[], marks[] } */
+let sessions = [];         /* 已完成的录制会话 */
+let sessionSeq = 0;
+const SESSION_STORE_KEY = 'carDebugSessionsV1';
+
+function setDriveEnabled(on) {
+    driveEnabled = on && !!writer;
+    $('drivePanel').classList.toggle('armed', driveEnabled);
+    $('btnDriveMode').textContent = driveEnabled ? '停用键盘驾驶' : '启用键盘驾驶';
+    $('btnDriveMode').classList.toggle('primary', driveEnabled);
+    $('driveHint').innerHTML = driveEnabled ?
+        '键盘已接管：<kbd>W</kbd> 前进 <kbd>S</kbd> 停 <kbd>A</kbd>/<kbd>D</kbd> 转向 · <kbd>Esc</kbd> 急停' :
+        '启用后用 <kbd>W</kbd><kbd>A</kbd><kbd>S</kbd><kbd>D</kbd> 驾驶；转向是相对角命令，会等它转完再响应下一个键。';
+    if (!driveEnabled) {
+        document.querySelectorAll('.drive-key').forEach(
+            (b) => b.classList.remove('held'));
+    }
+}
+
+async function driveAction(action) {
+    if (!writer) {
+        return;
+    }
+    const speed = Math.abs(parseInt($('driveSpeed').value, 10) || 250);
+    const turn = Math.abs(parseInt($('driveTurn').value, 10) || 30);
+
+    if (action === 'forward') {
+        await send('W' + speed);
+    } else if (action === 'stop') {
+        await send('W0');
+    } else if (action === 'left' || action === 'right') {
+        /* 转向期间固件会拒绝新动作，本地先挡一层，免得刷满 ERR BUSY。 */
+        if (driveTurning) {
+            return;
+        }
+        driveTurning = true;
+        const sign = action === 'left' ? -1 : 1;
+        try {
+            await sendAndWait('T' + (sign * turn), (line) =>
+                line === 'OK' || line.startsWith('ERR'), 1200);
+        } catch (err) {
+            /* 超时不致命，放开锁让下一次按键可用。 */
+        }
+        /* 转向动作本身还要跑一会儿，靠 mode 回 IDLE/DONE 解锁更准，
+           但这里用保守延时即可——遥控场景对 50ms 级精度不敏感。 */
+        setTimeout(() => { driveTurning = false; }, 250);
+    }
+}
+
+function flashDriveKey(action) {
+    const btn = document.querySelector(`.drive-key[data-drive="${action}"]`);
+    if (!btn) {
+        return;
+    }
+    btn.classList.add('held');
+    setTimeout(() => btn.classList.remove('held'), 160);
+}
+
+/* ---------- 录制 ---------- */
+
+function renderMarkButtons() {
+    const box = $('markButtons');
+    box.innerHTML = '';
+    MARK_LABELS.forEach((label, i) => {
+        const value = i + 1;
+        const btn = document.createElement('button');
+        btn.className = 'mini' + (currentMark === value ? ' hot' : '');
+        btn.textContent = `${value} ${label}`;
+        btn.title = `按数字键 ${value} 也可切换`;
+        btn.onclick = () => setMark(currentMark === value ? 0 : value);
+        box.appendChild(btn);
+    });
+    const clear = document.createElement('button');
+    clear.className = 'mini' + (currentMark === 0 ? ' hot' : '');
+    clear.textContent = '0 无';
+    clear.onclick = () => setMark(0);
+    box.appendChild(clear);
+}
+
+function setMark(value) {
+    currentMark = value;
+    renderMarkButtons();
+    if (recording) {
+        recording.marks.push({
+            ms: latestSample() ? latestSample().ms : 0,
+            mark: value,
+            at: Date.now(),
+        });
+        log(`标记 → ${value === 0 ? '无' : MARK_LABELS[value - 1]}`, 'ok');
+    }
+}
+
+function startRecording() {
+    recording = { startedAt: Date.now(), samples: [], marks: [] };
+    $('btnRecord').textContent = '停止录制';
+    $('btnRecord').classList.remove('primary');
+    $('btnRecord').classList.add('danger');
+    log('=== 开始录制 ===', 'ok');
+    updateRecordStatus();
+}
+
+function stopRecording() {
+    if (!recording) {
+        return;
+    }
+    const summary = summarizeSession(recording.samples);
+    if (summary.count > 0) {
+        sessions.unshift({
+            id: ++sessionSeq,
+            time: new Date(recording.startedAt),
+            samples: recording.samples,
+            summary,
+        });
+        if (sessions.length > 6) {
+            sessions.pop();
+        }
+        log(`=== 录制结束 · ${summary.count} 样本 · ` +
+            `${(summary.durationMs / 1000).toFixed(1)}s · 实际 ${summary.rateHz}Hz ===`, 'ok');
+    } else {
+        log('录制结束，但没有采到样本（检查遥测频率是否为 0）', 'err');
+    }
+    recording = null;
+    $('btnRecord').textContent = '开始录制';
+    $('btnRecord').classList.add('primary');
+    $('btnRecord').classList.remove('danger');
+    updateRecordStatus();
+    persistSessions();
+    renderSessions();
+}
+
+function updateRecordStatus() {
+    const el = $('recordStatus');
+    if (!recording) {
+        el.textContent = '未录制';
+        return;
+    }
+    const summary = summarizeSession(recording.samples);
+    el.innerHTML = '<span class="rec-dot"></span>' +
+        `录制中 · ${summary.count} 样本 · ${(summary.durationMs / 1000).toFixed(1)}s` +
+        (summary.rateHz > 0 ? ` · ${summary.rateHz}Hz` : '');
+}
+
+/* 由读取循环调用：录制时把样本连同当前标记一起存下来。 */
+function captureForRecording(addedCount) {
+    if (!recording || addedCount <= 0) {
+        return;
+    }
+    const fresh = parser.samples.slice(-addedCount);
+    for (const s of fresh) {
+        recording.samples.push({ ...s, mark: currentMark });
+    }
+    updateRecordStatus();
+}
+
+function persistSessions() {
+    try {
+        /* 样本可能上万条，localStorage 有 5MB 上限；只存元数据，
+           数据本身留在内存，页面刷新后需要重新录制。 */
+        const meta = sessions.map((s) => ({
+            id: s.id, time: s.time.toISOString(), summary: s.summary,
+        }));
+        localStorage.setItem(SESSION_STORE_KEY, JSON.stringify(meta));
+    } catch (err) {
+        /* 存不下不影响使用。 */
+    }
+}
+
+function renderSessions() {
+    const box = $('sessionList');
+    box.innerHTML = '';
+    if (sessions.length === 0) {
+        box.innerHTML = '<span class="hint">还没有录制会话。</span>';
+        return;
+    }
+    for (const session of sessions) {
+        const div = document.createElement('div');
+        div.className = 'session';
+        const marks = Object.entries(session.summary.markCounts)
+            .filter(([mark]) => mark !== '0')
+            .map(([mark, n]) => `${MARK_LABELS[mark - 1] || mark}×${n}`)
+            .join(' ');
+        const info = document.createElement('span');
+        info.textContent =
+            `#${session.id} ${session.time.toTimeString().slice(0, 8)} · ` +
+            `${session.summary.count} 样本 · ` +
+            `${(session.summary.durationMs / 1000).toFixed(1)}s · ` +
+            `${session.summary.rateHz}Hz` + (marks ? ` · ${marks}` : '');
+
+        const btnCsv = document.createElement('button');
+        btnCsv.className = 'mini';
+        btnCsv.textContent = '整段 CSV';
+        btnCsv.onclick = () => downloadText(samplesToCsv(session.samples),
+            `session${session.id}.csv`, 'text/csv');
+
+        const btnSplit = document.createElement('button');
+        btnSplit.className = 'mini';
+        btnSplit.textContent = '按标记分段';
+        btnSplit.title = '每个标记段导出一个 CSV，便于按场景分类使用';
+        btnSplit.onclick = () => {
+            const segments = segmentByMark(session.samples)
+                .filter((seg) => seg.samples.length >= 5);
+            if (segments.length === 0) {
+                log('没有足够长的分段可导出', 'err');
+                return;
+            }
+            segments.forEach((seg, i) => {
+                const name = seg.mark === 0 ? 'unmarked' :
+                    (MARK_LABELS[seg.mark - 1] || `mark${seg.mark}`);
+                downloadText(samplesToCsv(seg.samples),
+                    `session${session.id}_${i + 1}_${name}.csv`, 'text/csv');
+            });
+            log(`已导出 ${segments.length} 个分段`, 'ok');
+        };
+
+        div.append(info, btnCsv, btnSplit);
+        box.appendChild(div);
+    }
+}
+
+/* ---------- 绘图 ---------- */
+
+function rebuildSeries() {
+    const cols = parser.numericColumns();
+    const box = $('series');
+    box.innerHTML = '';
+    if (cols.length === 0) {
+        box.innerHTML = '<span class="hint">当前掩码没有可画的数值列</span>';
+        return;
+    }
+    const recommended = focusedSeriesNames();
+    if (pendingFocusedSeriesSelection) {
+        /* 切换焦点时只保留推荐列；等新表头完整到齐后，把控制权交还给手动勾选。 */
+        selected = new Set(recommended.filter((column) => cols.includes(column)));
+        if (recommended.length > 0 && recommended.every((column) => cols.includes(column))) {
+            pendingFocusedSeriesSelection = false;
+        }
+    } else {
+        /* 表头重建只剔除已经消失的列，不覆盖用户手动增删的选择。 */
+        selected = new Set([...selected].filter((column) => cols.includes(column)));
+    }
+    cols.forEach((col, i) => {
+        const color = PALETTE[i % PALETTE.length];
+        const label = document.createElement('label');
+        const cb = document.createElement('input');
+        cb.type = 'checkbox';
+        cb.checked = selected.has(col);
+        cb.onchange = () => {
+            if (cb.checked) {
+                selected.add(col);
+            } else {
+                selected.delete(col);
+            }
+            requestRedraw();
+        };
+        const sw = document.createElement('span');
+        sw.className = 'sw';
+        sw.style.background = color;
+        label.append(cb, sw, document.createTextNode(col));
+        label.title = '刻度组：' + parser.unitOf(col);
+        box.appendChild(label);
+    });
+}
+
+function drawPlot() {
+    /* 超高 DPI 画布像素数会成倍放大；2 倍已足够清晰。 */
+    const dpr = Math.min(window.devicePixelRatio || 1, 2);
+    const w = plotEl.clientWidth;
+    const h = plotEl.clientHeight;
+    if (plotEl.width !== w * dpr || plotEl.height !== h * dpr) {
+        plotEl.width = w * dpr;
+        plotEl.height = h * dpr;
+    }
+    ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+    ctx.clearRect(0, 0, w, h);
+
+    const pad = { l: 46, r: 58, t: 8, b: 20 };
+    const plotW = w - pad.l - pad.r;
+    const plotH = h - pad.t - pad.b;
+
+    ctx.strokeStyle = '#20263293';
+    ctx.lineWidth = 1;
+    for (let i = 0; i <= 4; i += 1) {
+        const y = pad.t + (plotH * i) / 4;
+        ctx.beginPath();
+        ctx.moveTo(pad.l, y);
+        ctx.lineTo(pad.l + plotW, y);
+        ctx.stroke();
+    }
+
+    /* 暂停时画冻结快照，实时数据仍在后台累积。 */
+    const source = plotSnapshot || parser.samples;
+    const win = Math.max(2, parseInt($('winVal').value, 10) || 600);
+    const rawData = source.slice(-win);
+    const renderLimit = Math.max(200, Math.floor(plotW * 2));
+    const data = downsampleForPlot(rawData, renderLimit, [...selected]);
+    $('sampleCount').textContent = parser.samples.length;
+    if (rawData.length > 0 && rawData[rawData.length - 1].mode !== undefined) {
+        $('modeVal').textContent = rawData[rawData.length - 1].mode;
+    }
+    if (data.length < 2 || selected.size === 0) {
+        return;
+    }
+
+    const cols = parser.numericColumns();
+
+    /* 横轴用真实 ms 时间；ms 异常（乱序/缺失）时退回样本序号。 */
+    const baseMs = rawData[0].ms;
+    const spanMs = rawData[rawData.length - 1].ms - baseMs;
+    const timeValid = Number.isFinite(spanMs) && spanMs > 0;
+    const xOf = (i, s) => timeValid ?
+        pad.l + (plotW * (s.ms - baseMs)) / spanMs :
+        pad.l + (plotW * i) / (data.length - 1);
+
+    /* 基准试验：同一时间刻度下的虚线叠加，各自从记录起点对齐。 */
+    const refCandidate = runs.find((r) => r.id === referenceRunId);
+    const ref = refCandidate && runMatchesFocus(refCandidate) ? refCandidate : null;
+    const refRaw = (ref && ref.samples.length > 1) ? ref.samples : null;
+    const refBaseMs = refRaw ? refRaw[0].ms : 0;
+    const refVisible = (refRaw && timeValid) ? refRaw.filter((sample) =>
+        sample.ms - refBaseMs <= spanMs) : refRaw;
+    const refData = refVisible ?
+        downsampleForPlot(refVisible, renderLimit, [...selected]) : null;
+
+    /* 同量纲曲线共用一组 min/max：目标、实测和基准在同一刻度上才能比。 */
+    const groupRange = {};
+    const feedRange = (samples, col) => {
+        const group = parser.unitOf(col);
+        let range = groupRange[group];
+        if (!range) {
+            range = { min: Infinity, max: -Infinity };
+            groupRange[group] = range;
+        }
+        for (const s of samples) {
+            const v = s[col];
+            if (typeof v === 'number') {
+                if (v < range.min) { range.min = v; }
+                if (v > range.max) { range.max = v; }
+            }
+        }
+    };
+    for (const col of selected) {
+        feedRange(data, col);
+        if (refData) {
+            feedRange(refData, col);
+        }
+    }
+    for (const group of Object.keys(groupRange)) {
+        const range = groupRange[group];
+        range.span = range.max - range.min;
+        if (!(range.span > 1e-9)) {
+            range.span = 1;
+            range.min -= 0.5;
+        }
+    }
+    const yOf = (v, range) =>
+        pad.t + plotH - ((v - range.min) / range.span) * plotH;
+
+    const drawSeries = (samples, col, color, dashed, xFn) => {
+        const range = groupRange[parser.unitOf(col)];
+        if (!range || !Number.isFinite(range.min)) {
+            return;
+        }
+        ctx.strokeStyle = color;
+        ctx.lineWidth = dashed ? 1.2 : 1.5;
+        ctx.setLineDash(dashed ? [5, 4] : []);
+        ctx.globalAlpha = dashed ? 0.55 : 1;
+        ctx.beginPath();
+        let started = false;
+        for (let i = 0; i < samples.length; i += 1) {
+            const v = samples[i][col];
+            if (typeof v !== 'number') {
+                continue;
+            }
+            const x = xFn(i, samples[i]);
+            if (x === null || x > pad.l + plotW + 0.5) {
+                break;   /* 基准比本次长的尾巴不画，避免出界 */
+            }
+            const y = yOf(v, range);
+            if (started) {
+                ctx.lineTo(x, y);
+            } else {
+                ctx.moveTo(x, y);
+                started = true;
+            }
+        }
+        ctx.stroke();
+        ctx.setLineDash([]);
+        ctx.globalAlpha = 1;
+    };
+
+    /* 先画基准（虚线在底层），再画实时曲线。 */
+    if (refData && timeValid) {
+        const xRef = (i, s) =>
+            pad.l + (plotW * (s.ms - refBaseMs)) / spanMs;
+        for (const col of selected) {
+            const idx = cols.indexOf(col);
+            drawSeries(refData, col,
+                PALETTE[(idx < 0 ? 0 : idx) % PALETTE.length], true, xRef);
+        }
+    }
+    for (const col of selected) {
+        const idx = cols.indexOf(col);
+        drawSeries(data, col,
+            PALETTE[(idx < 0 ? 0 : idx) % PALETTE.length], false, xOf);
+    }
+
+    /* 纵轴刻度：第一条勾选曲线所在量纲组的 max/中值/min。 */
+    ctx.font = '10px Consolas, monospace';
+    ctx.fillStyle = '#8b93a3';
+    const first = [...selected][0];
+    const primary = groupRange[parser.unitOf(first)];
+    if (primary && Number.isFinite(primary.min)) {
+        ctx.textAlign = 'right';
+        ctx.fillText(primary.max.toFixed(1), pad.l - 5, pad.t + 9);
+        ctx.fillText((primary.min + primary.span / 2).toFixed(1),
+            pad.l - 5, pad.t + plotH / 2 + 3);
+        ctx.fillText(primary.min.toFixed(1), pad.l - 5, pad.t + plotH);
+        ctx.save();
+        ctx.translate(10, pad.t + plotH / 2);
+        ctx.rotate(-Math.PI / 2);
+        ctx.textAlign = 'center';
+        ctx.fillText(parser.unitOf(first), 0, 0);
+        ctx.restore();
+    }
+
+    /* 横轴刻度：相对起点的秒数。 */
+    if (timeValid) {
+        ctx.textAlign = 'left';
+        ctx.fillText('0s', pad.l, h - 6);
+        ctx.textAlign = 'center';
+        ctx.fillText((spanMs / 2000).toFixed(1) + 's', pad.l + plotW / 2, h - 6);
+        ctx.textAlign = 'right';
+        ctx.fillText((spanMs / 1000).toFixed(1) + 's', pad.l + plotW, h - 6);
+    }
+
+    /* 图例：右侧列名 + 最新值；有基准时注明虚线含义。 */
+    let legendY = pad.t + 4;
+    for (const col of selected) {
+        const idx = cols.indexOf(col);
+        const color = PALETTE[(idx < 0 ? 0 : idx) % PALETTE.length];
+        const last = data[data.length - 1][col];
+        ctx.fillStyle = color;
+        ctx.font = '11px Consolas, monospace';
+        ctx.textAlign = 'left';
+        ctx.fillText(col, pad.l + plotW + 6, legendY + 8);
+        ctx.fillText(typeof last === 'number' ? last.toFixed(2) : '—',
+            pad.l + plotW + 6, legendY + 20);
+        legendY += 28;
+    }
+    if (refData) {
+        ctx.fillStyle = '#8b93a3';
+        ctx.font = '10px Consolas, monospace';
+        ctx.fillText('虚线=基准#' + ref.id, pad.l + plotW + 6, h - 8);
+    }
+
+    /* 悬浮读数：最近样本的十字线 + 所有勾选列的数值。 */
+    if (hoverX !== null && hoverX >= pad.l && hoverX <= pad.l + plotW) {
+        let idx;
+        const hoverData = rawData;
+        if (timeValid) {
+            const targetMs = baseMs + ((hoverX - pad.l) / plotW) * spanMs;
+            let lo = 0;
+            let hi = hoverData.length - 1;
+            while (hi - lo > 1) {
+                const mid = (lo + hi) >> 1;
+                if (hoverData[mid].ms < targetMs) { lo = mid; } else { hi = mid; }
+            }
+            idx = (targetMs - hoverData[lo].ms <= hoverData[hi].ms - targetMs) ? lo : hi;
+        } else {
+            idx = Math.round(((hoverX - pad.l) / plotW) * (hoverData.length - 1));
+        }
+        const s = hoverData[idx];
+        const x = timeValid ?
+            pad.l + (plotW * (s.ms - baseMs)) / spanMs :
+            pad.l + (plotW * idx) / (hoverData.length - 1);
+
+        ctx.strokeStyle = '#8b93a377';
+        ctx.setLineDash([3, 3]);
+        ctx.beginPath();
+        ctx.moveTo(x, pad.t);
+        ctx.lineTo(x, pad.t + plotH);
+        ctx.stroke();
+        ctx.setLineDash([]);
+
+        const lines = [((s.ms - baseMs) / 1000).toFixed(2) + 's'];
+        for (const col of selected) {
+            const v = s[col];
+            lines.push(col + ' ' + (typeof v === 'number' ? v.toFixed(2) : '—'));
+        }
+        const boxW = 92;
+        const boxH = lines.length * 14 + 8;
+        const boxX = (x + 10 + boxW > pad.l + plotW) ? x - 10 - boxW : x + 10;
+        const boxY = pad.t + 6;
+        ctx.fillStyle = '#0b0e13e6';
+        ctx.strokeStyle = '#262d3b';
+        ctx.beginPath();
+        ctx.roundRect(boxX, boxY, boxW, boxH, 5);
+        ctx.fill();
+        ctx.stroke();
+        ctx.font = '11px Consolas, monospace';
+        ctx.textAlign = 'left';
+        ctx.fillStyle = '#8b93a3';
+        ctx.fillText(lines[0], boxX + 7, boxY + 14);
+        [...selected].forEach((col, i) => {
+            const cidx = cols.indexOf(col);
+            ctx.fillStyle = PALETTE[(cidx < 0 ? 0 : cidx) % PALETTE.length];
+            ctx.fillText(lines[i + 1], boxX + 7, boxY + 28 + i * 14);
+        });
+    }
+}
+
+/*
+ * 遥测最高可达数十 Hz，每收一行就重绘会卡死页面，所以合并到下一个渲染帧再画。
+ * 这里不用常驻的 rAF 循环——那样页面空闲时也会满帧空转，白耗 CPU 和电池。
+ * 只有真正有新数据时才排一帧，画完自然停下。暂停时数据照常累积，只是不画。
+ */
+function requestRedraw(force = false) {
+    if (plotPaused && !force) {
+        return;
+    }
+    if (needsRedraw) {
+        return;
+    }
+    needsRedraw = true;
+    const delay = Math.max(0, PLOT_MIN_INTERVAL_MS - (performance.now() - lastPlotAt));
+    const queueFrame = () => {
+        redrawTimer = null;
+        requestAnimationFrame(() => {
+            needsRedraw = false;
+            lastPlotAt = performance.now();
+            drawPlot();
+        });
+    };
+    if (delay > 1) {
+        redrawTimer = setTimeout(queueFrame, delay);
+    } else {
+        queueFrame();
+    }
+}
+
+/* ---------- 事件绑定 ---------- */
+
+$('btnConnect').onclick = connect;
+$('btnDisconnect').onclick = disconnect;
+$('btnStop').onclick = () => session ? stopSession('急停按钮', true) : emergencyStop();
+
+document.querySelectorAll('button[data-send]').forEach((btn) => {
+    btn.onclick = () => send(btn.dataset.send + $(btn.dataset.from).value);
+});
+document.querySelectorAll('button[data-cmd]').forEach((btn) => {
+    btn.onclick = () => send(btn.dataset.cmd);
+});
+
+function checkedMask() {
+    let mask = 0;
+    document.querySelectorAll('.mk:checked').forEach((cb) => {
+        mask += parseInt(cb.value, 10);
+    });
+    return mask;
+}
+
+/*
+ * 勾选字段的瞬间就把上限算出来显示，不必等一次串口往返。
+ * 本地公式与固件 Telemetry.c 相同；固件 Q 回报到达后会覆盖为权威值。
+ */
+function renderRateLimit() {
+    const mask = checkedMask();
+    const hint = $('rateLimitHint');
+    if (mask === 0) {
+        hint.textContent = '至少勾选一个字段';
+        hint.style.color = 'var(--err)';
+        return;
+    }
+    const estimate = estimateMaxRateHz(mask);
+    const row = estimateRowBytes(mask);
+    hint.style.color = '';
+    hint.textContent = `行长 ${row} B · 上限 ${estimate} Hz`;
+
+    /* 当前输入值超限就标红，不用等固件拒绝。 */
+    const desired = parseInt($('gVal').value, 10);
+    $('gVal').classList.toggle('dirty',
+        Number.isFinite(desired) && desired > estimate);
+}
+
+$('btnMask').onclick = async () => {
+    const mask = checkedMask();
+    if (mask === 0) {
+        log('掩码不能为 0，固件会返回 ERR RANGE', 'err');
+        return;
+    }
+    await send('M' + mask);
+    /* 改掩码后主动问一次固件真实上限，网页不再自己猜。 */
+    const cap = await queryCapability();
+    if (cap) {
+        $('rateLimitHint').textContent =
+            `行长 ${estimateRowBytes(mask)} B · 固件上限 ${cap.max} Hz`;
+        $('gVal').value = Math.min(
+            parseInt($('gVal').value, 10) || cap.rate, cap.max);
+        renderRateLimit();
+    }
+};
+
+$('btnMaxRate').onclick = async () => {
+    const cap = await queryCapability();
+    const limit = cap ? cap.max : estimateMaxRateHz(checkedMask());
+    $('gVal').value = limit;
+    await send('G' + limit);
+    renderRateLimit();
+};
+
+/* 事件委托：勾选框是动态生成的，绑在容器上对重建也有效。 */
+$('maskBoxes').addEventListener('change', (e) => {
+    if (e.target.classList.contains('mk')) {
+        renderRateLimit();
+    }
+});
+$('gVal').addEventListener('input', renderRateLimit);
+
+/* ---------- 遥控采集事件 ---------- */
+
+$('btnDriveMode').onclick = () => setDriveEnabled(!driveEnabled);
+$('btnRecord').onclick = () => {
+    if (recording) {
+        stopRecording();
+    } else {
+        startRecording();
+    }
+};
+document.querySelectorAll('.drive-key').forEach((btn) => {
+    btn.onclick = () => {
+        flashDriveKey(btn.dataset.drive);
+        driveAction(btn.dataset.drive);
+    };
+});
+
+/*
+ * 键盘驾驶与标记。只在启用驾驶模式后接管 WASD，避免误触；
+ * 数字键标记则在录制中始终可用，因为打标记本身没有危险。
+ */
+document.addEventListener('keydown', (e) => {
+    /* 正在输入框里打字时不接管按键。 */
+    const typing = e.target && (e.target.tagName === 'INPUT' ||
+        e.target.tagName === 'TEXTAREA' || e.target.isContentEditable);
+    if (typing) {
+        return;
+    }
+
+    if (recording && e.key >= '0' && e.key <= '5') {
+        setMark(Number(e.key));
+        e.preventDefault();
+        return;
+    }
+
+    if (!driveEnabled || e.repeat) {
+        return;
+    }
+    const action = {
+        w: 'forward', W: 'forward',
+        s: 'stop', S: 'stop',
+        a: 'left', A: 'left',
+        d: 'right', D: 'right',
+    }[e.key];
+    if (action) {
+        e.preventDefault();
+        flashDriveKey(action);
+        driveAction(action);
+    }
+});
+
+renderMarkButtons();
+renderSessions();
+$('btnFocusSeries').onclick = () => {
+    pendingFocusedSeriesSelection = true;
+    rebuildSeries();
+    requestRedraw(true);
+};
+
+$('btnParamRefresh').onclick = () => send('K?');
+$('btnParamSave').onclick = saveParamsToBrowser;
+$('btnParamApplyStored').onclick = applyStoredParams;
+$('wVal').oninput = renderWheelMapping;
+$('sessAmp').oninput = renderWheelMapping;
+document.querySelectorAll('[data-wheel-speed]').forEach((button) => {
+    button.onclick = () => {
+        $('sessAmp').value = button.dataset.wheelSpeed;
+        renderWheelMapping();
+    };
+});
+
+$('btnCalFinish').onclick = () => send('Y' + $('calTurns').value);
+$('btnOdomMark').onclick = odomMark;
+$('btnOdomCalc').onclick = odomCalc;
+
+$('btnSessStart').onclick = startSession;
+$('btnSessAbort').onclick = abortSession;
+$('btnClearRuns').onclick = () => {
+    runs = [];
+    runSeq = 0;
+    referenceRunId = null;
+    localStorage.removeItem(RUN_STORE_KEY);
+    renderRuns();
+    requestRedraw(true);
+    log('试验存档已清空', 'ok');
+};
+
+/* 拖动滑块会每像素触发一次，不节流会瞬间发出几十条命令挤满串口。 */
+function throttleServo(slider, valueEl, letter) {
+    let timer = null;
+    let pending = null;
+    slider.oninput = () => {
+        valueEl.textContent = slider.value;
+        pending = slider.value;
+        if (timer !== null) {
+            return;
+        }
+        timer = setTimeout(() => {
+            timer = null;
+            if (pending !== null) {
+                send(letter + pending);
+                pending = null;
+            }
+        }, 100);
+    };
+}
+throttleServo($('servoO'), $('servoOVal'), 'O');
+throttleServo($('servoD'), $('servoDVal'), 'D');
+
+$('btnRaw').onclick = () => {
+    send($('rawCmd').value);
+    $('rawCmd').value = '';
+};
+$('rawCmd').onkeydown = (e) => {
+    if (e.key === 'Enter') {
+        $('btnRaw').onclick();
+    }
+};
+$('btnClearTerm').onclick = () => { termEl.innerHTML = ''; };
+/* 改窗口条数要立刻看到效果，不能等下一条遥测到达才重绘。 */
+$('winVal').oninput = () => { requestRedraw(true); };
+/* 暂停 = 冻结一份快照来画；数据仍在累积，悬浮读数在暂停画面上照常可用。 */
+$('btnPause').onclick = () => {
+    plotPaused = !plotPaused;
+    plotSnapshot = plotPaused ? parser.samples.slice() : null;
+    $('btnPause').textContent = plotPaused ? '继续' : '暂停';
+    requestRedraw(true);
+};
+$('btnClear').onclick = () => {
+    parser.clear();
+    requestRedraw(true);
+};
+
+$('btnExport').onclick = () => {
+    const csv = parser.toCsv();
+    if (csv === '') {
+        log('没有数据可导出', 'err');
+        return;
+    }
+    downloadText(csv,
+        'telemetry_' + new Date().toISOString().replace(/[:.]/g, '-') + '.csv',
+        'text/csv');
+};
+
+/* 悬浮读数：跟踪鼠标画十字线，离开即清除。 */
+plotEl.addEventListener('mousemove', (e) => {
+    const rect = plotEl.getBoundingClientRect();
+    hoverX = e.clientX - rect.left;
+    requestRedraw(true);
+});
+plotEl.addEventListener('mouseleave', () => {
+    hoverX = null;
+    requestRedraw(true);
+});
+
+/* Esc 全局急停：输入框里按下也生效——急停永远优先。 */
+document.addEventListener('keydown', (e) => {
+    if (e.key === 'Escape' && writer) {
+        if (session) {
+            stopSession('Esc 急停', true);
+        } else {
+            emergencyStop();
+        }
+    }
+});
+
+window.addEventListener('resize', () => { requestRedraw(true); });
+buildMaskCheckboxes();
+setConnected(false);
+restoreRuns();
+refreshSessionInputs(true);
+renderFocusNavigation();
+applyFocusedTelemetrySelection(false);
+renderRateLimit();
+log('等待连接。浏览器需支持 Web Serial（Chrome / Edge）。');
+</script>
+</body>
+</html>

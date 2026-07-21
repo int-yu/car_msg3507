@@ -99,6 +99,8 @@ void Heading_ScaleCalibCancel(void)
 
 float Heading_GetCalibAngle(void) { return s_calibAngle; }
 
+uint8_t Heading_IsScaleCalibActive(void) { return s_calibActive; }
+
 float Heading_GetScale(void) { return s_scale; }
 
 void Heading_SetScale(float scale)
