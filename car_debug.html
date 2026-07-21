@@ -403,29 +403,14 @@ kbd {
             <span class="hint" id="rateLimitHint">上限：勾选字段后自动计算</span>
         </div>
         <div class="row" style="align-items:flex-start">
-            <label style="padding-top:2px">字段</label>
-            <div class="masks" style="flex:1">
-                <label><input type="checkbox" class="mk" value="1" checked>yaw 航向角</label>
-                <label><input type="checkbox" class="mk" value="2" checked>gray/keys 灰度按键</label>
-                <label><input type="checkbox" class="mk" value="4" checked>LD/RD 左右路程</label>
-                <label><input type="checkbox" class="mk" value="8" checked>LV/RV 左右速度</label>
-                <label><input type="checkbox" class="mk" value="16" checked>mode 运动模式</label>
-                <label><input type="checkbox" class="mk" value="32" checked>k230 视觉目标</label>
-                <label><input type="checkbox" class="mk" value="64" checked>TL/TR 目标轮速</label>
-                <label><input type="checkbox" class="mk" value="128" checked>PL/PR 输出 PWM</label>
-                <label><input type="checkbox" class="mk" value="256" checked>navT/navE 转向</label>
-                <label><input type="checkbox" class="mk" value="512" checked>lerr 巡线误差</label>
-                <label><input type="checkbox" class="mk" value="1024">LV 仅左轮速度</label>
-                <label><input type="checkbox" class="mk" value="2048">RV 仅右轮速度</label>
-                <label><input type="checkbox" class="mk" value="4096">TL 仅左目标</label>
-                <label><input type="checkbox" class="mk" value="8192">TR 仅右目标</label>
-                <label><input type="checkbox" class="mk" value="16384">PL 仅左 PWM</label>
-                <label><input type="checkbox" class="mk" value="32768">PR 仅右 PWM</label>
+            <label style="padding-top:2px">通道</label>
+            <div class="masks" id="maskBoxes" style="flex:1">
+                <!-- 由 CH_LIST 动态生成，避免与固件通道定义漂移 -->
             </div>
             <button id="btnMask" disabled>应用 M</button>
         </div>
-        <p class="hint">勾选后上限实时更新。调单轮请用「仅左/仅右」单侧字段——行长减半、可用频率翻倍。固件遥测是阻塞发送，超限会拖慢 100 Hz 主循环里的运动控制。</p>
-        <p class="hint">调 PID 时不必纠结这里：试验会自动切到本阶段的最优掩码，并用板载 100 Hz 捕获算指标。</p>
+        <p class="hint">勾选后上限实时更新。二进制帧每通道 4 字节，通道越少帧越短、频率越高。DMA 发送不阻塞主循环，全 12 通道也能 100Hz 直传。</p>
+        <p class="hint">调 PID 时不必纠结这里：试验会自动切到本阶段的最优通道，并用板载捕获算指标。</p>
     </div>
 
     <div class="panel">
@@ -461,207 +446,297 @@ kbd {
 <script>
 /* ==PARSER_BEGIN== */
 /*
- * 遥测 CSV 解析器。
+ * 二进制遥测解析器（字节流状态机）。
  *
- * 固件在掩码改变时重发一行表头 H,...，随后每行数据以 D, 开头。
- * 列的语义不是「一个掩码位一列」——gray/keys、LD/RD、LV/RV 各占两列，
- * 而 k230 只占一列却装着 valid:x:y 三个值，所以一律按表头列名逐列取值。
+ * 固件遥测已从 ASCII 改为二进制帧（见 docs/superpowers/specs/2026-07-21-二进制DMA架构-design.md）：
+ *   0xAA 0x55 | VER | TYPE | SEQ | LEN | PAYLOAD | CRC8
+ * 而命令回应（OK/ERR/K?）仍是 ASCII 文本行。两者共用同一串口，靠 0xAA 区分：
+ * 0xAA 是非 ASCII 可打印字符，绝不出现在文本里；见到 0xAA 进二进制帧解析，
+ * 否则把字节累积成文本行（遇 \n 交出）。
+ *
+ * 关键难点：二进制 PAYLOAD 里可能恰好有 0x0A(\n) 或 0xAA 字节，所以绝不能用
+ * 换行去切分二进制段——必须严格按 LEN 读满 PAYLOAD。状态机天然解决这点。
+ *
+ * 对外接口（samples/captureSamples 是 {ms,TL,...} 对象数组，columns 是列名数组）
+ * 与旧 ASCII 解析器保持一致，因此下游的曲线、指标、导出、录制全部无需改动。
  */
+const FRAME_MAGIC_0 = 0xAA;
+const FRAME_MAGIC_1 = 0x55;
+const FRAME_VERSION = 0x01;
+const FRAME_TYPE_SCHEMA = 0x30;
+const FRAME_TYPE_SAMPLE = 0x31;
+const FRAME_TYPE_CAP_META = 0x32;
+const FRAME_TYPE_CAP_SAMPLE = 0x33;
+const FRAME_TYPE_CAP_END = 0x34;
+const UNIT_NAMES = ['raw', 'mmps', 'pwm', 'deg', 'mm', 'bits'];
+
+/* CRC-8/ATM，与固件 TelemFrame_Crc8Update 完全一致。 */
+function crc8Update(crc, data) {
+    crc ^= data;
+    for (let bit = 0; bit < 8; bit += 1) {
+        crc = (crc & 0x80) ? (((crc << 1) ^ 0x07) & 0xFF) : ((crc << 1) & 0xFF);
+    }
+    return crc;
+}
+
 class TelemetryParser {
     constructor() {
-        this.buffer = '';       /* 串口数据不保证按行到达，未成行的尾巴留在这里 */
-        this.columns = [];      /* 当前表头的列名，不含前导的 H */
         this.samples = [];
         this.maxSamples = 20000;
-        this.trimBatch = 1000;  /* 分块裁剪，避免满容量后每行 shift() 搬动整个数组 */
-        /* 板载捕获（通道 B）与实时流分开保存：前者 100 Hz 与控制环同频，
-           是调参指标的可信来源；后者频率低但连续，用于监视。 */
+        this.trimBatch = 1000;
+        this.columns = [];          /* 实时流当前列名，来自 SCHEMA 帧 */
+        this.units = {};            /* 列名 → 单位码字符串 */
+        /* 板载捕获与实时流分开保存：列集和采样率可能不同。 */
         this.captureColumns = [];
+        this.captureUnits = {};
         this.captureSamples = [];
+
+        /* 字节流状态机。 */
+        this._reset();
+        this.textBuffer = '';       /* 累积中的 ASCII 文本行 */
+        this.lastSeq = null;        /* 上一帧 SEQ，用于丢帧检测 */
+        this.droppedFrames = 0;     /* CRC 失败或 SEQ 跳变累计 */
     }
 
-    /* gray 是十六进制两位（1F），其余数值列都是十进制。 */
-    static get HEX_COLUMNS() { return ['gray']; }
+    _reset() {
+        this.state = 'idle';        /* idle → magic1 → header → payload → crc */
+        this.frameType = 0;
+        this.frameSeq = 0;
+        this.frameLen = 0;
+        this.headerBytes = [];      /* VER TYPE SEQ LEN，用于算 CRC */
+        this.payload = [];
+        this.crc = 0;
+    }
 
-    /* mode 是文本，画不了图，只能显示。 */
-    static get TEXT_COLUMNS() { return ['mode']; }
-
-    /* ms 是时间戳，作为横轴使用；画成曲线只会是一条单调直线，还白占一个颜色。 */
     static get AXIS_COLUMNS() { return ['ms']; }
 
-    /* 冒号分隔的复合列，展开成多个虚拟列后才能进曲线选择器。 */
-    static get COMPOSITE_COLUMNS() {
-        return { k230: ['k230_valid', 'k230_x', 'k230_y'] };
+    /* 单位码 → 量纲分组名。同组曲线共享纵轴缩放，目标 vs 实测才能直接对比。
+       gray(bits) 与 lerr(raw) 各自独立归一化（组名用列名，互不共享）。 */
+    unitOf(column) {
+        const unit = this.units[column] || this.captureUnits[column];
+        if (unit === 'mmps' || unit === 'pwm' || unit === 'deg' || unit === 'mm') {
+            return unit;
+        }
+        return column;   /* raw/bits 或未知：各自独立 */
     }
 
-    /* 列 → 量纲分组。同组曲线共享纵轴缩放，目标 vs 实测才能直接对比；
-       不在表里的列各自独立归一化（组名就是列名自己）。 */
-    static get UNIT_GROUPS() {
-        return {
-            LV: 'mmps', RV: 'mmps', TL: 'mmps', TR: 'mmps',
-            PL: 'pwm', PR: 'pwm',
-            yaw: 'deg', navT: 'deg', navE: 'deg',
-            LD: 'mm', RD: 'mm',
-        };
-    }
-
+    /* 静态版保留给早期无实例上下文的调用；优先用实例方法 unitOf。 */
     static unitOf(column) {
-        return TelemetryParser.UNIT_GROUPS[column] || column;
+        const g = { LV: 'mmps', RV: 'mmps', TL: 'mmps', TR: 'mmps',
+            PL: 'pwm', PR: 'pwm', yaw: 'deg', navE: 'deg', navT: 'deg',
+            LD: 'mm', RD: 'mm' };
+        return g[column] || column;
     }
 
-    /* 展开复合列后，实际可画图的列名清单。 */
     numericColumns() {
-        const composite = TelemetryParser.COMPOSITE_COLUMNS;
-        const text = TelemetryParser.TEXT_COLUMNS;
-        const axis = TelemetryParser.AXIS_COLUMNS;
-        const out = [];
-        for (const col of this.columns) {
-            if (composite[col]) {
-                out.push(...composite[col]);
-            } else if (!text.includes(col) && !axis.includes(col)) {
-                out.push(col);
-            }
-        }
-        return out;
+        return this.columns.filter(
+            (col) => !TelemetryParser.AXIS_COLUMNS.includes(col));
     }
 
-    /*
-     * 喂入一段原始文本。返回 { textLines, headerChanged }：
-     * textLines 是本次收到的非遥测行（OK/ERR 等），供终端显示。
-     */
-    feed(text) {
-        this.buffer += text;
-        const textLines = [];
-        let headerChanged = false;
-        let samplesAdded = 0;
-        let captureStarted = false;
-        let captureAdded = 0;
-
-        /* \r\n 和 \n 都要能拆；固件用 \r\n，但转发链路上可能被规整过。 */
-        const lines = this.buffer.split(/\r?\n/);
-        this.buffer = lines.pop();   /* 最后一段没有换行符，是半截行，留待下次拼接 */
-
-        for (const raw of lines) {
-            const line = raw.trim();
-            if (line === '') {
-                continue;
-            }
-            if (line.startsWith('H,')) {
-                this.columns = line.slice(2).split(',');
-                /* 列定义变了，旧样本的列对不上，只能丢弃。 */
-                this.samples = [];
-                headerChanged = true;
-            } else if (line.startsWith('D,')) {
-                const sample = this._parseRow(line);
-                if (sample !== null) {
-                    this.samples.push(sample);
-                    samplesAdded += 1;
-                    if (this.samples.length > this.maxSamples) {
-                        this.samples.splice(0, Math.min(this.trimBatch,
-                            this.samples.length - 1));
-                    }
-                }
-            } else if (line.startsWith('CH,')) {
-                /* 捕获 dump 的表头：与实时流分开存，两者列集和采样率都不同。 */
-                this.captureColumns = line.slice(3).split(',');
-                this.captureSamples = [];
-                captureStarted = true;
-            } else if (line.startsWith('C,')) {
-                const sample = this._parseCaptureRow(line);
-                if (sample !== null) {
-                    this.captureSamples.push(sample);
-                    captureAdded += 1;
-                }
-            } else {
-                textLines.push(line);
-            }
-        }
-        return {
-            textLines, headerChanged, samplesAdded,
-            captureStarted, captureAdded,
-        };
-    }
-
-    /* 捕获行全是十进制数值，没有复合列和十六进制列，解析比实时流简单。 */
-    _parseCaptureRow(line) {
-        const values = line.slice(2).split(',');
-        if (this.captureColumns.length === 0 ||
-            values.length !== this.captureColumns.length) {
-            return null;
-        }
-        const sample = {};
-        for (let i = 0; i < this.captureColumns.length; i += 1) {
-            const n = Number(values[i]);
-            if (!Number.isFinite(n)) {
-                return null;
-            }
-            sample[this.captureColumns[i]] = n;
-        }
-        return sample;
-    }
-
-    /* 捕获数据可画图的列（去掉时间轴列）。 */
     captureNumericColumns() {
         return this.captureColumns.filter(
             (col) => !TelemetryParser.AXIS_COLUMNS.includes(col));
     }
 
-    clearCapture() {
-        this.captureSamples = [];
-        this.captureColumns = [];
-    }
+    /*
+     * 喂入一段字节（Uint8Array 或 number[]）。返回 { textLines, schemaChanged,
+     * samplesAdded, captureStarted, captureAdded, captureEnded }。
+     */
+    feed(bytes) {
+        const textLines = [];
+        let schemaChanged = false;
+        let samplesAdded = 0;
+        let captureStarted = false;
+        let captureAdded = 0;
+        let captureEnded = false;
 
-    /* 返回 null 表示这一行不可信，整行丢弃。 */
-    _parseRow(line) {
-        const values = line.slice(2).split(',');
-        /* 列数对不上多半是掉电重连或掩码切换瞬间的残行，不要勉强解析。 */
-        if (this.columns.length === 0 || values.length !== this.columns.length) {
-            return null;
+        for (let i = 0; i < bytes.length; i += 1) {
+            const b = bytes[i] & 0xFF;
+
+            if (this.state === 'idle') {
+                if (b === FRAME_MAGIC_0) {
+                    this.state = 'magic1';
+                } else {
+                    this._feedTextByte(b, textLines);
+                }
+                continue;
+            }
+            if (this.state === 'magic1') {
+                if (b === FRAME_MAGIC_1) {
+                    this.state = 'header';
+                    this.headerBytes = [];
+                } else if (b === FRAME_MAGIC_0) {
+                    /* 连续两个 0xAA：留在 magic1 等下一个字节。 */
+                } else {
+                    /* 不是帧头，0xAA 与这个字节都回退成文本。 */
+                    this._feedTextByte(FRAME_MAGIC_0, textLines);
+                    this._feedTextByte(b, textLines);
+                    this.state = 'idle';
+                }
+                continue;
+            }
+            if (this.state === 'header') {
+                this.headerBytes.push(b);
+                if (this.headerBytes.length === 4) {
+                    const [ver, type, seq, len] = this.headerBytes;
+                    if (ver !== FRAME_VERSION) {
+                        this.droppedFrames += 1;
+                        this._reset();
+                        continue;
+                    }
+                    this.frameType = type;
+                    this.frameSeq = seq;
+                    this.frameLen = len;
+                    this.crc = 0;
+                    for (const hb of this.headerBytes) {
+                        this.crc = crc8Update(this.crc, hb);
+                    }
+                    this.payload = [];
+                    this.state = (len === 0) ? 'crc' : 'payload';
+                }
+                continue;
+            }
+            if (this.state === 'payload') {
+                this.payload.push(b);
+                this.crc = crc8Update(this.crc, b);
+                if (this.payload.length >= this.frameLen) {
+                    this.state = 'crc';
+                }
+                continue;
+            }
+            if (this.state === 'crc') {
+                if (b === this.crc) {
+                    const r = this._handleFrame();
+                    schemaChanged = schemaChanged || r.schemaChanged;
+                    samplesAdded += r.samplesAdded;
+                    captureStarted = captureStarted || r.captureStarted;
+                    captureAdded += r.captureAdded;
+                    captureEnded = captureEnded || r.captureEnded;
+                } else {
+                    this.droppedFrames += 1;
+                }
+                this._reset();
+                continue;
+            }
         }
 
-        const composite = TelemetryParser.COMPOSITE_COLUMNS;
-        const hex = TelemetryParser.HEX_COLUMNS;
-        const text = TelemetryParser.TEXT_COLUMNS;
-        const sample = {};
+        return {
+            textLines, schemaChanged, samplesAdded,
+            captureStarted, captureAdded, captureEnded,
+        };
+    }
 
-        for (let i = 0; i < this.columns.length; i += 1) {
-            const col = this.columns[i];
-            const value = values[i];
-
-            if (composite[col]) {
-                const names = composite[col];
-                const parts = value.split(':');
-                if (parts.length !== names.length || parts.some((part) => part.trim() === '')) {
-                    return null;
-                }
-                for (let j = 0; j < names.length; j += 1) {
-                    const n = Number(parts[j]);
-                    if (!Number.isFinite(n)) {
-                        return null;
-                    }
-                    sample[names[j]] = n;
-                }
-            } else if (text.includes(col)) {
-                sample[col] = value;
-            } else if (hex.includes(col)) {
-                if (!/^[0-9a-f]+$/i.test(value)) {
-                    return null;
-                }
-                const n = parseInt(value, 16);
-                if (!Number.isFinite(n)) {
-                    return null;
-                }
-                sample[col] = n;
-            } else {
-                if (value.trim() === '') {
-                    return null;
-                }
-                const n = Number(value);
-                if (!Number.isFinite(n)) {
-                    return null;
-                }
-                sample[col] = n;
+    _feedTextByte(b, textLines) {
+        if (b === 0x0A) {            /* \n 结束一行 */
+            const line = this.textBuffer.replace(/\r$/, '');
+            if (line !== '') {
+                textLines.push(line);
             }
+            this.textBuffer = '';
+        } else if (b >= 0x09 && b < 0x7F) {
+            this.textBuffer += String.fromCharCode(b);
+            /* 防御：命令回应异常长时不无限增长。 */
+            if (this.textBuffer.length > 512) {
+                this.textBuffer = this.textBuffer.slice(-256);
+            }
+        }
+        /* 其余不可打印字节丢弃：文本流里不该出现。 */
+    }
+
+    _handleFrame() {
+        const out = {
+            schemaChanged: false, samplesAdded: 0,
+            captureStarted: false, captureAdded: 0, captureEnded: false,
+        };
+
+        /* SEQ 跳变检测（仅对样本类帧，schema/meta/end 不算数据丢失）。 */
+        if (this.lastSeq !== null &&
+            ((this.lastSeq + 1) & 0xFF) !== this.frameSeq) {
+            this.droppedFrames += 1;
+        }
+        this.lastSeq = this.frameSeq;
+
+        if (this.frameType === FRAME_TYPE_SCHEMA) {
+            const parsed = this._parseSchema();
+            if (parsed) {
+                this.columns = parsed.columns;
+                this.units = parsed.units;
+                this.samples = [];   /* 列定义变了，旧样本对不上。 */
+                out.schemaChanged = true;
+            }
+        } else if (this.frameType === FRAME_TYPE_SAMPLE) {
+            const sample = this._parseSample(this.columns);
+            if (sample) {
+                this.samples.push(sample);
+                out.samplesAdded = 1;
+                if (this.samples.length > this.maxSamples) {
+                    this.samples.splice(0, Math.min(this.trimBatch,
+                        this.samples.length - 1));
+                }
+            }
+        } else if (this.frameType === FRAME_TYPE_CAP_META) {
+            const parsed = this._parseSchema();
+            if (parsed) {
+                this.captureColumns = parsed.columns;
+                this.captureUnits = parsed.units;
+                this.captureSamples = [];
+                out.captureStarted = true;
+            }
+        } else if (this.frameType === FRAME_TYPE_CAP_SAMPLE) {
+            const sample = this._parseSample(this.captureColumns);
+            if (sample) {
+                this.captureSamples.push(sample);
+                out.captureAdded = 1;
+            }
+        } else if (this.frameType === FRAME_TYPE_CAP_END) {
+            out.captureEnded = true;
+        }
+        return out;
+    }
+
+    /* SCHEMA/CAP_META payload：mask(u16) + 每通道 {nameLen(u8), name[], unit(u8)}。 */
+    _parseSchema() {
+        const p = this.payload;
+        if (p.length < 2) {
+            return null;
+        }
+        const columns = ['ms'];
+        const units = { ms: 'ms' };
+        let offset = 2;   /* 跳过 mask（列序由帧本身给出，掩码仅供参考） */
+        while (offset < p.length) {
+            const nameLen = p[offset];
+            offset += 1;
+            if (offset + nameLen + 1 > p.length) {
+                return null;   /* 长度自洽性检查 */
+            }
+            let name = '';
+            for (let k = 0; k < nameLen; k += 1) {
+                name += String.fromCharCode(p[offset + k]);
+            }
+            offset += nameLen;
+            const unitCode = p[offset];
+            offset += 1;
+            columns.push(name);
+            units[name] = UNIT_NAMES[unitCode] || 'raw';
+        }
+        return { columns, units };
+    }
+
+    /* SAMPLE payload：ms(u32) + 各通道 float32，小端。列名由 schema 提供。 */
+    _parseSample(columns) {
+        const p = this.payload;
+        const dataCols = columns.length - 1;   /* 去掉 ms */
+        if (dataCols < 0 || p.length !== 4 + dataCols * 4) {
+            return null;   /* 长度与列数不符，多半是错帧，整帧丢弃。 */
+        }
+        const view = new DataView(new Uint8Array(p).buffer);
+        const sample = { ms: view.getUint32(0, true) };
+        for (let c = 0; c < dataCols; c += 1) {
+            const v = view.getFloat32(4 + c * 4, true);
+            if (!Number.isFinite(v)) {
+                return null;
+            }
+            sample[columns[c + 1]] = v;
         }
         return sample;
     }
@@ -670,7 +745,12 @@ class TelemetryParser {
         this.samples = [];
     }
 
-    /* 导出时把当前样本还原成标准 CSV（复合列已展开，比原始格式更好用）。 */
+    clearCapture() {
+        this.captureSamples = [];
+        this.captureColumns = [];
+        this.captureUnits = {};
+    }
+
     toCsv() {
         return samplesToCsv(this.samples);
     }
@@ -740,43 +820,33 @@ function parseCapabilityReply(line) {
  * 用途有二：一是老固件没有 Q 命令时兜底；二是勾选字段的瞬间就能显示预估上限，
  * 不必等一个串口往返。数值应与固件 Q 回报一致，不一致说明两边失配。
  */
-const TELEMETRY_FIELD_BYTES = [
-    [0x01, 11], [0x02, 8], [0x04, 20], [0x08, 20], [0x10, 9],
-    [0x20, 16], [0x40, 20], [0x80, 12], [0x100, 22], [0x200, 6],
-    [0x400, 10], [0x800, 10], [0x1000, 10], [0x2000, 10],
-    [0x4000, 6], [0x8000, 6],
-];
 const TELEMETRY_BAUD = 115200;
-const TELEMETRY_BLOCKING_PERCENT = 20;
+/* DMA 后不再阻塞主循环，带宽预算从旧 20% 放宽到 70%，与固件 Telemetry.c 一致。 */
+const TELEMETRY_BANDWIDTH_PERCENT = 70;
 const TELEMETRY_RATE_HARD_LIMIT = 100;
 
-function estimateRowBytes(mask) {
-    let bytes = 14;   /* 'D,' + 最长 10 位 ms + '\r\n' */
-    for (const [bit, width] of TELEMETRY_FIELD_BYTES) {
-        if ((mask & bit) !== 0) {
-            bytes += width;
-        }
-    }
-    return bytes;
-}
-
-function estimateMaxRateHz(mask) {
-    const bytesPerSecond = TELEMETRY_BAUD / 10;   /* 8N1 每字节 10 位时 */
-    const rate = Math.floor(
-        (bytesPerSecond * TELEMETRY_BLOCKING_PERCENT) /
-        (estimateRowBytes(mask) * 100));
-    return Math.max(1, Math.min(TELEMETRY_RATE_HARD_LIMIT, rate));
-}
-
-/* 捕获通道数（用于自查是否超过固件 CAPTURE_MAX_CHANNELS）。 */
+/* 通道数：12 位里被置位的个数。 */
 function countCaptureChannels(mask) {
     let count = 0;
-    for (let bit = 1; bit <= 0x100; bit <<= 1) {
+    for (let bit = 1; bit <= 0x800; bit <<= 1) {
         if ((mask & bit) !== 0) {
             count += 1;
         }
     }
     return count;
+}
+
+/* 二进制 SAMPLE 帧字节数 = 帧开销(7) + payload(ms:4 + 通道数×4)，与固件一致。 */
+function estimateRowBytes(mask) {
+    return 7 + 4 + countCaptureChannels(mask) * 4;
+}
+
+function estimateMaxRateHz(mask) {
+    const bytesPerSecond = TELEMETRY_BAUD / 10;   /* 8N1 每字节 10 位时 */
+    const rate = Math.floor(
+        (bytesPerSecond * TELEMETRY_BANDWIDTH_PERCENT) /
+        (estimateRowBytes(mask) * 100));
+    return Math.max(1, Math.min(TELEMETRY_RATE_HARD_LIMIT, rate));
 }
 
 /*
@@ -1265,42 +1335,65 @@ const PALETTE = ['#4da3ff', '#46c17a', '#e0a13c', '#e05c5c', '#a97ee0', '#3fc4c4
 
 /* 各调参试验的预设：掩码只留相关字段换高频，激励与收尾命令成对。
  * 频率按固件动态上限（20% 带宽）预先算好，改固件常量后需同步。 */
+/* 统一 12 通道位定义，与固件 TELEMETRY_CH_*（= CAPTURE_CH_*）完全一致。
+   二进制架构后实时流与捕获共用同一套通道，掩码语义统一。
+   必须定义在 SESSIONS / TUNING_FOCUS 之前——const 不提升，早引用会 TDZ 报错。 */
+const CH = {
+    TL: 0x0001, LV: 0x0002, PL: 0x0004,
+    TR: 0x0008, RV: 0x0010, PR: 0x0020,
+    yaw: 0x0040, navE: 0x0080, lerr: 0x0100,
+    gray: 0x0200, LD: 0x0400, RD: 0x0800,
+};
+const CH_ALL = 0x0FFF;
+/* 捕获别名，保留旧引用可读性；与实时流同一套位。 */
+const CAPTURE_CH = CH;
+/* 固件 CAPTURE_MAX_CHANNELS；超出会被固件拒绝，网页先自查给出清晰提示。 */
+const CAPTURE_MAX_CHANNELS = 8;
+/* 每通道在遥测帧里的名字，供列名/单位/checkbox 生成。位序即帧列序。 */
+const CH_LIST = [
+    ['TL', 'mmps'], ['LV', 'mmps'], ['PL', 'pwm'],
+    ['TR', 'mmps'], ['RV', 'mmps'], ['PR', 'pwm'],
+    ['yaw', 'deg'], ['navE', 'deg'], ['lerr', 'raw'],
+    ['gray', 'bits'], ['LD', 'mm'], ['RD', 'mm'],
+];
+
 const SESSIONS = {
     wheel: {
-        label: '轮速 PI', mask: 0x10 | 0x08 | 0x40 | 0x80, rate: 30,
+        /* 二进制后不再有 mode/单侧字段之分，一律用 12 通道位。捕获与实时流同掩码。 */
+        label: '轮速 PI', mask: CH.TL | CH.LV | CH.PL | CH.TR | CH.RV | CH.PR,
         ampLabel: '目标mm/s', ampDefault: 300, timed: true, durDefault: 8,
         excite: (amp) => 'W' + amp, stopCmd: 'W0',
         params: ['lwkp', 'lwki', 'lwil', 'lwff', 'lwsf',
                  'rwkp', 'rwki', 'rwil', 'rwff', 'rwsf'],
         structure: '左右目标轮速 -> 左 PI(lwkp,lwki,lwil)+左前馈(lwff×v+lwsf×sign)，右 PI(rwkp,rwki,rwil)+右前馈(rwff×v+rwsf×sign) -> 各自 PWM(±1000)；测量为编码器轮速 mm/s，控制周期 10ms',
-        columnsNote: 'TL/TR=左右目标轮速mm/s，LV/RV=左右实测轮速mm/s，PL/PR=左右输出PWM，mode=运动模式',
+        columnsNote: 'TL/TR=左右目标轮速mm/s，LV/RV=左右实测轮速mm/s，PL/PR=左右输出PWM',
         expectation: '快速跟踪阶跃、无持续振荡、稳态误差接近 0、PWM 不长期饱和',
     },
     straight: {
-        label: '直线航向 PD', mask: 0x01 | 0x04 | 0x08 | 0x10 | 0x40 | 0x80, rate: 20,
+        label: '直线航向 PD', mask: CH.yaw | CH.LD | CH.RD | CH.LV | CH.RV | CH.TL,
         ampLabel: '距离mm', ampDefault: 500, timed: false,
         excite: (amp) => 'F' + amp, stopCmd: 'C0',
         params: ['skp', 'skd', 'sac', 'lwkp', 'lwki', 'rwkp', 'rwki'],
         structure: '定距梯形速度规划(sac 加速度) + 航向 PD(skp,skd) 差速修正 -> 双轮速度环；yaw 应全程保持起始值',
-        columnsNote: 'yaw=航向角°，LD/RD=左右累计路程mm，TL/TR=目标轮速，LV/RV=实测轮速，PL/PR=输出PWM',
+        columnsNote: 'yaw=航向角°，LD/RD=左右累计路程mm，TL=目标轮速，LV/RV=实测轮速',
         expectation: 'yaw 波动小且无低频摆动，LD/RD 停在目标距离误差 ±5mm 内',
     },
     turn: {
-        label: '转向', mask: 0x01 | 0x08 | 0x10 | 0x40 | 0x100, rate: 20,
+        label: '转向', mask: CH.navE | CH.yaw | CH.LV | CH.RV,
         ampLabel: '角度°', ampDefault: 90, timed: false,
         excite: (amp) => 'T' + amp, stopCmd: 'C0',
         params: ['nvx', 'nvn', 'nsa', 'ntl'],
         structure: '角误差按剩余角生成带低速区的双轮反向速度(上限nvx,下限nvn,减速角nsa)，进入 ±ntl 且轮速归零后连续 3 拍判完成',
-        columnsNote: 'navT=目标角°，navE=角误差°，yaw=当前角°，TL/TR=目标轮速(反向)，LV/RV=实测轮速',
+        columnsNote: 'navE=角误差°，yaw=当前角°，LV/RV=左右实测轮速(反向)',
         expectation: 'navE 单调收敛到 0 附近、无过冲往复，到角时间短',
     },
     line: {
-        label: '巡线', mask: 0x02 | 0x08 | 0x10 | 0x40 | 0x200, rate: 25,
+        label: '巡线', mask: CH.lerr | CH.LV | CH.RV | CH.yaw,
         ampLabel: '巡线mm/s', ampDefault: 200, timed: true, durDefault: 5,
         excite: (amp) => 'N' + amp, stopCmd: 'N0',
         params: ['lra', 'lkd', 'lwkp', 'lwki', 'rwkp', 'rwki'],
         structure: '五路灰度离散权重(-6..+6)×lra 生成差速 + lkd×权重变化率阻尼 -> 双轮速度环；lerr 为权重误差',
-        columnsNote: 'lerr=巡线权重误差，gray=灰度位图(十进制化)，TL/TR=目标轮速，LV/RV=实测轮速',
+        columnsNote: 'lerr=巡线权重误差，LV/RV=左右实测轮速，yaw=航向角',
         expectation: 'lerr 在 0 附近小幅摆动不发散，弧线段无大幅蛇形，速度不明显掉落',
     },
 };
@@ -1310,14 +1403,6 @@ const SESSIONS = {
  * 完整参数仍在“全部 K 参数”里；这里故意只返回当前真正要动的 1~4 项。
  */
 /* 板载捕获通道位，必须与 Application/Debug/Capture.h 的 CAPTURE_CH_* 一致。 */
-const CAPTURE_CH = {
-    TL: 0x0001, LV: 0x0002, PL: 0x0004,
-    TR: 0x0008, RV: 0x0010, PR: 0x0020,
-    yaw: 0x0040, navE: 0x0080, lerr: 0x0100,
-};
-/* 固件 CAPTURE_MAX_CHANNELS；超出会被固件拒绝，网页先自查给出清晰提示。 */
-const CAPTURE_MAX_CHANNELS = 4;
-
 const TUNING_FOCUS = {
     wheel: {
         label: '轮速', defaultSide: 'left', defaultStage: 'p',
@@ -1328,12 +1413,11 @@ const TUNING_FOCUS = {
             verify: { label: '④ 验证', help: '不摆参数输入框，只采集完整曲线和左右对比指标。' },
         },
         sides: {
-            /* mask 是实时流掩码（只传本侧，行长减半、频率翻倍）；
-               capture 是板载捕获通道（100 Hz 无损，指标以它为准）。 */
+            /* 二进制后实时流与捕获共用同一掩码（mask）：捕获通道即遥测通道。
+               调左轮只订 TL/LV/PL 三通道，帧最短、频率最高、捕获也最省 RAM。 */
             left: {
                 label: '左轮', series: ['TL', 'LV', 'PL'],
-                mask: 0x1000 | 0x400 | 0x4000 | 0x10,   /* TL LV PL mode */
-                capture: CAPTURE_CH.TL | CAPTURE_CH.LV | CAPTURE_CH.PL,
+                mask: CH.TL | CH.LV | CH.PL,
                 params: {
                     feedforward: ['lwff', 'lwsf'], p: ['lwkp'],
                     i: ['lwki', 'lwil'], verify: [],
@@ -1341,8 +1425,7 @@ const TUNING_FOCUS = {
             },
             right: {
                 label: '右轮', series: ['TR', 'RV', 'PR'],
-                mask: 0x2000 | 0x800 | 0x8000 | 0x10,   /* TR RV PR mode */
-                capture: CAPTURE_CH.TR | CAPTURE_CH.RV | CAPTURE_CH.PR,
+                mask: CH.TR | CH.RV | CH.PR,
                 params: {
                     feedforward: ['rwff', 'rwsf'], p: ['rwkp'],
                     i: ['rwki', 'rwil'], verify: [],
@@ -1350,10 +1433,7 @@ const TUNING_FOCUS = {
             },
             both: {
                 label: '双轮对比', series: ['TL', 'LV', 'TR', 'RV', 'PL', 'PR'],
-                mask: 0x40 | 0x08 | 0x80 | 0x10,        /* 成对 TL/TR LV/RV PL/PR mode */
-                /* 捕获上限 4 通道，双轮对比取两侧的目标与实测，舍去 PWM。 */
-                capture: CAPTURE_CH.TL | CAPTURE_CH.LV |
-                         CAPTURE_CH.TR | CAPTURE_CH.RV,
+                mask: CH.TL | CH.LV | CH.PL | CH.TR | CH.RV | CH.PR,
                 params: {
                     feedforward: ['lwff', 'lwsf', 'rwff', 'rwsf'],
                     p: ['lwkp', 'rwkp'],
@@ -1372,11 +1452,8 @@ const TUNING_FOCUS = {
         },
         sides: {
             main: {
-                label: '整车', series: ['yaw', 'TL', 'TR', 'LV', 'RV', 'PL', 'PR'],
-                mask: 0x01 | 0x04 | 0x08 | 0x10 | 0x40 | 0x80,
-                /* 直线调的是航向保持，yaw 是主角；轮速留目标与实测各一侧对照。 */
-                capture: CAPTURE_CH.yaw | CAPTURE_CH.LV |
-                         CAPTURE_CH.RV | CAPTURE_CH.TL,
+                label: '整车', series: ['yaw', 'TL', 'LV', 'RV', 'LD', 'RD'],
+                mask: CH.yaw | CH.LD | CH.RD | CH.LV | CH.RV | CH.TL,
                 params: {
                     heading: ['skp', 'skd'], profile: ['sac'],
                     wheel: ['lwkp', 'lwki', 'rwkp', 'rwki'], verify: [],
@@ -1389,15 +1466,12 @@ const TUNING_FOCUS = {
         stages: {
             speed: { label: '① 速度', help: '只调转向最高/最低速度 nvx / nvn。' },
             approach: { label: '② 收尾', help: '只调减速角 nsa 与到角容差 ntl。' },
-            verify: { label: '③ 验证', help: '只看目标角、角误差、航向和轮速。' },
+            verify: { label: '③ 验证', help: '只看角误差、航向和轮速。' },
         },
         sides: {
             main: {
-                label: '整车', series: ['navT', 'navE', 'yaw', 'TL', 'TR', 'LV', 'RV'],
-                mask: 0x01 | 0x08 | 0x10 | 0x40 | 0x100,
-                /* 转向看角误差收敛，navE 是主角；轮速反向，取两侧实测。 */
-                capture: CAPTURE_CH.navE | CAPTURE_CH.yaw |
-                         CAPTURE_CH.LV | CAPTURE_CH.RV,
+                label: '整车', series: ['navE', 'yaw', 'LV', 'RV'],
+                mask: CH.navE | CH.yaw | CH.LV | CH.RV,
                 params: {
                     speed: ['nvx', 'nvn'], approach: ['nsa', 'ntl'], verify: [],
                 },
@@ -1409,15 +1483,12 @@ const TUNING_FOCUS = {
         stages: {
             line: { label: '① 巡线', help: '只调巡线比例 lra 与阻尼 lkd。' },
             wheel: { label: '② 轮速关联', help: '需要时查看左右轮速度环核心增益。' },
-            verify: { label: '③ 验证', help: '只看 lerr、目标轮速和实测轮速。' },
+            verify: { label: '③ 验证', help: '只看 lerr 与左右实测轮速。' },
         },
         sides: {
             main: {
-                label: '整车', series: ['lerr', 'TL', 'TR', 'LV', 'RV'],
-                mask: 0x02 | 0x08 | 0x10 | 0x40 | 0x200,
-                /* 巡线看 lerr 摆动与左右轮速差，目标速度由 lerr 推得可省。 */
-                capture: CAPTURE_CH.lerr | CAPTURE_CH.LV |
-                         CAPTURE_CH.RV | CAPTURE_CH.yaw,
+                label: '整车', series: ['lerr', 'LV', 'RV', 'yaw'],
+                mask: CH.lerr | CH.LV | CH.RV | CH.yaw,
                 params: {
                     line: ['lra', 'lkd'],
                     wheel: ['lwkp', 'lwki', 'rwkp', 'rwki'], verify: [],
@@ -1600,7 +1671,6 @@ async function connect() {
 }
 
 async function readLoop() {
-    const decoder = new TextDecoder();
     reader = port.readable.getReader();
     try {
         while (!readAbort) {
@@ -1608,10 +1678,14 @@ async function readLoop() {
             if (done) {
                 break;
             }
-            const { textLines, headerChanged, samplesAdded, captureAdded } =
-                parser.feed(decoder.decode(value, { stream: true }));
+            /* value 是 Uint8Array，直接喂字节流状态机——不再 TextDecoder，
+               因为二进制帧里的 0x0A/0xAA 字节不能当文本换行处理。 */
+            const {
+                textLines, schemaChanged, samplesAdded,
+                captureAdded, captureEnded,
+            } = parser.feed(value);
             textLines.forEach(handleTextLine);
-            if (headerChanged) {
+            if (schemaChanged) {
                 rebuildSeries();
             }
             if (session && samplesAdded > 0) {
@@ -1619,11 +1693,14 @@ async function readLoop() {
             }
             captureForRecording(samplesAdded);
             if (captureAdded > 0) {
-                /* dump 可能有上千行，进度只在状态栏更新，不触发重绘。 */
+                /* dump 可能有上千帧，进度只在状态栏更新，不触发重绘。 */
                 $('sessStatus').textContent =
                     `正在取回板载 100 Hz 捕获数据… ${parser.captureSamples.length} 样本`;
             }
-            if (headerChanged || samplesAdded > 0) {
+            if (captureEnded && captureEndResolve) {
+                captureEndResolve();
+            }
+            if (schemaChanged || samplesAdded > 0) {
                 requestRedraw();
             }
         }
@@ -2082,11 +2159,9 @@ function odomCalc() {
 function sessionPreset() {
     const base = SESSIONS[focusState.loop];
     const side = focusSideConfig();
-    return {
-        ...base,
-        mask: side && side.mask ? side.mask : base.mask,
-        capture: side && side.capture ? side.capture : 0,
-    };
+    /* 二进制后实时流与捕获同掩码：capture 通道 = 遥测通道，不再分两套。 */
+    const mask = (side && side.mask) ? side.mask : base.mask;
+    return { ...base, mask, capture: mask };
 }
 
 /* 固件按当前掩码算出的安全上限，由 Q 命令回报；未查询过时为 null。 */
@@ -2135,6 +2210,21 @@ function focusedParamNames() {
 
 function focusedSeriesNames() {
     return [...focusSideConfig().series];
+}
+
+/* 从 CH_LIST 生成通道勾选框，值即通道位——与固件通道定义单一来源，不会漂移。 */
+function buildMaskCheckboxes() {
+    const box = $('maskBoxes');
+    box.innerHTML = '';
+    for (const [name, unit] of CH_LIST) {
+        const label = document.createElement('label');
+        const cb = document.createElement('input');
+        cb.type = 'checkbox';
+        cb.className = 'mk';
+        cb.value = String(CH[name]);
+        label.append(cb, document.createTextNode(`${name} (${unit})`));
+        box.appendChild(label);
+    }
 }
 
 function syncMaskCheckboxes(mask) {
@@ -2472,22 +2562,13 @@ async function startSession() {
     session.guardTimer = setTimeout(() => { stopSession('超时安全收尾', true); }, 30000);
 }
 
-const TELEMETRY_MASK_COLUMNS = [
-    [0x01, ['yaw']], [0x02, ['gray', 'keys']], [0x04, ['LD', 'RD']],
-    [0x08, ['LV', 'RV']], [0x10, ['mode']], [0x20, ['k230']],
-    [0x40, ['TL', 'TR']], [0x80, ['PL', 'PR']],
-    [0x100, ['navT', 'navE']], [0x200, ['lerr']],
-    /* 单侧字段（固件 0x400~0x8000）：调单轮时只传该侧，行长减半。
-       列序必须与 Telemetry.c 中的输出顺序一致。 */
-    [0x400, ['LV']], [0x800, ['RV']],
-    [0x1000, ['TL']], [0x2000, ['TR']],
-    [0x4000, ['PL']], [0x8000, ['PR']],
-];
-
+/* 掩码 → 预期列名（按 12 通道位序）。用于等待 schema 帧到达确认切换成功。 */
 function expectedColumnsForMask(mask) {
     const columns = ['ms'];
-    for (const [bit, names] of TELEMETRY_MASK_COLUMNS) {
-        if ((mask & bit) !== 0) columns.push(...names);
+    for (const [name] of CH_LIST) {
+        if ((mask & CH[name]) !== 0) {
+            columns.push(name);
+        }
     }
     return columns;
 }
@@ -2500,7 +2581,7 @@ function waitForTelemetryColumns(expected, timeoutMs = 1600) {
             if (parser.columns.join(',') === wanted) {
                 resolve();
             } else if (performance.now() >= deadline) {
-                reject(new Error(`未收到预期表头 H,${wanted}`));
+                reject(new Error(`未收到预期 schema：${wanted}`));
             } else {
                 setTimeout(poll, 20);
             }
@@ -2600,23 +2681,41 @@ function watchSession() {
     }
 }
 
+/* dump 完成信号：CAP_END 是二进制帧，由 readLoop 检测到后 resolve 这个 promise。 */
+let captureEndResolve = null;
+function waitForCaptureEnd(timeoutMs) {
+    return new Promise((resolve, reject) => {
+        const timer = setTimeout(() => {
+            captureEndResolve = null;
+            reject(new Error('capture end timeout'));
+        }, timeoutMs);
+        captureEndResolve = () => {
+            clearTimeout(timer);
+            captureEndResolve = null;
+            resolve();
+        };
+    });
+}
+
 /*
- * 把板载捕获的数据取回来。车此时已停稳，dump 期间的阻塞发送无害。
+ * 把板载捕获的数据取回来。车此时已停稳，dump 期间的发送已 DMA 化。
  * 返回样本数组；失败或未 arm 时返回空数组，调用方回退到实时流。
  */
 async function fetchCaptureData(timeoutMs = 8000) {
     if (!writer) {
         return [];
     }
+    /* 先挂上 CAP_END 等待，再发 X0——避免 dump 太快、END 帧先于 await 到达。 */
+    const ended = waitForCaptureEnd(timeoutMs);
     try {
         await sendAndWait('X0', (line) =>
             line.startsWith('OK X DUMP=') || line.startsWith('ERR X'), 1500);
     } catch (err) {
+        captureEndResolve = null;
         return [];
     }
-    /* dump 是分批的（固件每拍吐 4 行），等 END 标记而不是等固定时长。 */
     try {
-        await waitForReply((line) => line.startsWith('OK X END='), timeoutMs);
+        await ended;
     } catch (err) {
         log('捕获数据接收不完整，指标改用实时流', 'err');
         return [];
@@ -3189,7 +3288,7 @@ function rebuildSeries() {
         sw.className = 'sw';
         sw.style.background = color;
         label.append(cb, sw, document.createTextNode(col));
-        label.title = '刻度组：' + TelemetryParser.unitOf(col);
+        label.title = '刻度组：' + parser.unitOf(col);
         box.appendChild(label);
     });
 }
@@ -3257,7 +3356,7 @@ function drawPlot() {
     /* 同量纲曲线共用一组 min/max：目标、实测和基准在同一刻度上才能比。 */
     const groupRange = {};
     const feedRange = (samples, col) => {
-        const group = TelemetryParser.unitOf(col);
+        const group = parser.unitOf(col);
         let range = groupRange[group];
         if (!range) {
             range = { min: Infinity, max: -Infinity };
@@ -3289,7 +3388,7 @@ function drawPlot() {
         pad.t + plotH - ((v - range.min) / range.span) * plotH;
 
     const drawSeries = (samples, col, color, dashed, xFn) => {
-        const range = groupRange[TelemetryParser.unitOf(col)];
+        const range = groupRange[parser.unitOf(col)];
         if (!range || !Number.isFinite(range.min)) {
             return;
         }
@@ -3341,7 +3440,7 @@ function drawPlot() {
     ctx.font = '10px Consolas, monospace';
     ctx.fillStyle = '#8b93a3';
     const first = [...selected][0];
-    const primary = groupRange[TelemetryParser.unitOf(first)];
+    const primary = groupRange[parser.unitOf(first)];
     if (primary && Number.isFinite(primary.min)) {
         ctx.textAlign = 'right';
         ctx.fillText(primary.max.toFixed(1), pad.l - 5, pad.t + 9);
@@ -3352,7 +3451,7 @@ function drawPlot() {
         ctx.translate(10, pad.t + plotH / 2);
         ctx.rotate(-Math.PI / 2);
         ctx.textAlign = 'center';
-        ctx.fillText(TelemetryParser.unitOf(first), 0, 0);
+        ctx.fillText(parser.unitOf(first), 0, 0);
         ctx.restore();
     }
 
@@ -3541,8 +3640,11 @@ $('btnMaxRate').onclick = async () => {
     renderRateLimit();
 };
 
-document.querySelectorAll('.mk').forEach((cb) => {
-    cb.addEventListener('change', renderRateLimit);
+/* 事件委托：勾选框是动态生成的，绑在容器上对重建也有效。 */
+$('maskBoxes').addEventListener('change', (e) => {
+    if (e.target.classList.contains('mk')) {
+        renderRateLimit();
+    }
 });
 $('gVal').addEventListener('input', renderRateLimit);
 
@@ -3713,6 +3815,7 @@ document.addEventListener('keydown', (e) => {
 });
 
 window.addEventListener('resize', () => { requestRedraw(true); });
+buildMaskCheckboxes();
 setConnected(false);
 restoreRuns();
 refreshSessionInputs(true);

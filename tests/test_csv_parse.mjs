@@ -60,184 +60,20 @@ function eq(actual, expected, what) {
     }
 }
 
-const FULL_HEADER = 'H,ms,yaw,gray,keys,LD,RD,LV,RV,mode,k230\r\n';
-const FULL_ROW = 'D,12340,-91.25,1F,0,1203.4,1198.7,0.0,0.0,IDLE,1:-123:-45\r\n';
+console.log('遥测纯函数测试（帧解析见 test_binary_frame.mjs）\n');
 
-console.log('遥测 CSV 解析器测试\n');
+/* 二进制协议后，帧解析类测试全部迁到 tests/test_binary_frame.mjs。
+   本文件只保留与协议无关的纯函数测试（指标、AI 包、会话、频率估算）。 */
 
-check('1. 正常表头+数据行，各列取值正确', () => {
-    const p = new TelemetryParser();
-    p.feed(FULL_HEADER);
-    p.feed(FULL_ROW);
-    eq(p.samples.length, 1, 'samples 条数');
-    const s = p.samples[0];
-    eq(s.ms, 12340, 'ms');
-    eq(s.yaw, -91.25, 'yaw');
-    eq(s.keys, 0, 'keys');
-    eq(s.LD, 1203.4, 'LD');
-    eq(s.RD, 1198.7, 'RD');
-    eq(s.LV, 0, 'LV');
-    eq(s.RV, 0, 'RV');
-    eq(s.mode, 'IDLE', 'mode');
-});
-
-check('2. 数据行列数少于表头 → 丢弃', () => {
-    const p = new TelemetryParser();
-    p.feed(FULL_HEADER);
-    p.feed('D,12340,-91.25,1F\r\n');
-    eq(p.samples.length, 0, 'samples 条数');
-});
-
-check('3. 数据行列数多于表头 → 丢弃', () => {
-    const p = new TelemetryParser();
-    p.feed(FULL_HEADER);
-    p.feed('D,12340,-91.25,1F,0,1203.4,1198.7,0.0,0.0,IDLE,1:-123:-45,999\r\n');
-    eq(p.samples.length, 0, 'samples 条数');
-});
-
-check('4. 中途收到新表头（掩码切换）→ 清空旧 samples 并按新表头解析', () => {
-    const p = new TelemetryParser();
-    p.feed(FULL_HEADER);
-    p.feed(FULL_ROW);
-    eq(p.samples.length, 1, '切换前 samples 条数');
-
-    p.feed('H,ms,yaw\r\n');
-    eq(p.samples.length, 0, '切换后应清空');
-
-    p.feed('D,500,12.50\r\n');
-    eq(p.samples.length, 1, '新表头下 samples 条数');
-    eq(p.samples[0].yaw, 12.5, '新表头下 yaw');
-    eq(p.samples[0].LD, undefined, '旧列不应残留');
-});
-
-check('5. OK/ERR 行不进 samples，只进文本行', () => {
-    const p = new TelemetryParser();
-    p.feed(FULL_HEADER);
-    const out = p.feed('OK G=20\r\nERR RANGE MAX=23\r\n');
-    eq(p.samples.length, 0, 'samples 条数');
-    eq(out.textLines.length, 2, '文本行条数');
-    eq(out.textLines[0], 'OK G=20', '第一条文本行');
-    eq(out.textLines[1], 'ERR RANGE MAX=23', '第二条文本行');
-});
-
-check('6. 半截行先缓冲，拼接完整后才解析', () => {
-    const p = new TelemetryParser();
-    p.feed(FULL_HEADER);
-    p.feed('D,12340,-91.25,1F,0,1203.4,');
-    eq(p.samples.length, 0, '半截行不应产生 sample');
-    p.feed('1198.7,0.0,0.0,IDLE,1:-123:-45\r\n');
-    eq(p.samples.length, 1, '拼接后应产生 sample');
-    eq(p.samples[0].RD, 1198.7, '拼接后 RD');
-});
-
-check('7. \\r\\n 与 \\n 两种换行都能拆', () => {
-    const p = new TelemetryParser();
-    p.feed('H,ms,yaw\n');
-    p.feed('D,100,1.00\nD,200,2.00\r\n');
-    eq(p.samples.length, 2, 'samples 条数');
-    eq(p.samples[0].yaw, 1, '第一条 yaw');
-    eq(p.samples[1].yaw, 2, '第二条 yaw');
-});
-
-check('8. gray 列按十六进制解析（1F → 31，不是 1）', () => {
-    const p = new TelemetryParser();
-    p.feed(FULL_HEADER);
-    p.feed(FULL_ROW);
-    eq(p.samples[0].gray, 31, 'gray');
-});
-
-check('9. k230 列展开为三个虚拟列', () => {
-    const p = new TelemetryParser();
-    p.feed(FULL_HEADER);
-    p.feed(FULL_ROW);
-    const s = p.samples[0];
-    eq(s.k230_valid, 1, 'k230_valid');
-    eq(s.k230_x, -123, 'k230_x');
-    eq(s.k230_y, -45, 'k230_y');
-    eq(s.k230, undefined, '原始复合列不应保留');
-});
-
-check('10. k230 为 0:0:0 时也能正确展开', () => {
-    const p = new TelemetryParser();
-    p.feed(FULL_HEADER);
-    p.feed('D,1,0.00,00,0,0.0,0.0,0.0,0.0,IDLE,0:0:0\r\n');
-    const s = p.samples[0];
-    eq(s.k230_valid, 0, 'k230_valid');
-    eq(s.k230_x, 0, 'k230_x');
-    eq(s.k230_y, 0, 'k230_y');
-});
-
-/* 以下两条不在需求清单里，但同属解析器最容易出错的地方，一并锁住。 */
-
-check('11. k230 分段数不为 3 的畸形行 → 整行丢弃', () => {
-    const p = new TelemetryParser();
-    p.feed(FULL_HEADER);
-    p.feed('D,12340,-91.25,1F,0,1203.4,1198.7,0.0,0.0,IDLE,1:-123\r\n');
-    eq(p.samples.length, 0, 'samples 条数');
-});
-
-check('12. 曲线选择器只列数值列：排除文本列 mode 和横轴列 ms', () => {
-    const p = new TelemetryParser();
-    p.feed(FULL_HEADER);
-    const numeric = p.numericColumns();
-    eq(numeric.includes('mode'), false, 'mode 是文本，不应可画图');
-    eq(numeric.includes('ms'), false, 'ms 是横轴，画出来只是单调直线');
-    eq(numeric.includes('k230'), false, '复合原始列不应可画图');
-    eq(numeric.includes('k230_x'), true, 'k230_x 应可画图');
-    eq(numeric.includes('yaw'), true, 'yaw 应可画图');
-    eq(numeric.includes('gray'), true, 'gray 应可画图');
-});
-
-check('13. gray 为非法十六进制 → 整行丢弃', () => {
-    const p = new TelemetryParser();
-    p.feed(FULL_HEADER);
-    p.feed('D,12340,-91.25,GG,0,1203.4,1198.7,0.0,0.0,IDLE,1:-123:-45\r\n');
-    eq(p.samples.length, 0, 'samples 条数');
-});
-
-check('14. 还没收到任何表头就来了数据行 → 整行丢弃', () => {
-    const p = new TelemetryParser();
-    const out = p.feed('D,12340,-91.25,1F\r\n');
-    eq(p.samples.length, 0, 'samples 条数');
-    eq(out.textLines.length, 0, '数据行不该混进终端文本');
-});
-
-check('15. 导出 CSV 仍保留 ms 与 mode（只是不画图，不是不记录）', () => {
-    const p = new TelemetryParser();
-    p.feed(FULL_HEADER);
-    p.feed(FULL_ROW);
-    const csv = p.toCsv();
-    const head = csv.split('\n')[0].split(',');
-    eq(head.includes('ms'), true, '导出应含 ms');
-    eq(head.includes('mode'), true, '导出应含 mode');
-    eq(head.includes('k230_x'), true, '导出应含展开后的 k230_x');
-    eq(csv.split('\n')[1], '12340,-91.25,31,0,1203.4,1198.7,0,0,IDLE,1,-123,-45', '数据行内容');
-});
-
-/* ---- 遥测调参升级（分支 update-遥测）新增行为 ---- */
-
-check('16. 新调参列 TL/TR、PL/PR、navT/navE、lerr 正常解析', () => {
-    const p = new TelemetryParser();
-    p.feed('H,ms,LV,RV,mode,TL,TR,PL,PR,navT,navE,lerr\r\n');
-    p.feed('D,100,198.5,201.0,SPEED,200.0,200.0,412,-388,90.00,-1.25,-3.0\r\n');
-    eq(p.samples.length, 1, 'samples 条数');
-    const s = p.samples[0];
-    eq(s.TL, 200, 'TL');
-    eq(s.PR, -388, 'PR');
-    eq(s.navT, 90, 'navT');
-    eq(s.navE, -1.25, 'navE');
-    eq(s.lerr, -3, 'lerr');
-    eq(s.mode, 'SPEED', 'mode 支持新模式文本');
-});
-
-check('17. unitOf 量纲分组：目标与实测同组，未知列自成一组', () => {
+check('17. 静态 unitOf 兜底量纲分组（无 schema 上下文时）', () => {
+    /* 实例方法 unitOf 用 schema 单位码，见 test_binary_frame.mjs；
+       静态版是无实例时的兜底，按已知列名给量纲。 */
     eq(TelemetryParser.unitOf('LV'), 'mmps', 'LV');
     eq(TelemetryParser.unitOf('TL'), 'mmps', 'TL 与 LV 同组才能同刻度对比');
     eq(TelemetryParser.unitOf('PL'), 'pwm', 'PL');
     eq(TelemetryParser.unitOf('yaw'), 'deg', 'yaw');
-    eq(TelemetryParser.unitOf('navT'), 'deg', 'navT 与 yaw 同组');
+    eq(TelemetryParser.unitOf('navE'), 'deg', 'navE 与 yaw 同组');
     eq(TelemetryParser.unitOf('lerr'), 'lerr', '未知列自成一组');
-    eq(TelemetryParser.unitOf('k230_x'), 'k230_x', '复合虚拟列自成一组');
 });
 
 check('18. buildAiPack 包含参数、结构说明与完整 CSV 数据', () => {
@@ -264,8 +100,8 @@ check('18. buildAiPack 包含参数、结构说明与完整 CSV 数据', () => {
 
 check('19. samplesToCsv 与 toCsv 输出一致', () => {
     const p = new TelemetryParser();
-    p.feed(FULL_HEADER);
-    p.feed(FULL_ROW);
+    /* 直接塞样本，绕开帧解析（帧解析在 test_binary_frame.mjs 测）。 */
+    p.samples = [{ ms: 0, TL: 300, LV: 12.5 }, { ms: 10, TL: 300, LV: 40 }];
     eq(p.toCsv(), samplesToCsv(p.samples), '两个入口共用一份实现');
 });
 
@@ -372,12 +208,7 @@ check('29. AI 包携带自动指标行（可选字段，不给不出现）', () 
 
 /* ---- 精测、保护与绘图降载 ---- */
 
-check('30. feed 回报新增样本数，纯文本不触发曲线重绘', () => {
-    const p = new TelemetryParser();
-    eq(p.feed('OK G=20\r\n').samplesAdded, 0, '纯文本新增样本数');
-    p.feed('H,ms,LV\r\n');
-    eq(p.feed('D,10,1.5\r\nD,20,2.5\r\n').samplesAdded, 2, '两行数据');
-});
+/* 帧解析行为已迁至 tests/test_binary_frame.mjs，此处不再重复。 */
 
 check('31. 绘图抽样限制点数并保留首尾与窄尖峰', () => {
     const samples = Array.from({ length: 1000 }, (_, i) => ({
@@ -407,48 +238,7 @@ check('32. 轮速稳态统计分别计算均值、标准差、MAE 与 PWM', () =
     eq(m.maxAbsPwm, 170, '最大绝对 PWM');
 });
 
-/* ---- 板载捕获与自适应频率（数据平台重构）---- */
-
-check('33. 捕获 dump 与实时流分开解析，互不污染', () => {
-    const p = new TelemetryParser();
-    p.feed('H,ms,LV,mode\r\n');
-    p.feed('D,100,120.5,SPEED\r\n');
-    /* 捕获表头到达时，实时流样本不应被清空。 */
-    const r = p.feed('CH,ms,TL,LV,PL\r\n');
-    eq(r.captureStarted, true, '应报告捕获开始');
-    eq(p.samples.length, 1, '实时流样本不受影响');
-
-    const r2 = p.feed('C,0,300.0,0.0,120\r\nC,10,300.0,45.2,180\r\n');
-    eq(r2.captureAdded, 2, '应报告新增捕获样本数');
-    eq(p.captureSamples.length, 2, '捕获样本数');
-    eq(p.captureSamples[1].ms, 10, '捕获时间戳');
-    eq(p.captureSamples[1].LV, 45.2, '捕获实测值');
-    eq(p.captureSamples[0].TL, 300, '捕获目标值');
-});
-
-check('34. 捕获行列数不符与半截行按同样规则丢弃/缓冲', () => {
-    const p = new TelemetryParser();
-    p.feed('CH,ms,TL,LV\r\n');
-    p.feed('C,0,300.0\r\n');            /* 少一列 */
-    eq(p.captureSamples.length, 0, '列数不足应丢弃');
-    p.feed('C,10,300.0,50.0,999\r\n');  /* 多一列 */
-    eq(p.captureSamples.length, 0, '列数超出应丢弃');
-    p.feed('C,20,300.0,');
-    eq(p.captureSamples.length, 0, '半截行先缓冲');
-    p.feed('60.5\r\n');
-    eq(p.captureSamples.length, 1, '拼接后成行');
-    eq(p.captureSamples[0].LV, 60.5, '拼接后的值');
-});
-
-check('35. 捕获列表排除时间轴列，且可单独清空', () => {
-    const p = new TelemetryParser();
-    p.feed('CH,ms,TL,LV,PL\r\n');
-    p.feed('C,0,300,0,120\r\n');
-    eq(p.captureNumericColumns().join(','), 'TL,LV,PL', '可画图的捕获列');
-    p.clearCapture();
-    eq(p.captureSamples.length, 0, '清空捕获样本');
-    eq(p.captureColumns.length, 0, '清空捕获列定义');
-});
+/* ---- 自适应频率（捕获帧解析在 test_binary_frame.mjs）---- */
 
 check('36. parseCapabilityReply 解析 Q 回应，非 Q 行返回 null', () => {
     const full = parseCapabilityReply(
@@ -470,36 +260,32 @@ check('36. parseCapabilityReply 解析 Q 回应，非 Q 行返回 null', () => {
     eq(parseCapabilityReply(undefined), null, 'undefined');
 });
 
-check('37. 本地频率估算与固件公式一致（行长与上限）', () => {
-    /* 固件 Telemetry.c：基座 14 B，各字段宽度见 EstimateRowBytes。 */
-    eq(estimateRowBytes(0), 14, '空掩码只有行基座');
-    eq(estimateRowBytes(0x01), 25, 'yaw 单字段行长');
-    /* 全部 16 位字段。 */
-    const allBytes = estimateRowBytes(0xFFFF);
-    eq(allBytes, 14 + 11 + 8 + 20 + 20 + 9 + 16 + 20 + 12 + 22 + 6
-        + 10 + 10 + 10 + 10 + 6 + 6, '全字段行长');
-
-    /* 上限公式：(11520 × 20) / (行长 × 100)，夹到 1..100。 */
-    eq(estimateMaxRateHz(0x01), 92, '只开 yaw 可达 92 Hz');
-    eq(estimateMaxRateHz(0xFFFF) <= 14, true, '全字段不超过 14 Hz');
-    eq(estimateMaxRateHz(0xFFFF) >= 1, true, '上限不小于 1');
+check('37. 二进制帧字节数与固件公式一致（帧开销 + ms + 通道×4）', () => {
+    /* 固件 Telemetry.c：SAMPLE 帧 = 帧开销 7 + payload(ms:4 + 通道数×4)。 */
+    eq(estimateRowBytes(0), 11, '空掩码：7 开销 + 4 ms');
+    eq(estimateRowBytes(0x01), 15, '单通道：+4 字节');
+    eq(estimateRowBytes(0x03), 19, '双通道：+8 字节');
+    /* 全 12 通道：7 + 4 + 12×4 = 59。 */
+    eq(estimateRowBytes(0x0FFF), 7 + 4 + 12 * 4, '全 12 通道帧长');
 });
 
-check('38. 单侧掩码的可用频率显著高于成对掩码', () => {
-    /* 左轮单侧：TL(0x1000) + LV(0x400) + PL(0x4000) + mode(0x10) */
-    const single = estimateMaxRateHz(0x1000 | 0x400 | 0x4000 | 0x10);
-    /* 成对：TL/TR(0x40) + LV/RV(0x08) + PL/PR(0x80) + mode(0x10) */
-    const paired = estimateMaxRateHz(0x40 | 0x08 | 0x80 | 0x10);
-    eq(single > paired, true, `单侧 ${single}Hz 应高于成对 ${paired}Hz`);
-    eq(single >= paired * 1.5, true,
-        `单侧提升不足：${single}Hz vs ${paired}Hz`);
+check('38. DMA 二进制后单通道可达远超控制环的频率', () => {
+    /* 上限公式：(11520 × 70) / (帧长 × 100)，夹到 1..100。 */
+    const single = estimateMaxRateHz(0x01);      /* 15 字节 */
+    const all = estimateMaxRateHz(0x0FFF);       /* 59 字节 */
+    eq(single, 100, '单通道达到硬上限 100Hz（DMA 后带宽绰绰有余）');
+    eq(all >= 100, true, '全 12 通道也能到 100Hz（59B×100Hz 远小于带宽）');
+    /* 通道越少帧越短、可用频率越高（未夹紧时）。 */
+    eq(estimateRowBytes(0x01) < estimateRowBytes(0x0FFF), true,
+        '通道越少帧越短');
 });
 
-check('39. 捕获通道计数用于自查是否超过固件 4 通道上限', () => {
+check('39. 通道计数覆盖全 12 位（自查是否超过固件 8 通道捕获上限）', () => {
     eq(countCaptureChannels(0), 0, '空掩码');
     eq(countCaptureChannels(0x0001 | 0x0002 | 0x0004), 3, '三通道');
-    eq(countCaptureChannels(0x0001 | 0x0002 | 0x0004 | 0x0008), 4, '四通道');
-    eq(countCaptureChannels(0x01FF), 9, '全部九通道（超限，应被拒绝）');
+    eq(countCaptureChannels(0x0FFF), 12, '全 12 通道');
+    /* 捕获上限 8：9 通道以上应被固件拒绝，网页先自查。 */
+    eq(countCaptureChannels(0x01FF), 9, '9 通道（超捕获上限）');
 });
 
 check('40. AI 包在使用捕获数据时明确标注采样率与同频事实', () => {

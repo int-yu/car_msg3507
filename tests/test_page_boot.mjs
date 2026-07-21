@@ -106,6 +106,7 @@ function buildEnvironment() {
         },
         querySelectorAll: () => [],
         querySelector: () => null,
+        createTextNode: (text) => ({ nodeType: 3, textContent: String(text) }),
         addEventListener(type, fn) { (documentListeners[type] ||= []).push(fn); },
         body: makeElement('body'),
         activeElement: null,
