@@ -97,6 +97,7 @@ uint8_t App_Update(App_UpdateContext_t *context)
 
     Heading_Update(context->dt);
     Odometry_Update(elapsedTicks);
+    Gimbal_Update(context->dt);
 
     keyMask = Key_GetPressedMask();
     context->pressedKeys = keyMask;
@@ -117,6 +118,7 @@ uint8_t App_Update(App_UpdateContext_t *context)
     {
         MotionManager_Stop();
         Motor_StopAll();
+        (void)Gimbal_Disable();
     }
 
     MotionManager_Update(context->dt);
