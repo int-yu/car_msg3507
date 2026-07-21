@@ -4,38 +4,28 @@
 #include <stdint.h>
 
 /*
- * 板载高速捕获（通道 B）。
+ * 板载高速捕获（可选的超长/零丢包录制缓冲）。
  *
- * 为什么需要它：主循环是 100 Hz，而 UART 实时流受阻塞发送限制只能跑到
- * 14~57 Hz，低于控制环频率。用低于控制环的采样率去测阶跃响应，超调峰值
- * 会落在采样点之间，算出来的指标不可信。本模块在捕获期间一个字节都不发
- * 串口，只把每个控制拍的数据写进 RAM，动作结束、车停稳之后再整体 dump，
- * 因此能拿到与控制环同频（100 Hz）且零阻塞的无损数据。
+ * 二进制 + DMA 后，实时流本身就能以远超控制环的速率无损直传，因此捕获不再是
+ * 调参的必需品，而是两种场景的补充：① 想录得比串口实时率更久（通道少时单通道
+ * 可达 26 秒）；② 想要绝对零丢包（防 Web Serial 偶发丢包）。捕获期间一个字节都
+ * 不发串口，动作结束、车停稳后再整体 dump（此时阻塞无害，且已 DMA 化）。
+ *
+ * 存储为可变长度二进制：每样本 = ms(u32) + 各选中通道 float32，通道数可变。
+ * dump 发二进制帧 CAP_META / CAP_SAMPLE / CAP_END（见 TelemFrame.h）。
+ * 通道定义与掩码语义与 Telemetry 完全共用（TELEMETRY_CH_*）。
  *
  * 用法：Capture_Arm(掩码) 选通道并进入待触发 -> 运动命令自动 Capture_Trigger()
  * -> 每拍 Capture_Update() 写一帧 -> 动作结束后 Capture_StartDump() ->
- * 每拍 Capture_DumpNext() 吐若干行，直到 Capture_GetState() 回到 IDLE。
+ * 每拍 Capture_DumpNext() 吐若干帧，直到 Capture_GetState() 回到 IDLE。
  */
 
-/* 同时最多记录的通道数。4 通道 = 20 字节/样本 = 1024 样本 = 10.2 秒 @100 Hz。
- * 放宽这个值会按比例缩短可录时长，通道多到一定程度就该改用实时流了。 */
-#define CAPTURE_MAX_CHANNELS 4U
+/* 同时最多记录的通道数。与 Telemetry 的 12 通道一致；通道越少可录越久：
+ * 单通道 8B/样本 -> 24KB 可存约 30 秒；6 通道约 7 秒。 */
+#define CAPTURE_MAX_CHANNELS 8U
 
-/* 捕获缓冲字节数。SRAM 共 32 KB，当前固件仅用约 3.5 KB；取 20 KB 后
- * 仍为栈和后续功能留出约 9 KB 余量。 */
-#define CAPTURE_BUFFER_BYTES 20480U
-
-/* 通道位定义。位序即 dump 时的列序，一经发布不得重排，只能在尾部追加。 */
-#define CAPTURE_CH_TL   0x0001U /* 左轮目标速度 mm/s */
-#define CAPTURE_CH_LV   0x0002U /* 左轮实测速度 mm/s */
-#define CAPTURE_CH_PL   0x0004U /* 左轮输出 PWM */
-#define CAPTURE_CH_TR   0x0008U /* 右轮目标速度 mm/s */
-#define CAPTURE_CH_RV   0x0010U /* 右轮实测速度 mm/s */
-#define CAPTURE_CH_PR   0x0020U /* 右轮输出 PWM */
-#define CAPTURE_CH_YAW  0x0040U /* 连续累计航向角 度 */
-#define CAPTURE_CH_NAVE 0x0080U /* 转向角误差 度 */
-#define CAPTURE_CH_LERR 0x0100U /* 巡线权重误差 */
-#define CAPTURE_CH_ALL  0x01FFU
+/* 捕获缓冲字节数。SRAM 32 KB，固件其余约 3.5 KB；取 24 KB 仍留约 4 KB 给栈。 */
+#define CAPTURE_BUFFER_BYTES 24576U
 
 typedef enum
 {

@@ -1,40 +1,16 @@
 #include "Application/Debug/Capture.h"
-#include "Application/Control/MotionLine.h"
-#include "Application/Control/MotionWheel.h"
-#include "Application/Control/Nav.h"
-#include "Application/State/Heading.h"
-#include "Application/State/Odometry.h"
+#include "Application/Debug/TelemFrame.h"
+#include "Application/Debug/Telemetry.h"
 #include "Hardware/Comms/Serial.h"
+#include <string.h>
 
 /* 每样本 = 时间戳 + 各通道 float32。 */
 #define CAPTURE_SAMPLE_BYTES(channels) \
     (sizeof(uint32_t) + ((uint32_t)(channels) * sizeof(float)))
 
-/* 一次 DumpNext 输出的行数。dump 时车已停稳，阻塞发送不影响控制，
- * 但仍分批进行，避免单次占用主循环几百毫秒导致看门狗或串口溢出。 */
-#define CAPTURE_DUMP_ROWS_PER_TICK 4U
-
-typedef struct
-{
-    uint16_t bit;
-    const char *name;
-} Capture_ChannelInfo_t;
-
-/* 顺序必须与 CAPTURE_CH_* 的位序一致：写入和 dump 都按这张表遍历。 */
-static const Capture_ChannelInfo_t s_channels[] = {
-    { CAPTURE_CH_TL,   "TL"   },
-    { CAPTURE_CH_LV,   "LV"   },
-    { CAPTURE_CH_PL,   "PL"   },
-    { CAPTURE_CH_TR,   "TR"   },
-    { CAPTURE_CH_RV,   "RV"   },
-    { CAPTURE_CH_PR,   "PR"   },
-    { CAPTURE_CH_YAW,  "yaw"  },
-    { CAPTURE_CH_NAVE, "navE" },
-    { CAPTURE_CH_LERR, "lerr" },
-};
-
-#define CAPTURE_CHANNEL_COUNT \
-    (sizeof(s_channels) / sizeof(s_channels[0]))
+/* 一次 DumpNext 发送的样本帧数。dump 时车已停稳，且 TX 已 DMA 化，
+ * 但仍分批避免一次性把上千帧塞满 TX 缓冲导致丢弃。 */
+#define CAPTURE_DUMP_FRAMES_PER_TICK 8U
 
 static uint8_t s_buffer[CAPTURE_BUFFER_BYTES];
 static Capture_State_t s_state;
@@ -44,62 +20,21 @@ static uint16_t s_sampleCount;
 static uint16_t s_capacity;
 static uint16_t s_dumpIndex;
 static uint32_t s_elapsedMs;
-
-static float Capture_ReadChannel(uint16_t bit)
-{
-    switch (bit)
-    {
-        case CAPTURE_CH_TL:   return MotionWheel_GetTargetSpeedL();
-        case CAPTURE_CH_LV:   return Odometry_GetSpeedL();
-        case CAPTURE_CH_PL:   return MotionWheel_GetLeftCommandPWM();
-        case CAPTURE_CH_TR:   return MotionWheel_GetTargetSpeedR();
-        case CAPTURE_CH_RV:   return Odometry_GetSpeedR();
-        case CAPTURE_CH_PR:   return MotionWheel_GetRightCommandPWM();
-        case CAPTURE_CH_YAW:  return Heading_GetYaw();
-        case CAPTURE_CH_NAVE: return Nav_GetAngleErrorDeg();
-        case CAPTURE_CH_LERR: return MotionLine_GetLineError();
-        default:              return 0.0f;
-    }
-}
+static uint8_t s_sequence;
 
 static uint8_t Capture_CountChannels(uint16_t mask)
 {
     uint8_t count = 0U;
-    uint32_t index;
+    uint16_t bit;
 
-    for (index = 0U; index < CAPTURE_CHANNEL_COUNT; index++)
+    for (bit = TELEMETRY_CH_TL; bit <= TELEMETRY_CH_RD; bit <<= 1U)
     {
-        if ((mask & s_channels[index].bit) != 0U)
+        if ((mask & bit) != 0U)
         {
             count++;
         }
     }
     return count;
-}
-
-/* 逐字节写入，不做 4 字节对齐假设：样本大小随通道数变化，
- * 直接按 float* 解引用会在奇数偏移上触发 Cortex-M0+ 的非对齐访问异常。 */
-static void Capture_WriteBytes(uint32_t offset, const void *data,
-                               uint32_t length)
-{
-    const uint8_t *source = (const uint8_t *)data;
-    uint32_t index;
-
-    for (index = 0U; index < length; index++)
-    {
-        s_buffer[offset + index] = source[index];
-    }
-}
-
-static void Capture_ReadBytes(uint32_t offset, void *data, uint32_t length)
-{
-    uint8_t *target = (uint8_t *)data;
-    uint32_t index;
-
-    for (index = 0U; index < length; index++)
-    {
-        target[index] = s_buffer[offset + index];
-    }
 }
 
 void Capture_Init(void)
@@ -111,6 +46,7 @@ void Capture_Init(void)
     s_capacity = 0U;
     s_dumpIndex = 0U;
     s_elapsedMs = 0U;
+    s_sequence = 0U;
 }
 
 uint8_t Capture_Arm(uint16_t channelMask)
@@ -121,7 +57,7 @@ uint8_t Capture_Arm(uint16_t channelMask)
     {
         return 0U;
     }
-    if ((channelMask == 0U) || ((channelMask & ~CAPTURE_CH_ALL) != 0U))
+    if ((channelMask == 0U) || ((channelMask & ~TELEMETRY_CH_ALL) != 0U))
     {
         return 0U;
     }
@@ -157,7 +93,8 @@ void Capture_Trigger(void)
 void Capture_Update(uint32_t elapsedMs)
 {
     uint32_t offset;
-    uint32_t index;
+    float values[CAPTURE_MAX_CHANNELS];
+    uint8_t count;
 
     if (s_state != CAPTURE_STATE_RUNNING)
     {
@@ -173,20 +110,27 @@ void Capture_Update(uint32_t elapsedMs)
     }
 
     offset = (uint32_t)s_sampleCount * CAPTURE_SAMPLE_BYTES(s_channelCount);
-    Capture_WriteBytes(offset, &s_elapsedMs, sizeof(s_elapsedMs));
-    offset += sizeof(s_elapsedMs);
 
-    for (index = 0U; index < CAPTURE_CHANNEL_COUNT; index++)
+    /* 逐字节写时间戳与各通道 float，不做 4 字节对齐假设：样本大小随通道数变化，
+     * 直接按 float* 解引用会在奇数偏移触发 Cortex-M0+ 非对齐访问异常。 */
     {
-        float value;
+        uint8_t tmp[4];
+        (void)TelemFrame_PackU32(tmp, s_elapsedMs);
+        (void)memcpy(&s_buffer[offset], tmp, 4U);
+        offset += 4U;
+    }
 
-        if ((s_channelMask & s_channels[index].bit) == 0U)
+    /* 复用 Telemetry 的通道表取值，保证与实时流的列语义完全一致。 */
+    count = Telemetry_SampleChannels(s_channelMask, values);
+    {
+        uint8_t index;
+        for (index = 0U; index < count; index++)
         {
-            continue;
+            uint8_t tmp[4];
+            (void)TelemFrame_PackFloat(tmp, values[index]);
+            (void)memcpy(&s_buffer[offset], tmp, 4U);
+            offset += 4U;
         }
-        value = Capture_ReadChannel(s_channels[index].bit);
-        Capture_WriteBytes(offset, &value, sizeof(value));
-        offset += sizeof(value);
     }
     s_sampleCount++;
 }
@@ -203,24 +147,26 @@ void Capture_Stop(void)
 
 uint16_t Capture_StartDump(void)
 {
-    uint32_t index;
+    uint8_t payload[6];
+    uint8_t frame[TELEM_FRAME_MAX_BYTES];
+    uint16_t offset = 0U;
+    uint16_t frameLength;
 
     if ((s_state == CAPTURE_STATE_DUMPING) || (s_sampleCount == 0U))
     {
         return 0U;
     }
 
-    /* 表头列名顺序与写入顺序一致，网页据此解析而不猜列位。 */
-    Serial1_SendString("CH,ms");
-    for (index = 0U; index < CAPTURE_CHANNEL_COUNT; index++)
-    {
-        if ((s_channelMask & s_channels[index].bit) != 0U)
-        {
-            Serial1_SendByte((uint8_t)',');
-            Serial1_SendString(s_channels[index].name);
-        }
-    }
-    Serial1_SendString("\r\n");
+    /* 先发 SCHEMA（复用 Telemetry 的列名/单位表），网页据此解析后续样本；
+     * 再发 CAP_META 告知样本数与周期。 */
+    Telemetry_SendSchema(s_channelMask, TELEM_FRAME_TYPE_CAP_META);
+
+    offset += TelemFrame_PackU16(&payload[offset], s_channelMask);
+    offset += TelemFrame_PackU16(&payload[offset], s_sampleCount);
+    offset += TelemFrame_PackU16(&payload[offset], 10U); /* 周期 ms，100 Hz */
+    frameLength = TelemFrame_Build(frame, TELEM_FRAME_TYPE_CAP_META,
+                                   s_sequence++, payload, (uint8_t)offset);
+    Serial1_SendArray(frame, frameLength);
 
     s_dumpIndex = 0U;
     s_state = CAPTURE_STATE_DUMPING;
@@ -229,45 +175,40 @@ uint16_t Capture_StartDump(void)
 
 void Capture_DumpNext(void)
 {
-    uint8_t row;
+    uint8_t batch;
 
     if (s_state != CAPTURE_STATE_DUMPING)
     {
         return;
     }
 
-    for (row = 0U; row < CAPTURE_DUMP_ROWS_PER_TICK; row++)
+    for (batch = 0U; batch < CAPTURE_DUMP_FRAMES_PER_TICK; batch++)
     {
         uint32_t offset;
-        uint32_t index;
-        uint32_t timestampMs;
+        uint16_t payloadLen;
+        uint8_t frame[TELEM_FRAME_MAX_BYTES];
+        uint16_t frameLength;
 
         if (s_dumpIndex >= s_sampleCount)
         {
-            Serial1_Printf("OK X END=%u\r\n", (unsigned)s_sampleCount);
+            uint8_t endPayload[2];
+            (void)TelemFrame_PackU16(endPayload, s_sampleCount);
+            frameLength = TelemFrame_Build(frame, TELEM_FRAME_TYPE_CAP_END,
+                                           s_sequence++, endPayload, 2U);
+            Serial1_SendArray(frame, frameLength);
             s_state = CAPTURE_STATE_IDLE;
             return;
         }
 
+        /* 样本在缓冲里已是「ms + floats」的连续二进制，正好就是 CAP_SAMPLE 的
+         * payload，直接原样引用，无需重新编码。 */
         offset = (uint32_t)s_dumpIndex *
                  CAPTURE_SAMPLE_BYTES(s_channelCount);
-        Capture_ReadBytes(offset, &timestampMs, sizeof(timestampMs));
-        offset += sizeof(timestampMs);
-        Serial1_Printf("C,%lu", (unsigned long)timestampMs);
-
-        for (index = 0U; index < CAPTURE_CHANNEL_COUNT; index++)
-        {
-            float value;
-
-            if ((s_channelMask & s_channels[index].bit) == 0U)
-            {
-                continue;
-            }
-            Capture_ReadBytes(offset, &value, sizeof(value));
-            offset += sizeof(value);
-            Serial1_Printf(",%.2f", (double)value);
-        }
-        Serial1_SendString("\r\n");
+        payloadLen = (uint16_t)CAPTURE_SAMPLE_BYTES(s_channelCount);
+        frameLength = TelemFrame_Build(frame, TELEM_FRAME_TYPE_CAP_SAMPLE,
+                                       s_sequence++, &s_buffer[offset],
+                                       (uint8_t)payloadLen);
+        Serial1_SendArray(frame, frameLength);
         s_dumpIndex++;
     }
 }

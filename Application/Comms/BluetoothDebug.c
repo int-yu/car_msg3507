@@ -288,10 +288,10 @@ static void BluetoothDebug_ExecuteCommand(void)
             break;
 
         case 'M':
-            /* 改掩码可能触发自动降频（字段增多行变长，安全上限下降），
-               因此成功时同时回报新频率，用户能立即看到是否被限速。 */
+            /* M 现在设置二进制遥测的通道掩码（见 Telemetry.h TELEMETRY_CH_*）。
+               改掩码可能触发自动降频（帧变长，上限下降），成功时同时回报新频率。 */
             if ((s_parser.isNegative != 0U) ||
-                (value > (int32_t)TELEMETRY_FIELD_ALL) ||
+                (value > (int32_t)TELEMETRY_CH_ALL) ||
                 (Telemetry_SetFieldMask((uint16_t)value) == 0U))
             {
                 Serial1_SendString("ERR RANGE\r\n");
@@ -585,7 +585,7 @@ static void BluetoothDebug_ExecuteCommand(void)
                 Serial1_Printf("OK X DUMP=%u\r\n", (unsigned)count);
                 break;
             }
-            if ((value > (int32_t)CAPTURE_CH_ALL) ||
+            if ((value > (int32_t)TELEMETRY_CH_ALL) ||
                 (Capture_Arm((uint16_t)value) == 0U))
             {
                 /* 通道数超限和掩码非法都归到这里，附带上限便于自查。 */
