@@ -6,8 +6,8 @@
  * 故左轮走 B 通道(前进符号 +1)、右轮走 A 通道(前进符号 -1)。
  * 交叉的后果: 左环算的 PWM 驱动到右电机 → 巡线/航向差速全反 → 发 s 冲出去/打转。
  * 此处把左右各自绑定到正确的物理通道(与 ti_24_h 一致)。 */
-#define LEFT_MOTOR_DIR_SIGN  (+1)   /* 左电机 = B 通道 */
-#define RIGHT_MOTOR_DIR_SIGN (-1)   /* 右电机 = A 通道 */
+#define LEFT_MOTOR_DIR_SIGN  (-1)   /* 左电机 = B 通道 */
+#define RIGHT_MOTOR_DIR_SIGN (+1)   /* 右电机 = A 通道 */
 
 static int16_t Motor_ClampPWM(int16_t pwm)
 {

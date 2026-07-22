@@ -187,6 +187,7 @@ SYSTICK.systickEnable   = true;
 SYSTICK.interruptEnable = true;
 
 UART1.$name                            = "BLUETOOTH_UART";
+UART1.targetBaudRate                   = 115200;
 UART1.rxFifoThreshold                  = "DL_UART_RX_FIFO_LEVEL_ONE_ENTRY";
 UART1.enableDMARX                      = false;
 UART1.enableDMATX                      = true;
