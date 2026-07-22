@@ -4,7 +4,7 @@
 
 /*
  * 测试流程：
- * 上电 -> ZERO -> Y_TO_180 <-> Y_TO_0 --KEY2/C0--> STOPPED
+ * 上电 -> ZERO -> Y_TO_180 <-> Y_TO_0 --KEY2--> STOPPED
  *
  * ZERO 先把两个协议目标设为 0°。之后每完成一段运动，X 轴目标继续
  * 沿右转方向累加 180°，Y 轴则在 0° 和 180° 之间往返。
@@ -32,7 +32,7 @@ static uint8_t s_autoStartPending;
 static Mission_CallbackResult_t BrushlessMotorTest_StoppedEnter(void)
 {
     s_xTargetDeg = 0.0f;
-    /* 只允许上电后的第一次 STOPPED 自动进入测试，C0/KEY2 停止后不重启。 */
+    /* 只允许上电后的第一次 STOPPED 自动进入测试，KEY2 停止后不重启。 */
     if (s_hasAutoStarted == 0U)
     {
         s_hasAutoStarted = 1U;

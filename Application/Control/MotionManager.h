@@ -3,37 +3,29 @@
 
 #include <stdint.h>
 
-/*
- * 定距动作已经按速度曲线减速至零后，先保持 PWM 释放一小段时间，
- * 再短暂调用 Motor_Brake()。前段释放避免从驱动状态直接切到全制动，
- * 后段主动刹车用于抑制车辆残余滑行。
- */
-#define MOTION_MANAGER_BRAKE_RELEASE_SECONDS  0.01f  /* 平滑过渡的 PWM 释放时间。 */
-#define MOTION_MANAGER_BRAKE_HOLD_SECONDS     0.05f  /* 主动刹车保持时间；过大可能导致顿挫。 */
+#define MOTION_MANAGER_BRAKE_RELEASE_SECONDS 0.01f /* 主动刹车前释放 PWM 的时间。 */
+#define MOTION_MANAGER_BRAKE_HOLD_SECONDS    0.05f /* Motor_Brake() 保持时间。 */
 
-/* SPEED 调试模式允许的目标轮速上限，与直线请求速度上限一致。 */
-#define MOTION_MANAGER_SPEED_MAX_MMPS         1000.0f
-
-/* 统一运动调度层：任意时刻只允许一个上层运动模块控制双轮。 */
+/* 同一时刻只允许一种上层运动模式控制双轮。 */
 typedef enum
 {
     MOTION_MANAGER_MODE_IDLE = 0,
+    MOTION_MANAGER_MODE_MANUAL,
     MOTION_MANAGER_MODE_STRAIGHT,
     MOTION_MANAGER_MODE_LINE,
     MOTION_MANAGER_MODE_TURN,
-    MOTION_MANAGER_MODE_BRAKE,
-    MOTION_MANAGER_MODE_SPEED
+    MOTION_MANAGER_MODE_BRAKE
 } MotionManager_Mode_t;
 
 typedef enum
 {
     MOTION_MANAGER_ERROR_NONE = 0,
     MOTION_MANAGER_ERROR_INIT,
+    MOTION_MANAGER_ERROR_MANUAL,
     MOTION_MANAGER_ERROR_STRAIGHT,
     MOTION_MANAGER_ERROR_LINE,
     MOTION_MANAGER_ERROR_TURN,
-    MOTION_MANAGER_ERROR_BRAKE,
-    MOTION_MANAGER_ERROR_SPEED
+    MOTION_MANAGER_ERROR_BRAKE
 } MotionManager_Error_t;
 
 typedef enum
@@ -47,6 +39,9 @@ typedef enum
 
 MotionManager_Result_t MotionManager_Init(void);
 
+/* 设置调试摇杆的左右轮目标速度，单位 mm/s；传入双零会退出手动模式。 */
+MotionManager_Result_t MotionManager_SetManualWheelSpeeds(
+    float leftSpeedMMps, float rightSpeedMMps);
 MotionManager_Result_t MotionManager_StartForward(
     uint32_t distanceMM, float speedMMps, float endSpeedMMps);
 MotionManager_Result_t MotionManager_StartBackward(
@@ -56,13 +51,7 @@ MotionManager_Result_t MotionManager_TurnTo(
     float targetYawDeg, float speedMMps);
 MotionManager_Result_t MotionManager_TurnBy(
     float deltaYawDeg, float speedMMps);
-/* 启动固定时长的平滑短暂主动刹车；仅由题目状态机在定距完成后调用。 */
 MotionManager_Result_t MotionManager_StartBrake(void);
-
-/* 闭环恒速调试模式（W 命令）：双轮同目标速度、无规划斜坡、无航向修正，
- * 是轮速 PI 的标准阶跃激励。已处于 SPEED 模式时再次调用只更新目标速度，
- * 不复位 PID，可连续做链式阶跃；停止用 MotionManager_Stop() 或 C0。 */
-MotionManager_Result_t MotionManager_StartSpeed(float speedMMps);
 
 void MotionManager_Update(float dt);
 void MotionManager_Stop(void);

@@ -86,7 +86,6 @@ void Mission_Stop(void);
 Mission_Status_t Mission_GetStatus(void);
 const Mission_Runtime_t *Mission_GetRuntime(void);
 Mission_ActionStatus_t Mission_GetMotionActionStatus(void);
-uint8_t Mission_ContextHasBluetoothSignal(
-    const App_UpdateContext_t *updateContext, uint8_t signal);
+uint8_t Mission_IsAtStartState(void);
 
 #endif

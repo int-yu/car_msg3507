@@ -59,6 +59,10 @@ static void DebugDisplay_ShowMotionState(void)
     {
         OLED_ShowString(0, 56, "M:STRAIGHT", OLED_6X8);
     }
+    else if (mode == MOTION_MANAGER_MODE_MANUAL)
+    {
+        OLED_ShowString(0, 56, "M:MANUAL", OLED_6X8);
+    }
     else if (mode == MOTION_MANAGER_MODE_LINE)
     {
         OLED_ShowString(0, 56, "M:LINE", OLED_6X8);
