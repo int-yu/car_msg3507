@@ -27,7 +27,7 @@ typedef struct
 
     float targetHeadingDeg;
     float direction;
-    float zeroSpeedHoldElapsedSeconds;
+    float brakeElapsedSeconds;
     uint8_t decelerationActive;
     uint8_t targetReached;
 } MotionStraight_Context_t;
@@ -80,7 +80,7 @@ static uint8_t MotionStraight_ParametersAreValid(void)
         (!isfinite(MOTION_STRAIGHT_ACCELERATION_MMPS2)) ||
         (!isfinite(MOTION_STRAIGHT_DECELERATION_START_RATIO)) ||
         (!isfinite(MOTION_STRAIGHT_DISTANCE_TOLERANCE_MM)) ||
-        (!isfinite(MOTION_STRAIGHT_ZERO_SPEED_HOLD_SECONDS)) ||
+        (!isfinite(MOTION_STRAIGHT_BRAKE_HOLD_SECONDS)) ||
         (!isfinite(MOTION_STRAIGHT_HEADING_KP)) ||
         (!isfinite(MOTION_STRAIGHT_HEADING_KD)) ||
         (!isfinite(MOTION_STRAIGHT_HEADING_LIMIT_PWM)))
@@ -92,7 +92,7 @@ static uint8_t MotionStraight_ParametersAreValid(void)
         (MOTION_STRAIGHT_DECELERATION_START_RATIO <= 0.0f) ||
         (MOTION_STRAIGHT_DECELERATION_START_RATIO >= 1.0f) ||
         (MOTION_STRAIGHT_DISTANCE_TOLERANCE_MM < 0.0f) ||
-        (MOTION_STRAIGHT_ZERO_SPEED_HOLD_SECONDS <= 0.0f) ||
+        (MOTION_STRAIGHT_BRAKE_HOLD_SECONDS <= 0.0f) ||
         (MOTION_STRAIGHT_HEADING_KP < 0.0f) ||
         (MOTION_STRAIGHT_HEADING_KD < 0.0f) ||
         ((MOTION_STRAIGHT_HEADING_KP == 0.0f) &&
@@ -162,7 +162,7 @@ static void MotionStraight_PrepareProfile(
     s_context.effectiveDecelerationMMps2 = 0.0f;
     s_context.decelerationActive = 0U;
     s_context.targetReached = 0U;
-    s_context.zeroSpeedHoldElapsedSeconds = 0.0f;
+    s_context.brakeElapsedSeconds = 0.0f;
 }
 
 static float MotionStraight_GetDirectedTravelledDistance(void)
@@ -267,9 +267,43 @@ static float MotionStraight_UpdateProfileSpeed(
     return s_context.profileSpeedMMps;
 }
 
-/* 零速目标保持固定时长，不依赖低速下易跳变的编码器速度判断。 */
-static uint8_t MotionStraight_FinishProfileIfReady(
-    float targetSpeedMMps, float dt)
+/*
+ * 到点后进入独立刹车段。相比"继续下发 0 速度闭环保持"，这里直接短接绕组：
+ * 低速时编码器读数跳变会让 0 速闭环的 PID 来回纠正，正是"到点前后哆嗦"的
+ * 根因；而 Kp 的制动量又低于静摩擦阈值，压不住滑行、车会冲过设定距离一小段
+ *（"弹射/冲过头"）。前面的梯形减速已经把速度平滑降到≈0，此处再短接刹车
+ * 吸收残余惯性，既不抖也不冲，停点稳落在距离容差内。
+ */
+static void MotionStraight_StartBraking(void)
+{
+    MotionWheel_Reset();
+    Motor_Brake();
+    s_context.remainingDistanceMM = 0.0f;
+    s_context.brakeElapsedSeconds = 0.0f;
+    s_context.state = MOTION_STRAIGHT_STATE_BRAKING;
+}
+
+/* 刹车段独占运动：只短接保持固定时长，不经速度规划与轮速闭环。 */
+static void MotionStraight_UpdateBraking(float dt)
+{
+    s_context.brakeElapsedSeconds += dt;
+    if (s_context.brakeElapsedSeconds < MOTION_STRAIGHT_BRAKE_HOLD_SECONDS)
+    {
+        Motor_Brake();
+        return;
+    }
+
+    /* 刹车保持结束后释放 PWM，避免电机持续发热。 */
+    Motor_StopAll();
+    s_context.state = MOTION_STRAIGHT_STATE_COMPLETED;
+}
+
+/*
+ * 到达距离容差且规划速度已归零时决定去向：
+ *   endSpeed=0 → 进入刹车段止住惯性；endSpeed>0 → 转 CONTINUING 保持结束速度。
+ * 返回 1 表示本动作已交给刹车段接管，调用方无需再跑速度规划。
+ */
+static uint8_t MotionStraight_TransitionAtTarget(float targetSpeedMMps)
 {
     if ((s_context.state != MOTION_STRAIGHT_STATE_RUNNING) ||
         (s_context.targetReached == 0U) ||
@@ -281,17 +315,7 @@ static uint8_t MotionStraight_FinishProfileIfReady(
     s_context.remainingDistanceMM = 0.0f;
     if (s_context.endSpeedMMps <= 0.001f)
     {
-        /* 本周期已由 MotionWheel 下发 0 mm/s 的双轮速度目标。 */
-        s_context.zeroSpeedHoldElapsedSeconds += dt;
-        if (s_context.zeroSpeedHoldElapsedSeconds <
-            MOTION_STRAIGHT_ZERO_SPEED_HOLD_SECONDS)
-        {
-            return 0U;
-        }
-
-        /* 固定保持结束后关闭 PWM，不调用 Motor_Brake()。 */
-        MotionWheel_Stop();
-        s_context.state = MOTION_STRAIGHT_STATE_COMPLETED;
+        MotionStraight_StartBraking();
         return 1U;
     }
 
@@ -419,7 +443,8 @@ void MotionStraight_Update(float dt)
     float targetSpeedMMps;
 
     if ((s_context.state != MOTION_STRAIGHT_STATE_RUNNING) &&
-        (s_context.state != MOTION_STRAIGHT_STATE_CONTINUING))
+        (s_context.state != MOTION_STRAIGHT_STATE_CONTINUING) &&
+        (s_context.state != MOTION_STRAIGHT_STATE_BRAKING))
     {
         return;
     }
@@ -429,6 +454,14 @@ void MotionStraight_Update(float dt)
             MOTION_STRAIGHT_ERROR_UPDATE_PERIOD_INVALID);
         return;
     }
+
+    /* 刹车段独立于速度规划与航向闭环，只推进短接刹车定时。 */
+    if (s_context.state == MOTION_STRAIGHT_STATE_BRAKING)
+    {
+        MotionStraight_UpdateBraking(dt);
+        return;
+    }
+
     if (Heading_IsReady() == 0U)
     {
         MotionStraight_SetError(MOTION_STRAIGHT_ERROR_HEADING_OFFLINE);
@@ -450,10 +483,7 @@ void MotionStraight_Update(float dt)
         MotionStraight_SetError(MOTION_STRAIGHT_ERROR_WHEEL);
         return;
     }
-    if (MotionStraight_FinishProfileIfReady(targetSpeedMMps, dt) != 0U)
-    {
-        return;
-    }
+    (void)MotionStraight_TransitionAtTarget(targetSpeedMMps);
 }
 
 void MotionStraight_ApplyHeadingTunings(void)
@@ -483,7 +513,8 @@ uint8_t MotionStraight_IsConfigured(void)
 uint8_t MotionStraight_IsBusy(void)
 {
     return ((s_context.state == MOTION_STRAIGHT_STATE_RUNNING) ||
-            (s_context.state == MOTION_STRAIGHT_STATE_CONTINUING)) ?
+            (s_context.state == MOTION_STRAIGHT_STATE_CONTINUING) ||
+            (s_context.state == MOTION_STRAIGHT_STATE_BRAKING)) ?
                1U : 0U;
 }
 

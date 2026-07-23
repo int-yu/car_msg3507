@@ -67,6 +67,10 @@ static void DebugDisplay_ShowMotionState(void)
     {
         OLED_ShowString(0, 56, "M:TURN", OLED_6X8);
     }
+    else if (mode == MOTION_MANAGER_MODE_DRIVE)
+    {
+        OLED_ShowString(0, 56, "M:DRIVE", OLED_6X8);
+    }
     else
     {
         OLED_ShowString(0, 56, "M:IDLE", OLED_6X8);

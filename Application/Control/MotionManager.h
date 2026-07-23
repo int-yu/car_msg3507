@@ -22,7 +22,8 @@ typedef enum
     MOTION_MANAGER_MODE_LINE,
     MOTION_MANAGER_MODE_TURN,
     MOTION_MANAGER_MODE_BRAKE,
-    MOTION_MANAGER_MODE_SPEED
+    MOTION_MANAGER_MODE_SPEED,
+    MOTION_MANAGER_MODE_DRIVE
 } MotionManager_Mode_t;
 
 typedef enum
@@ -33,7 +34,8 @@ typedef enum
     MOTION_MANAGER_ERROR_LINE,
     MOTION_MANAGER_ERROR_TURN,
     MOTION_MANAGER_ERROR_BRAKE,
-    MOTION_MANAGER_ERROR_SPEED
+    MOTION_MANAGER_ERROR_SPEED,
+    MOTION_MANAGER_ERROR_DRIVE
 } MotionManager_Error_t;
 
 typedef enum
@@ -63,6 +65,13 @@ MotionManager_Result_t MotionManager_StartBrake(void);
  * 是轮速 PI 的标准阶跃激励。已处于 SPEED 模式时再次调用只更新目标速度，
  * 不复位 PID，可连续做链式阶跃；停止用 MotionManager_Stop() 或 C0。 */
 MotionManager_Result_t MotionManager_StartSpeed(float speedMMps);
+
+/* 差速驾驶模式（J 命令 / 遥控 WASD）：左右轮各自闭环跟踪目标速度、无航向
+ * 修正，是"油门+方向"混合出来的差速驱动，能走弧线也能原地自转。已处于
+ * DRIVE 模式时再次调用只更新左右目标、保留双轮 PID 状态，因此可高频连续
+ * 下发而不抖动；停止用 MotionManager_Stop() 或 C0。 */
+MotionManager_Result_t MotionManager_SetDrive(
+    float leftMMps, float rightMMps);
 
 void MotionManager_Update(float dt);
 void MotionManager_Stop(void);

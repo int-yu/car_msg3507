@@ -20,5 +20,7 @@ void BluetoothDebug_Update(uint8_t elapsedTicks,
 uint8_t BluetoothDebug_PopSignal(uint8_t *signal);
 int16_t BluetoothDebug_GetLeftCommand(void);
 int16_t BluetoothDebug_GetRightCommand(void);
+/* 从机把 CarLink 转发来的 ASCII 命令喂进解析器，复用全部现有命令。 */
+void BluetoothDebug_FeedExternal(const uint8_t *data, uint16_t length);
 
 #endif

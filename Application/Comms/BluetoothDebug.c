@@ -1,5 +1,7 @@
 #include "Application/Comms/BluetoothDebug.h"
+#include "Application/Comms/CarLink.h"
 #include "Application/Comms/K230Link.h"
+#include "Application/Core/CarRole.h"
 #include "Application/Control/MotionManager.h"
 #include "Application/Debug/Capture.h"
 #include "Application/Debug/Param.h"
@@ -28,6 +30,7 @@ typedef struct
     char textArgs[BLUETOOTH_TEXT_ARGS_SIZE];
     uint8_t textLength;
     uint8_t textOverflow;
+    uint8_t relayMode; /* 主机 '@' 前缀：正在收集要转发给从机的命令行 */
 } BluetoothParser_t;
 
 static BluetoothParser_t s_parser;
@@ -49,7 +52,7 @@ static uint8_t BluetoothDebug_IsCommand(char value)
             (value == 'P') ||
             (value == 'K') || (value == 'W') || (value == 'N') ||
             (value == 'E') || (value == 'Y') ||
-            (value == 'X') || (value == 'Q')) ? 1U : 0U;
+            (value == 'X') || (value == 'Q') || (value == 'J')) ? 1U : 0U;
 }
 
 static uint8_t BluetoothDebug_IsTerminator(char value)
@@ -105,7 +108,36 @@ static void BluetoothDebug_ResetParser(void)
     s_parser.idleTicks = 0U;
     s_parser.textLength = 0U;
     s_parser.textOverflow = 0U;
+    s_parser.relayMode = 0U;
 }
+
+#if CAR_IS_MASTER
+/* '@' 转发收尾：把收集到的命令行打包成 CarLink RELAY_CMD 发给从机。 */
+static void BluetoothDebug_FinalizeRelay(void)
+{
+    if (s_parser.textOverflow != 0U)
+    {
+        Serial1_SendString("ERR @ FORMAT\r\n");
+    }
+    else if (s_parser.textLength == 0U)
+    {
+        Serial1_SendString("ERR @ EMPTY\r\n");
+    }
+    else
+    {
+        s_parser.textArgs[s_parser.textLength] = '\0';
+        if (CarLink_SendCommand(s_parser.textArgs) != 0U)
+        {
+            Serial1_Printf("OK @%s\r\n", s_parser.textArgs);
+        }
+        else
+        {
+            Serial1_SendString("ERR @ LINK\r\n");
+        }
+    }
+    BluetoothDebug_ResetParser();
+}
+#endif
 
 static void BluetoothDebug_SendMotorStatus(void)
 {
@@ -162,6 +194,93 @@ static void BluetoothDebug_ReportMotionResult(MotionManager_Result_t result)
     }
 }
 
+/* 从文本游标读一个带符号十进制整数；累加限幅避免溢出。返回是否读到数字。 */
+static uint8_t BluetoothDebug_ParseInt(const char **cursor, int32_t *out)
+{
+    const char *scan = *cursor;
+    int32_t sign = 1;
+    int32_t magnitude = 0;
+    uint8_t hasDigit = 0U;
+
+    if (*scan == '-')
+    {
+        sign = -1;
+        scan++;
+    }
+    while ((*scan >= '0') && (*scan <= '9'))
+    {
+        if (magnitude < BLUETOOTH_VALUE_ACCUMULATOR_MAX)
+        {
+            magnitude = magnitude * 10L + (int32_t)(*scan - '0');
+            if (magnitude > BLUETOOTH_VALUE_ACCUMULATOR_MAX)
+            {
+                magnitude = BLUETOOTH_VALUE_ACCUMULATOR_MAX;
+            }
+        }
+        hasDigit = 1U;
+        scan++;
+    }
+    *cursor = scan;
+    *out = sign * magnitude;
+    return hasDigit;
+}
+
+/* J 差速驾驶：文本参数形如 "<左>/<右>"（mm/s，可负）。0/0 直接释放退出驾驶。 */
+static void BluetoothDebug_HandleDrive(const char *args)
+{
+    const char *cursor = args;
+    int32_t leftMMps = 0;
+    int32_t rightMMps = 0;
+
+    if ((BluetoothDebug_ParseInt(&cursor, &leftMMps) == 0U) ||
+        (*cursor != '/'))
+    {
+        Serial1_SendString("ERR J FORMAT\r\n");
+        return;
+    }
+    cursor++;
+    if ((BluetoothDebug_ParseInt(&cursor, &rightMMps) == 0U) ||
+        (*cursor != '\0'))
+    {
+        Serial1_SendString("ERR J FORMAT\r\n");
+        return;
+    }
+    if ((leftMMps > BLUETOOTH_DEBUG_MAX_SPEED_MMPS) ||
+        (leftMMps < -BLUETOOTH_DEBUG_MAX_SPEED_MMPS) ||
+        (rightMMps > BLUETOOTH_DEBUG_MAX_SPEED_MMPS) ||
+        (rightMMps < -BLUETOOTH_DEBUG_MAX_SPEED_MMPS))
+    {
+        Serial1_SendString("ERR RANGE\r\n");
+        return;
+    }
+
+    /* 只在空闲或已处于驾驶模式时接受，绝不打断按键任务或其他运动。 */
+    if ((MotionManager_IsBusy() != 0U) &&
+        (MotionManager_GetMode() != MOTION_MANAGER_MODE_DRIVE))
+    {
+        Serial1_SendString("ERR BUSY\r\n");
+        return;
+    }
+
+    if ((leftMMps == 0) && (rightMMps == 0))
+    {
+        /* 松开所有方向键：退出驾驶模式并释放电机。 */
+        MotionManager_Stop();
+        Serial1_SendString("OK J=0/0\r\n");
+        return;
+    }
+
+    if (MotionManager_SetDrive((float)leftMMps, (float)rightMMps) ==
+        MOTION_MANAGER_RESULT_OK)
+    {
+        Serial1_Printf("OK J=%d/%d\r\n", (int)leftMMps, (int)rightMMps);
+    }
+    else
+    {
+        Serial1_SendString("ERR J MOTION\r\n");
+    }
+}
+
 static void BluetoothDebug_ExecuteCommand(void)
 {
     int32_t value;
@@ -177,6 +296,22 @@ static void BluetoothDebug_ExecuteCommand(void)
         {
             s_parser.textArgs[s_parser.textLength] = '\0';
             Param_HandleCommand(s_parser.textArgs);
+        }
+        BluetoothDebug_ResetParser();
+        return;
+    }
+
+    /* J 与 K 一样走文本参数（含 '/' 分隔与负号），不适用 hasDigits 检查。 */
+    if ((s_parser.hasCommand != 0U) && (s_parser.command == 'J'))
+    {
+        if (s_parser.textOverflow != 0U)
+        {
+            Serial1_SendString("ERR J FORMAT\r\n");
+        }
+        else
+        {
+            s_parser.textArgs[s_parser.textLength] = '\0';
+            BluetoothDebug_HandleDrive(s_parser.textArgs);
         }
         BluetoothDebug_ResetParser();
         return;
@@ -660,6 +795,35 @@ static void BluetoothDebug_ProcessByte(uint8_t byte)
 {
     char value = BluetoothDebug_ToUpper((char)byte);
 
+#if CAR_IS_MASTER
+    /* '@' 前缀：把该行其余字符打包成 RELAY_CMD 转发给从机（网页控从机用）。
+     * 例：网页发 "@J100/100" → 从机执行 "J100/100"，主机自身不动作。 */
+    if (s_parser.relayMode != 0U)
+    {
+        if (BluetoothDebug_IsTerminator(value) != 0U)
+        {
+            BluetoothDebug_FinalizeRelay();
+            return;
+        }
+        if (s_parser.textLength < (BLUETOOTH_TEXT_ARGS_SIZE - 1U))
+        {
+            s_parser.textArgs[s_parser.textLength] = value;
+            s_parser.textLength++;
+        }
+        else
+        {
+            s_parser.textOverflow = 1U;
+        }
+        return;
+    }
+    if ((value == '@') && (s_parser.hasCommand == 0U))
+    {
+        BluetoothDebug_ResetParser();
+        s_parser.relayMode = 1U;
+        return;
+    }
+#endif
+
     if (BluetoothDebug_IsCommand(value) != 0U)
     {
         BluetoothDebug_StartCommand(value);
@@ -678,6 +842,33 @@ static void BluetoothDebug_ProcessByte(uint8_t byte)
         if (((value >= '0') && (value <= '9')) ||
             (value == '.') || (value == '-') ||
             (value == '=') || (value == '?'))
+        {
+            if (s_parser.textLength < (BLUETOOTH_TEXT_ARGS_SIZE - 1U))
+            {
+                s_parser.textArgs[s_parser.textLength] = value;
+                s_parser.textLength++;
+            }
+            else
+            {
+                s_parser.textOverflow = 1U;
+            }
+            return;
+        }
+        BluetoothDebug_ResetParser();
+        Serial1_SendString("ERR CHARACTER\r\n");
+        return;
+    }
+
+    /* J 差速驾驶收集 "<左>/<右>" 文本：接受数字、负号与 '/' 分隔符。 */
+    if ((s_parser.hasCommand != 0U) && (s_parser.command == 'J'))
+    {
+        if (BluetoothDebug_IsTerminator(value) != 0U)
+        {
+            BluetoothDebug_ExecuteCommand();
+            return;
+        }
+        if (((value >= '0') && (value <= '9')) ||
+            (value == '-') || (value == '/'))
         {
             if (s_parser.textLength < (BLUETOOTH_TEXT_ARGS_SIZE - 1U))
             {
@@ -748,7 +939,7 @@ void BluetoothDebug_Init(void)
     s_debugSpeedMMps = BLUETOOTH_DEBUG_DEFAULT_SPEED_MMPS;
     Motor_StopAll();
     Serial1_SendString(
-        "READY: C task, L/R/U pwm, W speed, N line, K param, "
+        "READY: C task, L/R/U pwm, W speed, J drive, N line, K param, "
         "O vertical, D horizontal\r\n");
 }
 
@@ -766,9 +957,15 @@ void BluetoothDebug_Update(uint8_t elapsedTicks,
         BluetoothDebug_ProcessByte(byte);
     }
 
-    if (s_parser.hasCommand == 0U)
     {
-        return;
+        uint8_t pending = s_parser.hasCommand;
+#if CAR_IS_MASTER
+        pending = (uint8_t)(pending | s_parser.relayMode);
+#endif
+        if (pending == 0U)
+        {
+            return;
+        }
     }
 
     if (receivedByte != 0U)
@@ -780,12 +977,41 @@ void BluetoothDebug_Update(uint8_t elapsedTicks,
     if ((uint16_t)s_parser.idleTicks + elapsedTicks >=
         BLUETOOTH_COMMAND_IDLE_TICKS)
     {
-        BluetoothDebug_ExecuteCommand();
+#if CAR_IS_MASTER
+        if (s_parser.relayMode != 0U)
+        {
+            BluetoothDebug_FinalizeRelay();
+        }
+        else
+#endif
+        {
+            BluetoothDebug_ExecuteCommand();
+        }
     }
     else
     {
         s_parser.idleTicks = (uint8_t)(s_parser.idleTicks + elapsedTicks);
     }
+}
+
+/*
+ * 把外部字节流（从机收到的 CarLink RELAY_CMD 载荷）喂进同一套命令解析器，
+ * 从而复用全部现有命令词汇（J/W/F/T/L/R...）。收尾补一个换行冲刷末条命令。
+ * 从机执行后的 OK/ERR 回应发往自身 Serial1（未接线，直接丢弃）。
+ */
+void BluetoothDebug_FeedExternal(const uint8_t *data, uint16_t length)
+{
+    uint16_t index;
+
+    if (data == NULL)
+    {
+        return;
+    }
+    for (index = 0U; index < length; index++)
+    {
+        BluetoothDebug_ProcessByte(data[index]);
+    }
+    BluetoothDebug_ProcessByte((uint8_t)'\n');
 }
 
 uint8_t BluetoothDebug_PopSignal(uint8_t *signal)

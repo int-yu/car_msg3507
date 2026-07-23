@@ -12,7 +12,7 @@
 #define MOTION_STRAIGHT_ACCELERATION_MMPS2       300.0f /* 起步加速度。 */
 #define MOTION_STRAIGHT_DECELERATION_START_RATIO (5.0f / 6.0f) /* 按全程比例进入匀减速。 */
 #define MOTION_STRAIGHT_DISTANCE_TOLERANCE_MM    5.0f   /* 到达距离允许误差。 */
-#define MOTION_STRAIGHT_ZERO_SPEED_HOLD_SECONDS  0.05f  /* 到零速目标后继续闭环保持的时间。 */
+#define MOTION_STRAIGHT_BRAKE_HOLD_SECONDS       0.08f  /* 到点后短接刹车吸收惯性的保持时间。 */
 
 /* 运行时可调参数：上电恢复上方 #define 默认值，由 K 命令经 Param 模块读写。
  * Kp/Kd 写入后必须调用 MotionStraight_ApplyHeadingTunings() 才会进入 PID；
@@ -26,6 +26,7 @@ typedef enum
     MOTION_STRAIGHT_STATE_IDLE = 0,
     MOTION_STRAIGHT_STATE_RUNNING,
     MOTION_STRAIGHT_STATE_CONTINUING,
+    MOTION_STRAIGHT_STATE_BRAKING,
     MOTION_STRAIGHT_STATE_COMPLETED,
     MOTION_STRAIGHT_STATE_ERROR
 } MotionStraight_State_t;

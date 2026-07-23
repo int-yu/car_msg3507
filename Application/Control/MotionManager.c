@@ -14,6 +14,8 @@ typedef struct
     float brakeElapsedSeconds;
     uint8_t brakeFinished;
     float speedTargetMMps;
+    float driveLeftMMps;
+    float driveRightMMps;
 } MotionManager_Context_t;
 
 static MotionManager_Context_t s_context;
@@ -277,6 +279,36 @@ MotionManager_Result_t MotionManager_StartSpeed(float speedMMps)
     return MOTION_MANAGER_RESULT_OK;
 }
 
+MotionManager_Result_t MotionManager_SetDrive(
+    float leftMMps, float rightMMps)
+{
+    if (s_context.configured == 0U)
+    {
+        return MOTION_MANAGER_RESULT_NOT_CONFIGURED;
+    }
+    if ((!isfinite(leftMMps)) || (!isfinite(rightMMps)) ||
+        (fabsf(leftMMps) > MOTION_MANAGER_SPEED_MAX_MMPS) ||
+        (fabsf(rightMMps) > MOTION_MANAGER_SPEED_MAX_MMPS))
+    {
+        return MOTION_MANAGER_RESULT_INVALID_ARGUMENT;
+    }
+
+    /* 已在差速驾驶模式时只改目标：保留双轮 PID 状态，支持高频连续下发。 */
+    if (s_context.mode == MOTION_MANAGER_MODE_DRIVE)
+    {
+        s_context.driveLeftMMps = leftMMps;
+        s_context.driveRightMMps = rightMMps;
+        return MOTION_MANAGER_RESULT_OK;
+    }
+
+    MotionManager_Stop();
+    s_context.driveLeftMMps = leftMMps;
+    s_context.driveRightMMps = rightMMps;
+    s_context.mode = MOTION_MANAGER_MODE_DRIVE;
+    s_context.error = MOTION_MANAGER_ERROR_NONE;
+    return MOTION_MANAGER_RESULT_OK;
+}
+
 MotionManager_Result_t MotionManager_StartBrake(void)
 {
     if (s_context.configured == 0U)
@@ -350,6 +382,21 @@ void MotionManager_Update(float dt)
             break;
         }
 
+        case MOTION_MANAGER_MODE_DRIVE:
+        {
+            MotionWheel_Command_t command = {0};
+
+            command.targetSpeedLMMps = s_context.driveLeftMMps;
+            command.targetSpeedRMMps = s_context.driveRightMMps;
+            if (MotionWheel_Update(&command, dt) != MOTION_WHEEL_RESULT_OK)
+            {
+                MotionWheel_Stop();
+                s_context.mode = MOTION_MANAGER_MODE_IDLE;
+                s_context.error = MOTION_MANAGER_ERROR_DRIVE;
+            }
+            break;
+        }
+
         case MOTION_MANAGER_MODE_IDLE:
         default:
             break;
@@ -389,6 +436,8 @@ void MotionManager_Stop(void)
     s_context.brakeElapsedSeconds = 0.0f;
     s_context.brakeFinished = 0U;
     s_context.speedTargetMMps = 0.0f;
+    s_context.driveLeftMMps = 0.0f;
+    s_context.driveRightMMps = 0.0f;
 }
 
 uint8_t MotionManager_IsConfigured(void)
@@ -409,7 +458,8 @@ uint8_t MotionManager_IsBusy(void)
         case MOTION_MANAGER_MODE_BRAKE:
             return (s_context.brakeFinished == 0U) ? 1U : 0U;
         case MOTION_MANAGER_MODE_SPEED:
-            /* 恒速模式没有完成条件，只能被显式停止。 */
+        case MOTION_MANAGER_MODE_DRIVE:
+            /* 恒速与差速驾驶都没有完成条件，只能被显式停止。 */
             return 1U;
         case MOTION_MANAGER_MODE_IDLE:
         default:
@@ -430,6 +480,7 @@ uint8_t MotionManager_IsFinished(void)
         case MOTION_MANAGER_MODE_BRAKE:
             return s_context.brakeFinished;
         case MOTION_MANAGER_MODE_SPEED:
+        case MOTION_MANAGER_MODE_DRIVE:
         case MOTION_MANAGER_MODE_IDLE:
         default:
             return 0U;

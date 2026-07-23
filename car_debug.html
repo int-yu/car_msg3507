@@ -19,10 +19,15 @@
     --warn: #e0a13c;
 }
 * { box-sizing: border-box; }
-html { scrollbar-color: #333c4d var(--bg); }
+html {
+    height: 100%; overflow: hidden;
+    scrollbar-color: #333c4d var(--bg);
+}
 body {
     margin: 0;
-    padding: 14px 16px 40px;
+    padding: 14px 16px;
+    min-height: 100dvh; height: 100dvh; overflow: hidden;
+    display: grid; grid-template-rows: auto auto minmax(0, 1fr);
     background:
         radial-gradient(1200px 400px at 20% -10%, #16233a55, transparent),
         var(--bg);
@@ -36,7 +41,23 @@ h1::before {
 }
 h2 { font-size: 13.5px; margin: 0 0 10px; color: var(--accent); letter-spacing: .5px; }
 h2 small, summary small { color: var(--dim); font-weight: normal; font-size: 12px; }
-.grid { display: grid; grid-template-columns: 370px 1fr; gap: 14px; align-items: start; }
+.grid {
+    display: grid; grid-template-columns: 370px 1fr; gap: 14px;
+    align-items: stretch; min-height: 0;
+}
+.scroll-column {
+    min-width: 0; min-height: 0; overflow-y: auto;
+    overscroll-behavior: contain; scrollbar-gutter: stable;
+    padding-right: 4px;
+    scrollbar-width: thin; scrollbar-color: #3b475c transparent;
+}
+.scroll-column::-webkit-scrollbar { width: 10px; }
+.scroll-column::-webkit-scrollbar-track { background: transparent; }
+.scroll-column::-webkit-scrollbar-thumb {
+    min-height: 40px; border: 3px solid transparent; border-radius: 8px;
+    background: #3b475c; background-clip: content-box;
+}
+.scroll-column::-webkit-scrollbar-thumb:hover { background-color: #55739a; }
 .panel {
     background: linear-gradient(180deg, var(--panel), var(--panel2));
     border: 1px solid var(--line); border-radius: 10px;
@@ -51,7 +72,7 @@ details.panel > summary::before { content: '▸ '; color: var(--dim); }
 details.panel[open] > summary::before { content: '▾ '; }
 details.panel[open] > summary { margin-bottom: 10px; }
 .topbar {
-    position: sticky; top: 8px; z-index: 30;
+    position: relative; z-index: 30;
     background: #151b25;
     box-shadow: 0 4px 18px #000a;
 }
@@ -104,7 +125,7 @@ kbd {
 #terminal .tx { color: var(--accent); }
 #terminal .ok { color: var(--ok); }
 #terminal .err { color: var(--err); }
-#plot { width: 100%; height: 320px; display: block; background: #0b0e13; border-radius: 8px; cursor: crosshair; contain: strict; }
+#plot, #plotSlave { width: 100%; height: 320px; display: block; background: #0b0e13; border-radius: 8px; cursor: crosshair; contain: strict; }
 #series { display: flex; gap: 10px; flex-wrap: wrap; }
 #series label { display: flex; gap: 3px; align-items: center; color: var(--fg); cursor: pointer; }
 .sw { display: inline-block; width: 10px; height: 10px; border-radius: 3px; }
@@ -151,13 +172,24 @@ kbd {
 }
 .chip.good { color: var(--ok); border-color: #2c5c44; }
 .chip.bad { color: var(--err); border-color: #6b3237; }
+.drive-decks {
+    display: grid; grid-template-columns: repeat(auto-fit, minmax(150px, 220px));
+    gap: 18px; align-items: start; margin: 10px 0 8px;
+}
+.drive-deck { min-width: 0; }
+.drive-deck-title {
+    display: flex; align-items: baseline; justify-content: space-between;
+    gap: 8px; margin-bottom: 6px; font-size: 13px;
+}
+.drive-deck-title span { color: var(--dim); font-size: 11px; font-family: Consolas, monospace; }
 .drive-pad {
-    display: grid; grid-template-columns: repeat(3, 1fr); gap: 6px;
-    max-width: 240px; margin: 8px 0;
+    display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 6px;
+    width: 100%; margin: 0;
 }
 .drive-key {
     display: flex; flex-direction: column; align-items: center; gap: 1px;
-    padding: 9px 0; font-weight: bold; font-family: Consolas, monospace;
+    min-width: 0; min-height: 58px; padding: 8px 4px;
+    font-weight: bold; font-family: Consolas, monospace;
 }
 .drive-key small { font-weight: normal; font-size: 10px; color: var(--dim); font-family: inherit; }
 .drive-key.held { background: var(--accent-dim); border-color: var(--accent); color: var(--accent); }
@@ -179,11 +211,18 @@ kbd {
 .run > span:first-child { flex: 1; min-width: 180px; }
 .run .metrics { flex-basis: 100%; color: var(--dim); font-variant-numeric: tabular-nums; }
 @media (max-width: 900px) {
-    .grid { grid-template-columns: 1fr; }
+    html { height: auto; overflow-y: auto; }
+    body { display: block; min-height: 100%; height: auto; overflow: visible; }
+    .grid { grid-template-columns: 1fr; min-height: auto; align-items: start; }
+    .scroll-column {
+        min-height: auto; overflow: visible; overscroll-behavior: auto;
+        scrollbar-gutter: auto; padding-right: 0;
+    }
     .topbar { position: static; }
 }
 @media (max-width: 540px) {
     body { padding: 8px; }
+    .drive-decks { grid-template-columns: minmax(0, 240px); }
     .wheel-map-grid { grid-template-columns: 1fr; }
     .focus-param-grid { grid-template-columns: 1fr; }
     .qp { grid-template-columns: 1fr auto auto auto; }
@@ -199,13 +238,13 @@ kbd {
     <button id="btnConnect" class="primary">连接串口</button>
     <button id="btnDisconnect" disabled>断开</button>
     <span class="status">状态：<span id="connState" class="off">未连接</span></span>
-    <span class="status" style="margin-left:auto">模式：<b id="modeVal">—</b> · 样本 <b id="sampleCount">0</b></span>
+    <span class="status" style="margin-left:auto">模式：<b id="modeVal">—</b> · 样本 <b id="sampleCount">0</b> · 重绘 <b id="plotFps">–</b>fps</span>
     <span class="hint"><kbd>Esc</kbd> 急停</span>
     <button id="btnStop" class="danger" disabled>急停 C0</button>
 </div>
 
 <div class="grid">
-<div>
+<div class="scroll-column">
 
     <div class="panel">
         <h2>运动</h2>
@@ -252,20 +291,53 @@ kbd {
         <h2>遥控采集 <small>键盘驾驶 + 打标记 + 整段录制</small></h2>
         <div class="row">
             <button id="btnDriveMode" disabled>启用键盘驾驶</button>
-            <label>档速</label>
-            <input type="number" id="driveSpeed" value="250" min="20" max="800">
-            <label>转向°</label>
-            <input type="number" id="driveTurn" value="30" min="5" max="180">
+            <span class="hint">主车 <kbd>WASD</kbd> · 从车 <kbd>↑↓←→</kbd>（可同时独立驾驶）</span>
         </div>
-        <div class="drive-pad">
-            <span></span>
-            <button class="drive-key" data-drive="forward" disabled>W<small>前进</small></button>
-            <span></span>
-            <button class="drive-key" data-drive="left" disabled>A<small>左转</small></button>
-            <button class="drive-key danger" data-drive="stop" disabled>S<small>停</small></button>
-            <button class="drive-key" data-drive="right" disabled>D<small>右转</small></button>
+        <div class="row">
+            <label>主车 档速</label>
+            <input type="number" id="driveSpeed" value="250" min="20" max="800" style="width:64px">
+            <label>转向</label>
+            <input type="number" id="driveTurn" value="150" min="0" max="800" style="width:64px">
+            <span class="hint">mm/s</span>
         </div>
-        <p class="hint" id="driveHint">启用后用 <kbd>W</kbd><kbd>A</kbd><kbd>S</kbd><kbd>D</kbd> 驾驶；转向是相对角命令，会等它转完再响应下一个键。</p>
+        <div class="row">
+            <label>从车 档速</label>
+            <input type="number" id="driveSpeedSlave" value="250" min="20" max="800" style="width:64px">
+            <label>转向</label>
+            <input type="number" id="driveTurnSlave" value="150" min="0" max="800" style="width:64px">
+            <span class="hint">mm/s · 档速=直行轮速，转向=左右轮差速</span>
+        </div>
+        <div class="drive-decks">
+            <section class="drive-deck" id="driveMaster" data-car="master">
+                <div class="drive-deck-title"><b>主车</b><span>W A S D</span></div>
+                <div class="drive-pad">
+                    <span></span>
+                    <button class="drive-key" data-drive-car="master" data-drive="forward" disabled>W<small>前进</small></button>
+                    <span></span>
+                    <button class="drive-key" data-drive-car="master" data-drive="left" disabled>A<small>左转</small></button>
+                    <button class="drive-key" data-drive-car="master" data-drive="back" disabled>S<small>后退</small></button>
+                    <button class="drive-key" data-drive-car="master" data-drive="right" disabled>D<small>右转</small></button>
+                    <span></span>
+                    <button class="drive-key danger" data-drive-car="master" data-drive="stop" disabled>X<small>停</small></button>
+                    <span></span>
+                </div>
+            </section>
+            <section class="drive-deck" id="driveSlave" data-car="slave">
+                <div class="drive-deck-title"><b>从车</b><span>ARROW KEYS</span></div>
+                <div class="drive-pad">
+                    <span></span>
+                    <button class="drive-key" data-drive-car="slave" data-drive="forward" disabled>↑<small>前进</small></button>
+                    <span></span>
+                    <button class="drive-key" data-drive-car="slave" data-drive="left" disabled>←<small>左转</small></button>
+                    <button class="drive-key" data-drive-car="slave" data-drive="back" disabled>↓<small>后退</small></button>
+                    <button class="drive-key" data-drive-car="slave" data-drive="right" disabled>→<small>右转</small></button>
+                    <span></span>
+                    <button class="drive-key danger" data-drive-car="slave" data-drive="stop" disabled>■<small>停</small></button>
+                    <span></span>
+                </div>
+            </section>
+        </div>
+        <p class="hint" id="driveHint">启用后按住 <kbd>W</kbd><kbd>A</kbd><kbd>S</kbd><kbd>D</kbd> 驾驶，松开即停；只按 <kbd>A</kbd>/<kbd>D</kbd> 不给油门就原地转向，配合 <kbd>W</kbd>/<kbd>S</kbd> 走弧线。</p>
         <div class="row" style="margin-top:10px">
             <button id="btnRecord" class="primary" disabled>开始录制</button>
             <span class="hint" id="recordStatus">未录制</span>
@@ -289,8 +361,8 @@ kbd {
         <p class="hint">输入框变蓝表示尚未写入。调好后把数值写回对应 <code>.h</code> 的 <code>#define</code> 固化，或存到浏览器，下次上电一键回写。</p>
     </details>
 
-    <div class="panel">
-        <h2>标定</h2>
+    <details class="panel">
+        <summary>标定 <small>陀螺仪尺度 + 里程标定 · 可收起</small></summary>
         <div class="row"><b style="font-size:13px">陀螺仪尺度 gsc</b></div>
         <div class="row">
             <button data-cmd="E1" disabled>开始 E1</button>
@@ -311,7 +383,7 @@ kbd {
             <button id="btnOdomCalc" disabled>③ 计算并写入</button>
         </div>
         <p class="hint">流程：记录起点 → <code>F1000</code> 跑一段 → 卷尺量实际前进距离填入 → 计算写入 cpm。</p>
-    </div>
+    </details>
 
     <details class="panel">
         <summary>舵机 <small>当前不参与调试</small></summary>
@@ -339,7 +411,7 @@ kbd {
     </details>
 
 </div>
-<div>
+<div class="scroll-column">
 
     <div class="panel">
         <h2>聚焦调参工作台 <small>一次只看当前任务、对象和阶段</small></h2>
@@ -427,6 +499,36 @@ kbd {
             <button id="btnPause">暂停</button>
             <button id="btnClear">清空数据</button>
             <button id="btnExport">导出 CSV</button>
+        </div>
+    </div>
+
+    <div class="panel" id="slavePanel">
+        <h2>从车曲线 <small>经主车 HC05 转发（0xAB 帧）· 掩码/频率独立于主车</small></h2>
+        <div class="row">
+            <span class="hint" id="slaveLinkStatus">从车链路：未知</span>
+            <span class="hint" id="slaveBandwidth" style="margin-left:auto">从车遥测未开启</span>
+        </div>
+        <div class="row">
+            <label>频率</label>
+            <input type="number" id="slaveRate" value="50" min="0" max="100" style="width:60px">
+            <button id="btnSlaveRate" disabled>开启 @G</button>
+            <button id="btnSlaveStop" disabled>停 @G0</button>
+            <span class="hint">Hz · 0=关；从车遥测默认关闭，开启即发 @G 给从车</span>
+        </div>
+        <div class="row">
+            <label>掩码</label>
+            <div id="slaveMask" style="flex:1"></div>
+            <button id="btnSlaveMask" disabled>应用 @M</button>
+        </div>
+        <canvas id="plotSlave"></canvas>
+        <div class="row" style="margin-top:8px">
+            <div id="seriesSlave" style="flex:1"><span class="hint">开启从车遥测后按表头自动列出可画列</span></div>
+        </div>
+        <div class="row">
+            <label>窗口</label>
+            <input type="number" id="winSlave" value="600" min="50" max="20000">
+            <span class="hint">条 · 样本 <span id="slaveSampleCount">0</span> · 重绘 <span id="slaveFps">–</span>fps</span>
+            <button id="btnSlaveClear">清空</button>
         </div>
     </div>
 
@@ -1330,6 +1432,9 @@ function storedParamsForFirmware(stored, availableNames) {
 /* ==PARSER_END== */
 
 const parser = new TelemetryParser();
+/* 从车遥测独立解析器：主车把从车帧（0xAB 首字节）转发过来，分流后喂给它。 */
+const slaveParser = new TelemetryParser();
+let slaveSelected = new Set();
 const PALETTE = ['#4da3ff', '#46c17a', '#e0a13c', '#e05c5c', '#a97ee0', '#3fc4c4', '#d96ba8', '#8fbf4d'];
 
 /* 各调参试验的预设：掩码只留相关字段换高频，激励与收尾命令成对。
@@ -1546,13 +1651,9 @@ let selected = new Set();
 let pendingFocusedSeriesSelection = true;
 let focusedTelemetryApplyChain = Promise.resolve();
 let focusedTelemetryGeneration = 0;
-let needsRedraw = false;
 let plotPaused = false;
 let plotSnapshot = null;   /* 暂停时冻结的样本快照，悬浮读数在暂停时也可用 */
 let hoverX = null;         /* 曲线区悬浮读数的横坐标（CSS 像素） */
-let lastPlotAt = 0;
-let redrawTimer = null;
-const PLOT_MIN_INTERVAL_MS = 50; /* 最多 20 FPS；数据仍按固件频率完整保存。 */
 
 let paramCache = {};     /* id -> { name, value, min, max, def } */
 let paramRenderPending = false;
@@ -1649,10 +1750,12 @@ function setConnected(on) {
         'button[data-send], button[data-cmd], button[data-drive], ' +
         '#btnMask, #btnMaxRate, #btnRaw, #btnStop, #btnDriveMode, #btnRecord, ' +
         '#btnParamRefresh, #btnParamApplyStored, #btnSessStart, ' +
+        '#btnSlaveRate, #btnSlaveStop, #btnSlaveMask, ' +
         '#btnCalFinish, #btnOdomMark, #btnOdomCalc')
         .forEach((b) => { b.disabled = !on; });
     $('servoO').disabled = !on;
     $('servoD').disabled = !on;
+    updateDriveControls();
     if (!on) {
         /* 断开后键盘不该还在"驾驶"一台连不上的车。 */
         setDriveEnabled(false);
@@ -1697,10 +1800,12 @@ async function readLoop() {
             }
             /* value 是 Uint8Array，直接喂字节流状态机——不再 TextDecoder，
                因为二进制帧里的 0x0A/0xAA 字节不能当文本换行处理。 */
+            /* 顶层分流：主车帧(0xAA)→parser、从车帧(0xAB)→slaveParser、文本→主车。 */
+            const { masterEv, slaveEv } = routeStream(value);
             const {
                 textLines, schemaChanged, samplesAdded,
                 captureAdded, captureEnded,
-            } = parser.feed(value);
+            } = masterEv;
             textLines.forEach(handleTextLine);
             if (schemaChanged) {
                 rebuildSeries();
@@ -1719,6 +1824,17 @@ async function readLoop() {
             }
             if (schemaChanged || samplesAdded > 0) {
                 requestRedraw();
+            }
+            /* 从车流事件：更新从车面板，并在录制中把从车样本也存下来。 */
+            if (slaveEv.schemaChanged || slaveEv.samplesAdded > 0) {
+                markSlaveAlive();
+            }
+            captureSlaveForRecording(slaveEv.samplesAdded);
+            if (slaveEv.schemaChanged) {
+                rebuildSeriesSlave();
+            }
+            if (slaveEv.schemaChanged || slaveEv.samplesAdded > 0) {
+                requestRedrawSlave();
             }
         }
     } catch (err) {
@@ -2692,11 +2808,14 @@ async function emergencyStop() {
     if (!writer) {
         return;
     }
+    /* 清空两套网页状态，并显式给两车发送差速停车帧。 */
+    clearDrive(false);
+    clearDriveSlave(false);
     const commands = [];
     if (session && session.preset && session.preset.stopCmd) {
         commands.push(session.preset.stopCmd);
     }
-    commands.push('W0', 'N0', 'C0', 'U0');
+    commands.push('J0/0', '@J0/0', 'W0', 'N0', 'C0', 'U0');
     for (const command of [...new Set(commands)]) {
         await send(command);
     }
@@ -3084,69 +3203,123 @@ function renderRuns() {
 /* ---------- 遥控采集 ---------- */
 
 /*
- * 键盘驾驶。W/S 走恒速命令（W<speed> / W0），A/D 走相对转角（T±angle）。
- * 转向是"忙则拒绝"的动作命令，所以按键期间要跟踪 busy 状态，避免刷屏 ERR BUSY。
+ * 键盘驾驶。差速遥控：油门(W/S) 与方向(A/D) 混成左右轮速，发 J<左>/<右>（mm/s）。
+ * 只在按键的按下/松开沿各发一帧（无需高频流），固件在 DRIVE 模式下连续闭环，
+ * 因此按住即走、松开即停，走弧线与原地自转都从同一套混合里自然得到。
  */
 const MARK_LABELS = ['直道', '弯道', '路口', '障碍', '异常'];
 let driveEnabled = false;
-let driveTurning = false;
+let driveHeld = { forward: false, back: false, left: false, right: false };
+let lastDriveSent = null;   /* 已下发的 "左/右" 帧，去重避免重复发同一帧 */
+let driveHeldSlave = { forward: false, back: false, left: false, right: false };
+let lastDriveSentSlave = null;
+const DRIVE_KEY_MAP = { w: 'forward', s: 'back', a: 'left', d: 'right' };
+const ARROW_KEY_MAP = {
+    arrowup: 'forward', arrowdown: 'back', arrowleft: 'left', arrowright: 'right',
+};
 let currentMark = 0;
 let recording = null;      /* { startedAt, samples[], marks[] } */
 let sessions = [];         /* 已完成的录制会话 */
 let sessionSeq = 0;
 const SESSION_STORE_KEY = 'carDebugSessionsV1';
 
+/* 主车 = WASD，从车 = 方向键，固定不变；两个控制板常显，可同时独立驾驶。 */
+function updateDriveControls() {
+    document.querySelectorAll('.drive-key[data-drive-car]').forEach((button) => {
+        button.disabled = !writer || !driveEnabled;
+    });
+    $('driveHint').innerHTML = driveEnabled ?
+        '键盘已接管：<kbd>W</kbd><kbd>A</kbd><kbd>S</kbd><kbd>D</kbd> 控主车，方向键 <kbd>↑</kbd><kbd>↓</kbd><kbd>←</kbd><kbd>→</kbd> 控从车，可同时独立驾驶 · 松开即停 · <kbd>Esc</kbd> 急停两车' :
+        '启用后：<kbd>W</kbd><kbd>A</kbd><kbd>S</kbd><kbd>D</kbd> 控主车，方向键控从车；两套按键可同时用，松开即停。';
+}
+
 function setDriveEnabled(on) {
     driveEnabled = on && !!writer;
     $('drivePanel').classList.toggle('armed', driveEnabled);
     $('btnDriveMode').textContent = driveEnabled ? '停用键盘驾驶' : '启用键盘驾驶';
     $('btnDriveMode').classList.toggle('primary', driveEnabled);
-    $('driveHint').innerHTML = driveEnabled ?
-        '键盘已接管：<kbd>W</kbd> 前进 <kbd>S</kbd> 停 <kbd>A</kbd>/<kbd>D</kbd> 转向 · <kbd>Esc</kbd> 急停' :
-        '启用后用 <kbd>W</kbd><kbd>A</kbd><kbd>S</kbd><kbd>D</kbd> 驾驶；转向是相对角命令，会等它转完再响应下一个键。';
-    if (!driveEnabled) {
-        document.querySelectorAll('.drive-key').forEach(
-            (b) => b.classList.remove('held'));
-    }
+    /* 进入驾驶时清零方向；退出或断连时分别补发两车停车帧。 */
+    clearDrive(!driveEnabled);
+    clearDriveSlave(!driveEnabled);
+    updateDriveControls();
 }
 
-async function driveAction(action) {
+/*
+ * 差速混合：油门(W/S) 与方向(A/D) → 左右轮速。
+ *   左轮 = 油门 − 方向偏置    右轮 = 油门 + 方向偏置
+ * 只按方向不给油门 → 左右轮反向 → 原地自转；油门+方向 → 走弧线；全松 → 停。
+ */
+function driveVector() {
+    const speed = Math.abs(parseInt($('driveSpeed').value, 10) || 250);
+    const turn = Math.abs(parseInt($('driveTurn').value, 10) || 150);
+    const throttle = (driveHeld.forward ? 1 : 0) - (driveHeld.back ? 1 : 0);
+    const steer = (driveHeld.right ? 1 : 0) - (driveHeld.left ? 1 : 0);
+    const base = throttle * speed;
+    const bias = steer * turn;
+    const clamp = (v) => Math.max(-800, Math.min(800, Math.round(v)));
+    return { left: clamp(base + bias), right: clamp(base - bias) };
+}
+
+function updateDriveVisuals() {
+    document.querySelectorAll('.drive-key[data-drive-car="master"]').forEach((btn) => {
+        const dir = btn.dataset.drive;
+        if (Object.prototype.hasOwnProperty.call(driveHeld, dir)) {
+            btn.classList.toggle('held', driveHeld[dir]);
+        }
+    });
+}
+
+/* 按当前按住状态算一帧并下发；与上一帧相同就不重复发。 */
+async function applyDrive() {
     if (!writer) {
         return;
     }
-    const speed = Math.abs(parseInt($('driveSpeed').value, 10) || 250);
-    const turn = Math.abs(parseInt($('driveTurn').value, 10) || 30);
-
-    if (action === 'forward') {
-        await send('W' + speed);
-    } else if (action === 'stop') {
-        await send('W0');
-    } else if (action === 'left' || action === 'right') {
-        /* 转向期间固件会拒绝新动作，本地先挡一层，免得刷满 ERR BUSY。 */
-        if (driveTurning) {
-            return;
-        }
-        driveTurning = true;
-        const sign = action === 'left' ? -1 : 1;
-        try {
-            await sendAndWait('T' + (sign * turn), (line) =>
-                line === 'OK' || line.startsWith('ERR'), 1200);
-        } catch (err) {
-            /* 超时不致命，放开锁让下一次按键可用。 */
-        }
-        /* 转向动作本身还要跑一会儿，靠 mode 回 IDLE/DONE 解锁更准，
-           但这里用保守延时即可——遥控场景对 50ms 级精度不敏感。 */
-        setTimeout(() => { driveTurning = false; }, 250);
-    }
-}
-
-function flashDriveKey(action) {
-    const btn = document.querySelector(`.drive-key[data-drive="${action}"]`);
-    if (!btn) {
+    const { left, right } = driveVector();
+    const frame = left + '/' + right;
+    if (frame === lastDriveSent) {
         return;
     }
-    btn.classList.add('held');
-    setTimeout(() => btn.classList.remove('held'), 160);
+    lastDriveSent = frame;
+    await send('J' + frame);
+}
+
+function pressDrive(dir) {
+    if (!writer || !driveEnabled) {
+        return;
+    }
+    if (dir === 'stop') {
+        clearDrive(true);
+        return;
+    }
+    if (!Object.prototype.hasOwnProperty.call(driveHeld, dir) || driveHeld[dir]) {
+        return;
+    }
+    driveHeld[dir] = true;
+    updateDriveVisuals();
+    applyDrive();
+}
+
+function releaseDrive(dir) {
+    if (dir === 'stop' ||
+        !Object.prototype.hasOwnProperty.call(driveHeld, dir) ||
+        !driveHeld[dir]) {
+        return;
+    }
+    driveHeld[dir] = false;
+    updateDriveVisuals();
+    applyDrive();
+}
+
+/* 松开所有方向；sendStop 为真时补发一帧 J0/0 确保车真的停住。 */
+function clearDrive(sendStop) {
+    for (const key of Object.keys(driveHeld)) {
+        driveHeld[key] = false;
+    }
+    updateDriveVisuals();
+    lastDriveSent = null;
+    if (sendStop) {
+        applyDrive();
+    }
 }
 
 /* ---------- 录制 ---------- */
@@ -3184,7 +3357,7 @@ function setMark(value) {
 }
 
 function startRecording() {
-    recording = { startedAt: Date.now(), samples: [], marks: [] };
+    recording = { startedAt: Date.now(), samples: [], samplesSlave: [], marks: [] };
     $('btnRecord').textContent = '停止录制';
     $('btnRecord').classList.remove('primary');
     $('btnRecord').classList.add('danger');
@@ -3197,20 +3370,25 @@ function stopRecording() {
         return;
     }
     const summary = summarizeSession(recording.samples);
-    if (summary.count > 0) {
+    const summarySlave = summarizeSession(recording.samplesSlave);
+    if (summary.count > 0 || summarySlave.count > 0) {
         sessions.unshift({
             id: ++sessionSeq,
             time: new Date(recording.startedAt),
             samples: recording.samples,
+            samplesSlave: recording.samplesSlave,
             summary,
+            summarySlave,
         });
         if (sessions.length > 6) {
             sessions.pop();
         }
-        log(`=== 录制结束 · ${summary.count} 样本 · ` +
-            `${(summary.durationMs / 1000).toFixed(1)}s · 实际 ${summary.rateHz}Hz ===`, 'ok');
+        const durS = Math.max(summary.durationMs, summarySlave.durationMs) / 1000;
+        log(`=== 录制结束 · 主车 ${summary.count} 样本/${summary.rateHz}Hz · ` +
+            `从车 ${summarySlave.count} 样本/${summarySlave.rateHz}Hz · ` +
+            `${durS.toFixed(1)}s ===`, 'ok');
     } else {
-        log('录制结束，但没有采到样本（检查遥测频率是否为 0）', 'err');
+        log('录制结束，但没有采到样本（检查主/从遥测频率是否为 0）', 'err');
     }
     recording = null;
     $('btnRecord').textContent = '开始录制';
@@ -3228,19 +3406,41 @@ function updateRecordStatus() {
         return;
     }
     const summary = summarizeSession(recording.samples);
+    const summarySlave = summarizeSession(recording.samplesSlave);
+    const durS = Math.max(summary.durationMs, summarySlave.durationMs) / 1000;
     el.innerHTML = '<span class="rec-dot"></span>' +
-        `录制中 · ${summary.count} 样本 · ${(summary.durationMs / 1000).toFixed(1)}s` +
-        (summary.rateHz > 0 ? ` · ${summary.rateHz}Hz` : '');
+        `录制中 · 主 ${summary.count}` +
+        (summarySlave.count > 0 ? ` / 从 ${summarySlave.count}` : '') +
+        ` 样本 · ${durS.toFixed(1)}s` +
+        (summary.rateHz > 0 ? ` · 主 ${summary.rateHz}Hz` : '') +
+        (summarySlave.rateHz > 0 ? ` · 从 ${summarySlave.rateHz}Hz` : '');
 }
 
-/* 由读取循环调用：录制时把样本连同当前标记一起存下来。 */
+/* 由读取循环调用：录制时把主车样本连同当前标记一起存下来。
+   t = 相对录制起点的 PC 接收时刻，作为主/从两路的共同时间轴——两车各自的固件
+   ms 来自不同 MCU，无法直接对齐，只有 PC 收到的时刻能把两车拼到一根轴上。 */
 function captureForRecording(addedCount) {
     if (!recording || addedCount <= 0) {
         return;
     }
+    const t = Date.now() - recording.startedAt;
     const fresh = parser.samples.slice(-addedCount);
     for (const s of fresh) {
-        recording.samples.push({ ...s, mark: currentMark });
+        recording.samples.push({ t, ...s, mark: currentMark });
+    }
+    updateRecordStatus();
+}
+
+/* 从车录制：与主车共用同一次 recording，但样本存进独立数组、共用同一根 t 轴。
+   帧率天然等于从车遥测帧率（读取循环收到多少从车帧就录多少），不额外限流。 */
+function captureSlaveForRecording(addedCount) {
+    if (!recording || addedCount <= 0) {
+        return;
+    }
+    const t = Date.now() - recording.startedAt;
+    const fresh = slaveParser.samples.slice(-addedCount);
+    for (const s of fresh) {
+        recording.samplesSlave.push({ t, ...s, mark: currentMark });
     }
     updateRecordStatus();
 }
@@ -3250,7 +3450,8 @@ function persistSessions() {
         /* 样本可能上万条，localStorage 有 5MB 上限；只存元数据，
            数据本身留在内存，页面刷新后需要重新录制。 */
         const meta = sessions.map((s) => ({
-            id: s.id, time: s.time.toISOString(), summary: s.summary,
+            id: s.id, time: s.time.toISOString(),
+            summary: s.summary, summarySlave: s.summarySlave,
         }));
         localStorage.setItem(SESSION_STORE_KEY, JSON.stringify(meta));
     } catch (err) {
@@ -3272,37 +3473,61 @@ function renderSessions() {
             .filter(([mark]) => mark !== '0')
             .map(([mark, n]) => `${MARK_LABELS[mark - 1] || mark}×${n}`)
             .join(' ');
+        const slaveSamples = session.samplesSlave || [];
+        const slaveCount = (session.summarySlave && session.summarySlave.count) || 0;
+        const durMs = Math.max(session.summary.durationMs,
+            (session.summarySlave && session.summarySlave.durationMs) || 0);
         const info = document.createElement('span');
         info.textContent =
             `#${session.id} ${session.time.toTimeString().slice(0, 8)} · ` +
-            `${session.summary.count} 样本 · ` +
-            `${(session.summary.durationMs / 1000).toFixed(1)}s · ` +
+            `主 ${session.summary.count}` +
+            (slaveCount > 0 ? ` / 从 ${slaveCount}` : '') + ` 样本 · ` +
+            `${(durMs / 1000).toFixed(1)}s · ` +
             `${session.summary.rateHz}Hz` + (marks ? ` · ${marks}` : '');
 
         const btnCsv = document.createElement('button');
         btnCsv.className = 'mini';
         btnCsv.textContent = '整段 CSV';
-        btnCsv.onclick = () => downloadText(samplesToCsv(session.samples),
-            `session${session.id}.csv`, 'text/csv');
+        btnCsv.title = slaveCount > 0 ?
+            '主车、从车各导出一个 CSV（共用 t 时间轴，可按 t 对齐两车）' :
+            '导出整段 CSV';
+        btnCsv.onclick = () => {
+            if (slaveCount > 0) {
+                downloadText(samplesToCsv(session.samples),
+                    `session${session.id}_master.csv`, 'text/csv');
+                downloadText(samplesToCsv(slaveSamples),
+                    `session${session.id}_slave.csv`, 'text/csv');
+            } else {
+                downloadText(samplesToCsv(session.samples),
+                    `session${session.id}.csv`, 'text/csv');
+            }
+        };
 
         const btnSplit = document.createElement('button');
         btnSplit.className = 'mini';
         btnSplit.textContent = '按标记分段';
-        btnSplit.title = '每个标记段导出一个 CSV，便于按场景分类使用';
+        btnSplit.title = '每个标记段导出一个 CSV，便于按场景分类使用（主/从分开）';
         btnSplit.onclick = () => {
-            const segments = segmentByMark(session.samples)
-                .filter((seg) => seg.samples.length >= 5);
-            if (segments.length === 0) {
+            const exportSegments = (samples, carTag) => {
+                const segments = segmentByMark(samples)
+                    .filter((seg) => seg.samples.length >= 5);
+                segments.forEach((seg, i) => {
+                    const name = seg.mark === 0 ? 'unmarked' :
+                        (MARK_LABELS[seg.mark - 1] || `mark${seg.mark}`);
+                    downloadText(samplesToCsv(seg.samples),
+                        `session${session.id}_${carTag}_${i + 1}_${name}.csv`, 'text/csv');
+                });
+                return segments.length;
+            };
+            let total = exportSegments(session.samples, 'master');
+            if (slaveCount > 0) {
+                total += exportSegments(slaveSamples, 'slave');
+            }
+            if (total === 0) {
                 log('没有足够长的分段可导出', 'err');
                 return;
             }
-            segments.forEach((seg, i) => {
-                const name = seg.mark === 0 ? 'unmarked' :
-                    (MARK_LABELS[seg.mark - 1] || `mark${seg.mark}`);
-                downloadText(samplesToCsv(seg.samples),
-                    `session${session.id}_${i + 1}_${name}.csv`, 'text/csv');
-            });
-            log(`已导出 ${segments.length} 个分段`, 'ok');
+            log(`已导出 ${total} 个分段`, 'ok');
         };
 
         div.append(info, btnCsv, btnSplit);
@@ -3354,14 +3579,26 @@ function rebuildSeries() {
     });
 }
 
-function drawPlot() {
+/*
+ * 主/从共用的曲线渲染核心。原先 drawPlot / drawSlavePlot 是两份会各自漂移的拷贝——
+ * 从车那份图例压在曲线上、没有悬浮读数、缺横轴中点。现在两图都走这一个函数，差异
+ * 全由 cfg 描述：主车传暂停快照 / 基准叠加 / mode 显示，从车传 null 即退化；网格、
+ * 多量纲分组、坐标刻度、右侧图例、悬浮十字线两边完全一致。
+ * cfg = { canvas, ctx, parser, selected(Set), winId, sampleCountId, modeId|null,
+ *         snapshot|null, hoverX|null, reference|null }
+ */
+function renderPlot(cfg) {
+    const canvas = cfg.canvas;
+    const ctx = cfg.ctx;
+    const parser = cfg.parser;
+    const selected = cfg.selected;
     /* 超高 DPI 画布像素数会成倍放大；2 倍已足够清晰。 */
     const dpr = Math.min(window.devicePixelRatio || 1, 2);
-    const w = plotEl.clientWidth;
-    const h = plotEl.clientHeight;
-    if (plotEl.width !== w * dpr || plotEl.height !== h * dpr) {
-        plotEl.width = w * dpr;
-        plotEl.height = h * dpr;
+    const w = canvas.clientWidth;
+    const h = canvas.clientHeight;
+    if (canvas.width !== w * dpr || canvas.height !== h * dpr) {
+        canvas.width = w * dpr;
+        canvas.height = h * dpr;
     }
     ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
     ctx.clearRect(0, 0, w, h);
@@ -3380,15 +3617,17 @@ function drawPlot() {
         ctx.stroke();
     }
 
-    /* 暂停时画冻结快照，实时数据仍在后台累积。 */
-    const source = plotSnapshot || parser.samples;
-    const win = Math.max(2, parseInt($('winVal').value, 10) || 600);
+    /* 暂停时画冻结快照（仅主车传 snapshot），实时数据仍在后台累积。 */
+    const source = cfg.snapshot || parser.samples;
+    const win = Math.max(2, parseInt($(cfg.winId).value, 10) || 600);
     const rawData = source.slice(-win);
     const renderLimit = Math.max(200, Math.floor(plotW * 2));
     const data = downsampleForPlot(rawData, renderLimit, [...selected]);
-    $('sampleCount').textContent = parser.samples.length;
-    if (rawData.length > 0 && rawData[rawData.length - 1].mode !== undefined) {
-        $('modeVal').textContent = rawData[rawData.length - 1].mode;
+    if (cfg.sampleCountId) {
+        $(cfg.sampleCountId).textContent = parser.samples.length;
+    }
+    if (cfg.modeId && rawData.length > 0 && rawData[rawData.length - 1].mode !== undefined) {
+        $(cfg.modeId).textContent = rawData[rawData.length - 1].mode;
     }
     if (data.length < 2 || selected.size === 0) {
         return;
@@ -3404,10 +3643,9 @@ function drawPlot() {
         pad.l + (plotW * (s.ms - baseMs)) / spanMs :
         pad.l + (plotW * i) / (data.length - 1);
 
-    /* 基准试验：同一时间刻度下的虚线叠加，各自从记录起点对齐。 */
-    const refCandidate = runs.find((r) => r.id === referenceRunId);
-    const ref = refCandidate && runMatchesFocus(refCandidate) ? refCandidate : null;
-    const refRaw = (ref && ref.samples.length > 1) ? ref.samples : null;
+    /* 基准试验：同一时间刻度下的虚线叠加，各自从记录起点对齐（仅主车传 reference）。 */
+    const ref = (cfg.reference && cfg.reference.samples.length > 1) ? cfg.reference : null;
+    const refRaw = ref ? ref.samples : null;
     const refBaseMs = refRaw ? refRaw[0].ms : 0;
     const refVisible = (refRaw && timeValid) ? refRaw.filter((sample) =>
         sample.ms - refBaseMs <= spanMs) : refRaw;
@@ -3547,11 +3785,11 @@ function drawPlot() {
     }
 
     /* 悬浮读数：最近样本的十字线 + 所有勾选列的数值。 */
-    if (hoverX !== null && hoverX >= pad.l && hoverX <= pad.l + plotW) {
+    if (cfg.hoverX !== null && cfg.hoverX >= pad.l && cfg.hoverX <= pad.l + plotW) {
         let idx;
         const hoverData = rawData;
         if (timeValid) {
-            const targetMs = baseMs + ((hoverX - pad.l) / plotW) * spanMs;
+            const targetMs = baseMs + ((cfg.hoverX - pad.l) / plotW) * spanMs;
             let lo = 0;
             let hi = hoverData.length - 1;
             while (hi - lo > 1) {
@@ -3560,7 +3798,7 @@ function drawPlot() {
             }
             idx = (targetMs - hoverData[lo].ms <= hoverData[hi].ms - targetMs) ? lo : hi;
         } else {
-            idx = Math.round(((hoverX - pad.l) / plotW) * (hoverData.length - 1));
+            idx = Math.round(((cfg.hoverX - pad.l) / plotW) * (hoverData.length - 1));
         }
         const s = hoverData[idx];
         const x = timeValid ?
@@ -3602,40 +3840,77 @@ function drawPlot() {
     }
 }
 
+/* 主车曲线：带暂停快照、基准试验虚线叠加、mode 显示、悬浮读数。 */
+function drawPlot() {
+    const refCandidate = runs.find((r) => r.id === referenceRunId);
+    const ref = refCandidate && runMatchesFocus(refCandidate) ? refCandidate : null;
+    renderPlot({
+        canvas: plotEl, ctx, parser, selected,
+        winId: 'winVal', sampleCountId: 'sampleCount', modeId: 'modeVal',
+        snapshot: plotSnapshot, hoverX, reference: ref,
+    });
+}
+
+const PLOT_FPS_CAP = 59;                            /* 重绘帧率上限 */
+const PLOT_MIN_INTERVAL_MS = 1000 / PLOT_FPS_CAP;  /* ≈16.95ms，两次重绘的最短间隔 */
+
 /*
- * 遥测最高可达数十 Hz，每收一行就重绘会卡死页面，所以合并到下一个渲染帧再画。
- * 这里不用常驻的 rAF 循环——那样页面空闲时也会满帧空转，白耗 CPU 和电池。
- * 只有真正有新数据时才排一帧，画完自然停下。暂停时数据照常累积，只是不画。
+ * 主/从共用的重绘调度器。只有新数据到达才排一帧（不常驻 rAF 空转），并把重绘限到
+ * PLOT_FPS_CAP：遥测再快（哪怕 100Hz），一秒也最多画这么多次，多出来的数据合并进
+ * 下一帧一起画——点不丢，只是不超过屏幕能显示的帧数而白耗 CPU。
+ * 顺带用相邻两帧间隔的指数滑动平均实测重绘帧率，写进 fpsId 显示：遥测 20Hz 时读数
+ * 约 20，遥测够快时顶到上限。
  */
+function makeRedrawScheduler(draw, fpsId) {
+    const st = { pending: false, timer: null, lastAt: 0, lastFrameAt: 0, fps: 0 };
+    st.request = () => {
+        if (st.pending) { return; }
+        st.pending = true;
+        const wait = Math.max(0, PLOT_MIN_INTERVAL_MS - (performance.now() - st.lastAt));
+        const run = () => {
+            st.timer = null;
+            requestAnimationFrame(() => {
+                const now = performance.now();
+                if (st.lastFrameAt > 0) {
+                    const inst = 1000 / Math.max(1, now - st.lastFrameAt);
+                    st.fps = st.fps > 0 ? st.fps * 0.8 + inst * 0.2 : inst;
+                    if (fpsId) {
+                        const shown = String(Math.round(st.fps));
+                        const el = $(fpsId);
+                        if (el.textContent !== shown) { el.textContent = shown; }
+                    }
+                }
+                st.lastFrameAt = now;
+                st.lastAt = now;
+                st.pending = false;
+                draw();
+            });
+        };
+        if (wait > 1) { st.timer = setTimeout(run, wait); } else { run(); }
+    };
+    return st;
+}
+
+const masterRedraw = makeRedrawScheduler(drawPlot, 'plotFps');
+const slaveRedraw = makeRedrawScheduler(drawSlavePlot, 'slaveFps');
+
+/* 暂停时数据照常累积，只是不画（force 用于窗口/暂停/悬浮这类需立即反映的改动）。 */
 function requestRedraw(force = false) {
     if (plotPaused && !force) {
         return;
     }
-    if (needsRedraw) {
-        return;
-    }
-    needsRedraw = true;
-    const delay = Math.max(0, PLOT_MIN_INTERVAL_MS - (performance.now() - lastPlotAt));
-    const queueFrame = () => {
-        redrawTimer = null;
-        requestAnimationFrame(() => {
-            needsRedraw = false;
-            lastPlotAt = performance.now();
-            drawPlot();
-        });
-    };
-    if (delay > 1) {
-        redrawTimer = setTimeout(queueFrame, delay);
-    } else {
-        queueFrame();
-    }
+    masterRedraw.request();
 }
 
 /* ---------- 事件绑定 ---------- */
 
 $('btnConnect').onclick = connect;
 $('btnDisconnect').onclick = disconnect;
-$('btnStop').onclick = () => session ? stopSession('急停按钮', true) : emergencyStop();
+$('btnStop').onclick = () => {
+    clearDrive(true);
+    clearDriveSlave(true);
+    return session ? stopSession('急停按钮', true) : emergencyStop();
+};
 
 document.querySelectorAll('button[data-send]').forEach((btn) => {
     btn.onclick = () => send(btn.dataset.send + $(btn.dataset.from).value);
@@ -3719,11 +3994,20 @@ $('btnRecord').onclick = () => {
         startRecording();
     }
 };
-document.querySelectorAll('.drive-key').forEach((btn) => {
-    btn.onclick = () => {
-        flashDriveKey(btn.dataset.drive);
-        driveAction(btn.dataset.drive);
+document.querySelectorAll('.drive-key[data-drive-car]').forEach((btn) => {
+    const dir = btn.dataset.drive;
+    const car = btn.dataset.driveCar;
+    /* 按住即走、松开即停：指针按下驱动，抬起/移出/取消都当作松开。 */
+    btn.addEventListener('pointerdown', (e) => {
+        e.preventDefault();
+        if (car === 'master') { pressDrive(dir); } else { pressDriveSlave(dir); }
+    });
+    const release = () => {
+        if (car === 'master') { releaseDrive(dir); } else { releaseDriveSlave(dir); }
     };
+    btn.addEventListener('pointerup', release);
+    btn.addEventListener('pointerleave', release);
+    btn.addEventListener('pointercancel', release);
 });
 
 /*
@@ -3747,16 +4031,33 @@ document.addEventListener('keydown', (e) => {
     if (!driveEnabled || e.repeat) {
         return;
     }
-    const action = {
-        w: 'forward', W: 'forward',
-        s: 'stop', S: 'stop',
-        a: 'left', A: 'left',
-        d: 'right', D: 'right',
-    }[e.key];
-    if (action) {
+    const dir = DRIVE_KEY_MAP[e.key.toLowerCase()];
+    if (dir) {
         e.preventDefault();
-        flashDriveKey(action);
-        driveAction(action);
+        pressDrive(dir);
+    }
+    /* 方向键独立驾驶从车（与 WASD 同时可用）。 */
+    const sdir = ARROW_KEY_MAP[e.key.toLowerCase()];
+    if (sdir) {
+        e.preventDefault();
+        pressDriveSlave(sdir);
+    }
+});
+
+/* 松键即松油门/方向。只在驾驶模式下接管，避免干扰正常输入。 */
+document.addEventListener('keyup', (e) => {
+    if (!driveEnabled) {
+        return;
+    }
+    const dir = DRIVE_KEY_MAP[e.key.toLowerCase()];
+    if (dir) {
+        e.preventDefault();
+        releaseDrive(dir);
+    }
+    const sdir = ARROW_KEY_MAP[e.key.toLowerCase()];
+    if (sdir) {
+        e.preventDefault();
+        releaseDriveSlave(sdir);
     }
 });
 
@@ -3767,6 +4068,248 @@ $('btnFocusSeries').onclick = () => {
     rebuildSeries();
     requestRedraw(true);
 };
+
+/* ==================== 从车曲线面板 ==================== */
+
+/*
+ * 顶层分流。把电脑收到的字节流按“完整帧”切分：0xAA 帧走主车 parser，0xAB 帧走
+ * slaveParser（分派前把首字节归一化成 0xAA，两解析器内部逻辑一致，CRC 不含 magic
+ * 所以安全），其余非帧字节当文本喂主车 parser（OK/ERR/SLV/PEER 行）。
+ */
+const streamDemux = { state: 'idle', magic0: 0, buf: [] , need: 0 };
+function routeStream(u8) {
+    const masterEv = {
+        textLines: [], schemaChanged: false, samplesAdded: 0,
+        captureStarted: false, captureAdded: 0, captureEnded: false,
+    };
+    const slaveEv = { schemaChanged: false, samplesAdded: 0 };
+    const feedMaster = (arr) => {
+        const r = parser.feed(arr);
+        masterEv.textLines.push(...r.textLines);
+        masterEv.schemaChanged = masterEv.schemaChanged || r.schemaChanged;
+        masterEv.samplesAdded += r.samplesAdded;
+        masterEv.captureStarted = masterEv.captureStarted || r.captureStarted;
+        masterEv.captureAdded += r.captureAdded;
+        masterEv.captureEnded = masterEv.captureEnded || r.captureEnded;
+    };
+    const d = streamDemux;
+    for (let i = 0; i < u8.length; i += 1) {
+        const b = u8[i] & 0xFF;
+        if (d.state === 'idle') {
+            if (b === 0xAA || b === 0xAB) { d.magic0 = b; d.buf = [b]; d.state = 'magic1'; }
+            else { feedMaster([b]); }
+        } else if (d.state === 'magic1') {
+            if (b === 0x55) { d.buf.push(b); d.state = 'header'; }
+            else if (b === 0xAA || b === 0xAB) { d.magic0 = b; d.buf = [b]; }
+            else { feedMaster([d.magic0, b]); d.state = 'idle'; }
+        } else if (d.state === 'header') {
+            d.buf.push(b);              /* 累积 VER TYPE SEQ LEN */
+            if (d.buf.length === 6) { d.need = b + 1; d.state = 'body'; } /* b=LEN，+1=CRC */
+        } else if (d.state === 'body') {
+            d.buf.push(b); d.need -= 1;
+            if (d.need === 0) {
+                const isSlave = (d.magic0 === 0xAB);
+                d.buf[0] = 0xAA;        /* 归一化首字节，喂给对应解析器 */
+                if (isSlave) {
+                    const r = slaveParser.feed(d.buf);
+                    slaveEv.schemaChanged = slaveEv.schemaChanged || r.schemaChanged;
+                    slaveEv.samplesAdded += r.samplesAdded;
+                } else {
+                    feedMaster(d.buf);
+                }
+                d.state = 'idle';
+            }
+        }
+    }
+    return { masterEv, slaveEv };
+}
+
+const plotSlaveEl = $('plotSlave');
+const ctxSlave = plotSlaveEl.getContext('2d');
+let slaveLastFrameAt = 0;
+let hoverXSlave = null;   /* 从车曲线悬浮读数横坐标（CSS 像素） */
+
+function markSlaveAlive() { slaveLastFrameAt = performance.now(); }
+
+/* 与主车同一个调度器（见 masterRedraw/slaveRedraw），同样的 59fps 上限和实测帧率。 */
+function requestRedrawSlave() {
+    slaveRedraw.request();
+}
+
+/* 从车图例：勾选要画的列。默认全选（从车列一般不多）。 */
+function rebuildSeriesSlave() {
+    const cols = slaveParser.numericColumns();
+    const box = $('seriesSlave');
+    box.innerHTML = '';
+    if (cols.length === 0) {
+        box.innerHTML = '<span class="hint">开启从车遥测后按表头自动列出可画列</span>';
+        return;
+    }
+    slaveSelected = new Set([...slaveSelected].filter((c) => cols.includes(c)));
+    if (slaveSelected.size === 0) { cols.forEach((c) => slaveSelected.add(c)); }
+    cols.forEach((col, i) => {
+        const color = PALETTE[i % PALETTE.length];
+        const label = document.createElement('label');
+        const cb = document.createElement('input');
+        cb.type = 'checkbox';
+        cb.checked = slaveSelected.has(col);
+        cb.onchange = () => {
+            if (cb.checked) { slaveSelected.add(col); } else { slaveSelected.delete(col); }
+            requestRedrawSlave();
+        };
+        const sw = document.createElement('span');
+        sw.className = 'sw';
+        sw.style.background = color;
+        label.append(cb, sw, document.createTextNode(col));
+        label.title = '刻度组：' + slaveParser.unitOf(col);
+        box.appendChild(label);
+    });
+}
+
+/* 从车曲线：与主车共用 renderPlot，只是没有暂停/基准/mode，仍拿到一致的
+   右侧图例、横轴中点和悬浮读数。 */
+function drawSlavePlot() {
+    renderPlot({
+        canvas: plotSlaveEl, ctx: ctxSlave, parser: slaveParser, selected: slaveSelected,
+        winId: 'winSlave', sampleCountId: 'slaveSampleCount', modeId: null,
+        snapshot: null, hoverX: hoverXSlave, reference: null,
+    });
+}
+
+/* 从车掩码勾选框（复用 12 通道位定义），默认轮速子集。 */
+(function buildSlaveMaskUI() {
+    const box = $('slaveMask');
+    if (!box) { return; }
+    const defaults = ['TL', 'LV', 'PL', 'TR', 'RV', 'PR'];
+    CH_LIST.forEach(([name]) => {
+        const label = document.createElement('label');
+        label.style.marginRight = '8px';
+        const cb = document.createElement('input');
+        cb.type = 'checkbox';
+        cb.dataset.ch = name;
+        cb.checked = defaults.includes(name);
+        cb.onchange = updateSlaveBandwidth;
+        label.append(cb, document.createTextNode(name));
+        box.appendChild(label);
+    });
+})();
+
+function slaveMaskValue() {
+    let m = 0;
+    $('slaveMask').querySelectorAll('input[data-ch]').forEach((cb) => {
+        if (cb.checked) { m |= CH[cb.dataset.ch]; }
+    });
+    return m;
+}
+
+/* 估算从车流在主车 UART1 上占的带宽（与主车遥测共用 11520 B/s）。 */
+function updateSlaveBandwidth() {
+    const el = $('slaveBandwidth');
+    if (!el) { return; }
+    const n = CH_LIST.filter(([name]) => slaveMaskValue() & CH[name]).length;
+    const rate = Math.max(0, parseInt($('slaveRate').value, 10) || 0);
+    const bps = rate > 0 ? (11 + 4 * n) * rate : 0;   /* 帧=11+4N 字节 */
+    const pct = Math.round((bps / 11520) * 100);
+    el.textContent = rate > 0 ?
+        `从车流 ≈ ${bps} B/s（占上行 ${pct}%，与主车遥测共用 11520 B/s）` :
+        '从车遥测未开启';
+}
+
+$('btnSlaveMask').onclick = async () => {
+    const m = slaveMaskValue();
+    if (m === 0) { log('从车掩码不能为 0，固件会返回 ERR RANGE', 'err'); return; }
+    await send('@M' + m);
+    updateSlaveBandwidth();
+};
+$('btnSlaveRate').onclick = async () => {
+    const r = Math.max(0, Math.min(100, parseInt($('slaveRate').value, 10) || 0));
+    await send('@G' + r);
+    updateSlaveBandwidth();
+};
+$('btnSlaveStop').onclick = async () => { await send('@G0'); updateSlaveBandwidth(); };
+$('btnSlaveClear').onclick = () => { slaveParser.clear(); requestRedrawSlave(); };
+$('winSlave').oninput = () => { requestRedrawSlave(); };
+/* 从车曲线悬浮读数：与主车一致的十字线 + 数值。 */
+plotSlaveEl.addEventListener('mousemove', (e) => {
+    const rect = plotSlaveEl.getBoundingClientRect();
+    hoverXSlave = e.clientX - rect.left;
+    requestRedrawSlave();
+});
+plotSlaveEl.addEventListener('mouseleave', () => {
+    hoverXSlave = null;
+    requestRedrawSlave();
+});
+$('slaveRate').addEventListener('input', updateSlaveBandwidth);
+updateSlaveBandwidth();
+
+/* 从车链路状态：靠是否持续收到从车帧判断。 */
+setInterval(() => {
+    const el = $('slaveLinkStatus');
+    if (!el) { return; }
+    const alive = slaveLastFrameAt > 0 && (performance.now() - slaveLastFrameAt) < 2000;
+    if (alive) {
+        el.textContent = '从车链路：在线（正在收到遥测）';
+        el.style.color = '#46c17a';
+    } else {
+        el.textContent = slaveLastFrameAt > 0 ?
+            '从车链路：无数据（未开启 @G 或掉线）' : '从车链路：未知（尚未收到从车帧）';
+        el.style.color = '';
+    }
+}, 1000);
+
+/* ---------- 方向键独立驾驶从车（固定走 @J 转发链路） ---------- */
+
+function driveVectorSlave() {
+    const speed = Math.abs(parseInt($('driveSpeedSlave').value, 10) || 250);
+    const turn = Math.abs(parseInt($('driveTurnSlave').value, 10) || 150);
+    const throttle = (driveHeldSlave.forward ? 1 : 0) - (driveHeldSlave.back ? 1 : 0);
+    const steer = (driveHeldSlave.right ? 1 : 0) - (driveHeldSlave.left ? 1 : 0);
+    const base = throttle * speed;
+    const bias = steer * turn;
+    const clamp = (v) => Math.max(-800, Math.min(800, Math.round(v)));
+    return { left: clamp(base + bias), right: clamp(base - bias) };
+}
+async function applyDriveSlave() {
+    if (!writer) { return; }
+    const { left, right } = driveVectorSlave();
+    const frame = left + '/' + right;
+    if (frame === lastDriveSentSlave) { return; }
+    lastDriveSentSlave = frame;
+    await send('@J' + frame);
+}
+
+function updateDriveVisualsSlave() {
+    document.querySelectorAll('.drive-key[data-drive-car="slave"]').forEach((button) => {
+        const dir = button.dataset.drive;
+        if (Object.prototype.hasOwnProperty.call(driveHeldSlave, dir)) {
+            button.classList.toggle('held', driveHeldSlave[dir]);
+        }
+    });
+}
+
+function pressDriveSlave(dir) {
+    if (!writer || !driveEnabled) { return; }
+    if (dir === 'stop') {
+        clearDriveSlave(true);
+        return;
+    }
+    if (!(dir in driveHeldSlave) || driveHeldSlave[dir]) { return; }
+    driveHeldSlave[dir] = true;
+    updateDriveVisualsSlave();
+    applyDriveSlave();
+}
+function releaseDriveSlave(dir) {
+    if (dir === 'stop' || !(dir in driveHeldSlave) || !driveHeldSlave[dir]) { return; }
+    driveHeldSlave[dir] = false;
+    updateDriveVisualsSlave();
+    applyDriveSlave();
+}
+function clearDriveSlave(sendStop) {
+    for (const k of Object.keys(driveHeldSlave)) { driveHeldSlave[k] = false; }
+    updateDriveVisualsSlave();
+    lastDriveSentSlave = null;
+    if (sendStop) { applyDriveSlave(); }
+}
 
 $('btnParamRefresh').onclick = () => send('K?');
 $('btnParamSave').onclick = saveParamsToBrowser;
@@ -3867,6 +4410,8 @@ plotEl.addEventListener('mouseleave', () => {
 /* Esc 全局急停：输入框里按下也生效——急停永远优先。 */
 document.addEventListener('keydown', (e) => {
     if (e.key === 'Escape' && writer) {
+        clearDrive(true);
+        clearDriveSlave(true);
         if (session) {
             stopSession('Esc 急停', true);
         } else {
@@ -3875,8 +4420,16 @@ document.addEventListener('keydown', (e) => {
     }
 });
 
+/* 切出浏览器时可能收不到 keyup，立即清空两套状态并停车。 */
+window.addEventListener('blur', () => {
+    if (driveEnabled && writer) {
+        clearDrive(true);
+        clearDriveSlave(true);
+    }
+});
 window.addEventListener('resize', () => { requestRedraw(true); });
 buildMaskCheckboxes();
+updateDriveControls();
 setConnected(false);
 restoreRuns();
 refreshSessionInputs(true);

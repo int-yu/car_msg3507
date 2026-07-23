@@ -1,6 +1,7 @@
 #include "Application/Control/Nav.h"
 #include "Application/Control/MotionWheel.h"
 #include "Application/State/Heading.h"
+#include "Hardware/Motor/Motor.h"
 #include <math.h>
 
 typedef struct
@@ -253,26 +254,30 @@ void Nav_Update(float dt)
 
     s_context.angleErrorDeg =
         s_context.targetYawDeg - Heading_GetYaw();
-    targetTurnSpeedMMps = Nav_CalculateTargetTurnSpeed();
-    Nav_UpdateSpeedProfile(targetTurnSpeedMMps, dt);
 
+    /*
+     * 到位即主动刹车吸收惯性再判稳。旧逻辑是把转速按斜坡降到 0 后滑行停车：
+     * 滑行会冲过 ±容差，误差随即变号 → 目标转速反向 → 车往回打 →
+     * 在目标角两侧来回猎振，就是用户看到的"哆嗦"。
+     * 主动刹停的过冲远小于滑停；而容差外始终朝目标缓速回驱（转速斜坡从 0
+     * 起，单拍位移远小于容差），因此既能收敛到位又不会卡死在容差外。
+     */
     if (fabsf(s_context.angleErrorDeg) <= Nav_TuneAngleToleranceDeg)
     {
-        if (fabsf(s_context.profileTurnSpeedMMps) <= 0.001f)
+        s_context.profileTurnSpeedMMps = 0.0f;
+        Motor_Brake();
+        s_context.settleCount++;
+        if (s_context.settleCount >= NAV_SETTLE_TICKS)
         {
             MotionWheel_Stop();
-            s_context.settleCount++;
-            if (s_context.settleCount >= NAV_SETTLE_TICKS)
-            {
-                s_context.state = NAV_STATE_COMPLETED;
-            }
-            return;
+            s_context.state = NAV_STATE_COMPLETED;
         }
+        return;
     }
-    else
-    {
-        s_context.settleCount = 0U;
-    }
+
+    s_context.settleCount = 0U;
+    targetTurnSpeedMMps = Nav_CalculateTargetTurnSpeed();
+    Nav_UpdateSpeedProfile(targetTurnSpeedMMps, dt);
 
     if (Nav_ApplyWheelCommand(dt) != MOTION_WHEEL_RESULT_OK)
     {
