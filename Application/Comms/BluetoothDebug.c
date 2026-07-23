@@ -1,658 +1,816 @@
 #include "Application/Comms/BluetoothDebug.h"
+#include "Application/Comms/K230Link.h"
 #include "Application/Control/MotionManager.h"
+#include "Application/Debug/Capture.h"
+#include "Application/Debug/Param.h"
+#include "Application/Debug/Telemetry.h"
 #include "Application/Servo/Servo.h"
 #include "Application/State/Heading.h"
-#include "Application/State/Odometry.h"
 #include "Hardware/Comms/Serial.h"
+#include "Hardware/Motor/Motor.h"
+#include "Hardware/Motor/PWM.h"
 #include <math.h>
-#include <string.h>
+#include <stddef.h>
 
-typedef enum
-{
-    BLUETOOTH_PARSER_WAIT_HEAD = 0,
-    BLUETOOTH_PARSER_FIXED_FIELDS,
-    BLUETOOTH_PARSER_PAYLOAD,
-    BLUETOOTH_PARSER_CRC_LOW,
-    BLUETOOTH_PARSER_CRC_HIGH,
-    BLUETOOTH_PARSER_TAIL
-} BluetoothParser_State_t;
+#define BLUETOOTH_VALUE_ACCUMULATOR_MAX 1000000L
+
+/* K 命令文本参数缓冲：最长形如 "16=-123.4567"，24 字节足够。 */
+#define BLUETOOTH_TEXT_ARGS_SIZE 24U
 
 typedef struct
 {
-    BluetoothParser_State_t state;
-    uint8_t fixedFields[6];
-    uint8_t fixedIndex;
-    uint8_t payload[BLUETOOTH_DEBUG_MAX_PAYLOAD_LENGTH];
-    uint16_t payloadLength;
-    uint16_t payloadIndex;
-    uint16_t calculatedCRC;
-    uint16_t receivedCRC;
+    char command;
+    int32_t magnitude;
+    uint8_t hasCommand;
+    uint8_t hasDigits;
+    uint8_t isNegative;
+    uint8_t idleTicks;
+    char textArgs[BLUETOOTH_TEXT_ARGS_SIZE];
+    uint8_t textLength;
+    uint8_t textOverflow;
 } BluetoothParser_t;
 
-typedef struct
-{
-    int16_t joystickXMMps;
-    int16_t joystickYMMps;
-    int32_t forwardSpeedMMps;
-    int32_t forwardDistanceMM;
-    int16_t turnAngleDeg;
-    uint8_t startForward;
-    uint8_t startTurn;
-} BluetoothControl_t;
-
 static BluetoothParser_t s_parser;
-static BluetoothControl_t s_control;
-static uint8_t s_newControl;
-static uint8_t s_forwardEdgePending;
-static uint8_t s_turnEdgePending;
-static uint8_t s_previousForwardButton;
-static uint8_t s_previousTurnButton;
-static uint8_t s_rearmRequired;
-static uint8_t s_linkActive;
-static uint8_t s_commandAllowed;
-static uint8_t s_ownsMotion;
-static uint16_t s_ticksSinceControl;
-static uint16_t s_telemetryTicks;
-static uint16_t s_txSequence;
-static BluetoothDebug_Result_t s_lastResult;
+static int16_t s_leftCommand;
+static int16_t s_rightCommand;
+static uint8_t s_manualMotorEnabled;
+static uint8_t s_signalPending;
+static uint8_t s_pendingSignal;
+static int16_t s_debugSpeedMMps;
 
-static uint16_t BluetoothDebug_UpdateCRC(uint16_t crc, uint8_t data)
+static uint8_t BluetoothDebug_IsCommand(char value)
 {
-    uint8_t bit;
+    return ((value == 'L') || (value == 'R') || (value == 'U') ||
+            (value == 'C') ||
+            (value == 'O') || (value == 'D') ||
+            (value == 'G') || (value == 'M') ||
+            (value == 'V') || (value == 'F') || (value == 'B') ||
+            (value == 'T') || (value == 'A') || (value == 'Z') ||
+            (value == 'P') ||
+            (value == 'K') || (value == 'W') || (value == 'N') ||
+            (value == 'E') || (value == 'Y') ||
+            (value == 'X') || (value == 'Q')) ? 1U : 0U;
+}
 
-    crc ^= (uint16_t)data << 8;
-    for (bit = 0U; bit < 8U; bit++)
+static uint8_t BluetoothDebug_IsTerminator(char value)
+{
+    return ((value == '\r') || (value == '\n') || (value == ' ') ||
+            (value == ',') || (value == ';') || (value == '\t')) ? 1U : 0U;
+}
+
+static char BluetoothDebug_ToUpper(char value)
+{
+    if ((value >= 'a') && (value <= 'z'))
     {
-        crc = ((crc & 0x8000U) != 0U) ?
-            (uint16_t)((crc << 1) ^ 0x1021U) :
-            (uint16_t)(crc << 1);
+        value = (char)(value - ('a' - 'A'));
     }
-    return crc;
+    return value;
 }
 
-static uint16_t BluetoothDebug_ReadU16(const uint8_t *data)
+static int16_t BluetoothDebug_ClampMotorCommand(int32_t value)
 {
-    return (uint16_t)data[0] | ((uint16_t)data[1] << 8);
+    if (value > (int32_t)PWM_MAX_DUTY)
+    {
+        return (int16_t)PWM_MAX_DUTY;
+    }
+    if (value < -(int32_t)PWM_MAX_DUTY)
+    {
+        return -(int16_t)PWM_MAX_DUTY;
+    }
+    return (int16_t)value;
 }
 
-static int16_t BluetoothDebug_ReadI16(const uint8_t *data)
+static uint16_t BluetoothDebug_ClampServoAngle(int32_t value,
+                                               uint16_t minimum,
+                                               uint16_t maximum)
 {
-    return (int16_t)BluetoothDebug_ReadU16(data);
-}
-
-static int32_t BluetoothDebug_ReadI32(const uint8_t *data)
-{
-    uint32_t value = (uint32_t)data[0] |
-                     ((uint32_t)data[1] << 8) |
-                     ((uint32_t)data[2] << 16) |
-                     ((uint32_t)data[3] << 24);
-    return (int32_t)value;
-}
-
-static void BluetoothDebug_WriteU16(uint8_t *data, uint16_t value)
-{
-    data[0] = (uint8_t)(value & 0xFFU);
-    data[1] = (uint8_t)(value >> 8);
-}
-
-static void BluetoothDebug_WriteU32(uint8_t *data, uint32_t value)
-{
-    data[0] = (uint8_t)(value & 0xFFU);
-    data[1] = (uint8_t)((value >> 8) & 0xFFU);
-    data[2] = (uint8_t)((value >> 16) & 0xFFU);
-    data[3] = (uint8_t)(value >> 24);
-}
-
-static void BluetoothDebug_WriteFloat(uint8_t *data, float value)
-{
-    uint32_t bits;
-
-    memcpy(&bits, &value, sizeof(bits));
-    BluetoothDebug_WriteU32(data, bits);
+    if (value < (int32_t)minimum)
+    {
+        return minimum;
+    }
+    if (value > (int32_t)maximum)
+    {
+        return maximum;
+    }
+    return (uint16_t)value;
 }
 
 static void BluetoothDebug_ResetParser(void)
 {
-    s_parser.state = BLUETOOTH_PARSER_WAIT_HEAD;
-    s_parser.fixedIndex = 0U;
-    s_parser.payloadLength = 0U;
-    s_parser.payloadIndex = 0U;
-    s_parser.calculatedCRC = 0xFFFFU;
-    s_parser.receivedCRC = 0U;
+    s_parser.command = '\0';
+    s_parser.magnitude = 0;
+    s_parser.hasCommand = 0U;
+    s_parser.hasDigits = 0U;
+    s_parser.isNegative = 0U;
+    s_parser.idleTicks = 0U;
+    s_parser.textLength = 0U;
+    s_parser.textOverflow = 0U;
 }
 
-static void BluetoothDebug_RestartParser(uint8_t byte)
+static void BluetoothDebug_SendMotorStatus(void)
 {
+    Serial1_Printf("OK L=%d R=%d\r\n", s_leftCommand, s_rightCommand);
+}
+
+static uint8_t BluetoothDebug_PublishSignal(uint8_t signal)
+{
+    if (signal == 0U)
+    {
+        /* C0 具有最高优先级，待 Mission 读取前不会被普通信号覆盖。 */
+        s_pendingSignal = 0U;
+        s_signalPending = 1U;
+        return 1U;
+    }
+
+    if ((s_signalPending != 0U) && (s_pendingSignal == 0U))
+    {
+        return 0U;
+    }
+
+    /* 普通信号不排队；同一系统拍内只保留最后收到的一条。 */
+    s_pendingSignal = signal;
+    s_signalPending = 1U;
+    return 1U;
+}
+
+/* 网页运动命令与按键任务共用运动层；忙时一律拒绝，由按键保持优先。 */
+static uint8_t BluetoothDebug_RejectIfBusy(void)
+{
+    if (MotionManager_IsBusy() != 0U)
+    {
+        Serial1_SendString("ERR BUSY\r\n");
+        return 1U;
+    }
+    return 0U;
+}
+
+static void BluetoothDebug_ReportMotionResult(MotionManager_Result_t result)
+{
+    if (result == MOTION_MANAGER_RESULT_OK)
+    {
+        /* 捕获在动作真正开始的这一刻起算，样本第一拍即阶跃起点。
+         * 未 arm 时该调用无副作用。 */
+        Capture_Trigger();
+    }
+    if (result == MOTION_MANAGER_RESULT_OK)
+    {
+        Serial1_SendString("OK\r\n");
+    }
+    else
+    {
+        Serial1_Printf("ERR MOTION %d\r\n", (int)result);
+    }
+}
+
+static void BluetoothDebug_ExecuteCommand(void)
+{
+    int32_t value;
+
+    /* K 使用文本参数（可含小数与 '?'），不适用 hasDigits 检查。 */
+    if ((s_parser.hasCommand != 0U) && (s_parser.command == 'K'))
+    {
+        if (s_parser.textOverflow != 0U)
+        {
+            Serial1_SendString("ERR K FORMAT\r\n");
+        }
+        else
+        {
+            s_parser.textArgs[s_parser.textLength] = '\0';
+            Param_HandleCommand(s_parser.textArgs);
+        }
+        BluetoothDebug_ResetParser();
+        return;
+    }
+
+    /* Q 是纯查询，写成裸 "Q" 最自然，不该强迫用户补一个无意义的数字。 */
+    if ((s_parser.hasCommand != 0U) && (s_parser.command == 'Q'))
+    {
+        s_parser.magnitude = 0;
+        s_parser.hasDigits = 1U;
+    }
+
+    if ((s_parser.hasCommand == 0U) || (s_parser.hasDigits == 0U))
+    {
+        Serial1_SendString("ERR FORMAT\r\n");
+        BluetoothDebug_ResetParser();
+        return;
+    }
+
+    value = s_parser.isNegative ? -s_parser.magnitude : s_parser.magnitude;
+
+    switch (s_parser.command)
+    {
+        case 'L':
+            if (s_manualMotorEnabled == 0U)
+            {
+                Serial1_SendString("ERR BUSY\r\n");
+                break;
+            }
+            s_leftCommand = BluetoothDebug_ClampMotorCommand(value);
+            Motor_SetLeftPWM(s_leftCommand);
+            BluetoothDebug_SendMotorStatus();
+            break;
+
+        case 'R':
+            if (s_manualMotorEnabled == 0U)
+            {
+                Serial1_SendString("ERR BUSY\r\n");
+                break;
+            }
+            s_rightCommand = BluetoothDebug_ClampMotorCommand(value);
+            Motor_SetRightPWM(s_rightCommand);
+            BluetoothDebug_SendMotorStatus();
+            break;
+
+        case 'U':
+            if (s_manualMotorEnabled == 0U)
+            {
+                Serial1_SendString("ERR BUSY\r\n");
+                break;
+            }
+            s_leftCommand = BluetoothDebug_ClampMotorCommand(value);
+            s_rightCommand = s_leftCommand;
+            Motor_SetPWM(s_leftCommand, s_rightCommand);
+            BluetoothDebug_SendMotorStatus();
+            break;
+
+        case 'C':
+            if ((s_parser.isNegative != 0U) ||
+                (s_parser.magnitude > (int32_t)BLUETOOTH_TASK_SIGNAL_MAX))
+            {
+                Serial1_SendString("ERR RANGE\r\n");
+            }
+            else
+            {
+                if (BluetoothDebug_PublishSignal(
+                        (uint8_t)s_parser.magnitude) != 0U)
+                {
+                    Serial1_Printf("OK C=%u\r\n",
+                                   (unsigned)s_parser.magnitude);
+                }
+                else
+                {
+                    Serial1_SendString("ERR STOP PENDING\r\n");
+                }
+            }
+            break;
+
+        case 'O':
+            Servo_SetVerticalAngle(BluetoothDebug_ClampServoAngle(
+                value, SERVO_VERTICAL_MIN_ANGLE, SERVO_VERTICAL_MAX_ANGLE));
+            Serial1_Printf("OK O=%u\r\n",
+                           (unsigned)Servo_GetVerticalAngle());
+            break;
+
+        case 'D':
+            Servo_SetHorizontalAngle(BluetoothDebug_ClampServoAngle(
+                value, SERVO_HORIZONTAL_MIN_ANGLE, SERVO_HORIZONTAL_MAX_ANGLE));
+            Serial1_Printf("OK D=%u\r\n",
+                           (unsigned)Servo_GetHorizontalAngle());
+            break;
+
+        case 'G':
+            /* 范围检查必须在 int32_t 上做：(uint8_t)256 == 0，而 G0 是合法值（关闭遥测），
+               只靠被调函数的 uint8_t 参数检查会让 G256 被静默当成 G0 执行。
+               超限时带上当前安全上限，便于用户知道当前掩码下到底能设多少。 */
+            if ((s_parser.isNegative != 0U) ||
+                (value > (int32_t)TELEMETRY_RATE_HARD_LIMIT_HZ) ||
+                (Telemetry_SetRateHz((uint8_t)value) == 0U))
+            {
+                Serial1_Printf("ERR RANGE MAX=%u\r\n",
+                               (unsigned)Telemetry_GetMaxRateHz());
+            }
+            else
+            {
+                Serial1_Printf("OK G=%u\r\n",
+                               (unsigned)Telemetry_GetRateHz());
+            }
+            break;
+
+        case 'M':
+            /* M 现在设置二进制遥测的通道掩码（见 Telemetry.h TELEMETRY_CH_*）。
+               改掩码可能触发自动降频（帧变长，上限下降），成功时同时回报新频率。 */
+            if ((s_parser.isNegative != 0U) ||
+                (value > (int32_t)TELEMETRY_CH_ALL) ||
+                (Telemetry_SetFieldMask((uint16_t)value) == 0U))
+            {
+                Serial1_SendString("ERR RANGE\r\n");
+            }
+            else
+            {
+                Serial1_Printf("OK M=%u G=%u\r\n",
+                               (unsigned)Telemetry_GetFieldMask(),
+                               (unsigned)Telemetry_GetRateHz());
+            }
+            break;
+
+        case 'V':
+            if ((s_parser.isNegative != 0U) ||
+                (value < BLUETOOTH_DEBUG_MIN_SPEED_MMPS) ||
+                (value > BLUETOOTH_DEBUG_MAX_SPEED_MMPS))
+            {
+                Serial1_SendString("ERR RANGE\r\n");
+            }
+            else
+            {
+                s_debugSpeedMMps = (int16_t)value;
+                Serial1_Printf("OK V=%d\r\n", (int)s_debugSpeedMMps);
+            }
+            break;
+
+        case 'F':
+            if (BluetoothDebug_RejectIfBusy() != 0U)
+            {
+                break;
+            }
+            if ((s_parser.isNegative != 0U) || (value <= 0) ||
+                (value > BLUETOOTH_DEBUG_MAX_DISTANCE_MM))
+            {
+                Serial1_SendString("ERR RANGE\r\n");
+                break;
+            }
+            BluetoothDebug_ReportMotionResult(MotionManager_StartForward(
+                (uint32_t)value, (float)s_debugSpeedMMps, 0.0f));
+            break;
+
+        case 'B':
+            if (BluetoothDebug_RejectIfBusy() != 0U)
+            {
+                break;
+            }
+            if ((s_parser.isNegative != 0U) || (value <= 0) ||
+                (value > BLUETOOTH_DEBUG_MAX_DISTANCE_MM))
+            {
+                Serial1_SendString("ERR RANGE\r\n");
+                break;
+            }
+            BluetoothDebug_ReportMotionResult(MotionManager_StartBackward(
+                (uint32_t)value, (float)s_debugSpeedMMps, 0.0f));
+            break;
+
+        case 'T':
+            if (BluetoothDebug_RejectIfBusy() != 0U)
+            {
+                break;
+            }
+            if ((value < -BLUETOOTH_DEBUG_MAX_ANGLE_DEG) ||
+                (value > BLUETOOTH_DEBUG_MAX_ANGLE_DEG))
+            {
+                Serial1_SendString("ERR RANGE\r\n");
+                break;
+            }
+            BluetoothDebug_ReportMotionResult(MotionManager_TurnBy(
+                (float)value, (float)s_debugSpeedMMps));
+            break;
+
+        case 'A':
+            if (BluetoothDebug_RejectIfBusy() != 0U)
+            {
+                break;
+            }
+            if ((value < -BLUETOOTH_DEBUG_MAX_ANGLE_DEG) ||
+                (value > BLUETOOTH_DEBUG_MAX_ANGLE_DEG))
+            {
+                Serial1_SendString("ERR RANGE\r\n");
+                break;
+            }
+            BluetoothDebug_ReportMotionResult(MotionManager_TurnTo(
+                (float)value, (float)s_debugSpeedMMps));
+            break;
+
+        case 'Z':
+            /* 运动期间清零或重新采样都会改掉航向基准，必须拒绝。 */
+            if (BluetoothDebug_RejectIfBusy() != 0U)
+            {
+                break;
+            }
+            if (value == 1)
+            {
+                /* Z1 只改角度基准，不重新估计陀螺仪零漂。 */
+                Heading_SetYaw(0.0f);
+                Serial1_SendString("OK Z=1\r\n");
+            }
+            else if (value == 2)
+            {
+                /* Z2 会阻塞约 0.8 秒；此期间车辆必须完全静止。 */
+                if (Heading_IsReady() == 0U)
+                {
+                    Serial1_SendString("ERR Z OFFLINE\r\n");
+                    break;
+                }
+                if (Heading_IsScaleCalibActive() != 0U)
+                {
+                    Serial1_SendString("ERR Z CALIBRATING\r\n");
+                    break;
+                }
+
+                Heading_Calibrate();
+                if (Heading_IsReady() != 0U)
+                {
+                    Serial1_SendString("OK Z=2\r\n");
+                }
+                else
+                {
+                    Serial1_SendString("ERR Z OFFLINE\r\n");
+                }
+            }
+            else
+            {
+                Serial1_SendString("ERR RANGE\r\n");
+            }
+            break;
+
+        case 'W':
+        {
+            MotionManager_Result_t result;
+
+            if (value == 0)
+            {
+                /* W0 只停恒速模式，不打断按键任务启动的其他运动。 */
+                MotionManager_Mode_t mode = MotionManager_GetMode();
+
+                if ((mode != MOTION_MANAGER_MODE_SPEED) &&
+                    (mode != MOTION_MANAGER_MODE_IDLE))
+                {
+                    Serial1_SendString("ERR BUSY\r\n");
+                    break;
+                }
+                MotionManager_Stop();
+                Serial1_SendString("OK W=0\r\n");
+                break;
+            }
+            if ((value < -BLUETOOTH_DEBUG_MAX_SPEED_MMPS) ||
+                (value > BLUETOOTH_DEBUG_MAX_SPEED_MMPS))
+            {
+                Serial1_SendString("ERR RANGE\r\n");
+                break;
+            }
+            if ((MotionManager_IsBusy() != 0U) &&
+                (MotionManager_GetMode() != MOTION_MANAGER_MODE_SPEED))
+            {
+                Serial1_SendString("ERR BUSY\r\n");
+                break;
+            }
+            result = MotionManager_StartSpeed((float)value);
+            if (result == MOTION_MANAGER_RESULT_OK)
+            {
+                Capture_Trigger();
+                Serial1_Printf("OK W=%d\r\n", (int)value);
+            }
+            else
+            {
+                Serial1_Printf("ERR MOTION %d\r\n", (int)result);
+            }
+            break;
+        }
+
+        case 'N':
+        {
+            MotionManager_Result_t result;
+
+            if (value == 0)
+            {
+                /* N0 只停巡线模式，与 W0 语义一致。 */
+                MotionManager_Mode_t mode = MotionManager_GetMode();
+
+                if ((mode != MOTION_MANAGER_MODE_LINE) &&
+                    (mode != MOTION_MANAGER_MODE_IDLE))
+                {
+                    Serial1_SendString("ERR BUSY\r\n");
+                    break;
+                }
+                MotionManager_Stop();
+                Serial1_SendString("OK N=0\r\n");
+                break;
+            }
+            if ((s_parser.isNegative != 0U) ||
+                (value < BLUETOOTH_DEBUG_MIN_SPEED_MMPS) ||
+                (value > BLUETOOTH_DEBUG_MAX_SPEED_MMPS))
+            {
+                Serial1_SendString("ERR RANGE\r\n");
+                break;
+            }
+            if ((MotionManager_IsBusy() != 0U) &&
+                (MotionManager_GetMode() != MOTION_MANAGER_MODE_LINE))
+            {
+                Serial1_SendString("ERR BUSY\r\n");
+                break;
+            }
+            result = MotionManager_StartLine((float)value);
+            if (result == MOTION_MANAGER_RESULT_OK)
+            {
+                Capture_Trigger();
+                Serial1_Printf("OK N=%d\r\n", (int)value);
+            }
+            else
+            {
+                Serial1_Printf("ERR MOTION %d\r\n", (int)result);
+            }
+            break;
+        }
+
+        case 'E':
+            if ((s_parser.isNegative != 0U) || (value > 1))
+            {
+                Serial1_SendString("ERR RANGE\r\n");
+                break;
+            }
+            if (value == 0)
+            {
+                Heading_ScaleCalibCancel();
+                Serial1_SendString("OK E=0\r\n");
+                break;
+            }
+            /* 标定要求手动原地旋转，自动运动期间的角度会污染积分。 */
+            if (BluetoothDebug_RejectIfBusy() != 0U)
+            {
+                break;
+            }
+            if (Heading_IsReady() == 0U)
+            {
+                Serial1_SendString("ERR CAL OFFLINE\r\n");
+                break;
+            }
+            Heading_ScaleCalibStart();
+            Serial1_SendString("OK E=1\r\n");
+            break;
+
+        case 'Y':
+            if ((s_parser.isNegative != 0U) || (value < 1) ||
+                (value > 20))
+            {
+                Serial1_SendString("ERR RANGE\r\n");
+                break;
+            }
+            if (Heading_IsScaleCalibActive() == 0U)
+            {
+                Serial1_SendString("ERR CAL IDLE\r\n");
+                break;
+            }
+            {
+                float rawAngle = Heading_GetCalibAngle();
+
+                /* 累计角过小说明没转起来，套用会得到荒谬的尺度因子。 */
+                if (fabsf(rawAngle) <= 1.0f)
+                {
+                    Heading_ScaleCalibCancel();
+                    Serial1_SendString("ERR CAL SMALL\r\n");
+                    break;
+                }
+                Serial1_Printf(
+                    "OK Y SCALE=%.4f RAW=%.1f\r\n",
+                    (double)Heading_ScaleCalibFinish((uint16_t)value),
+                    (double)rawAngle);
+            }
+            break;
+
+        case 'X':
+            /* X0 停止并整体输出；X<mask> 选通道并等待下一条运动命令触发。 */
+            if (s_parser.isNegative != 0U)
+            {
+                Serial1_SendString("ERR RANGE\r\n");
+                break;
+            }
+            if (value == 0)
+            {
+                uint16_t count;
+
+                Capture_Stop();
+                count = Capture_StartDump();
+                if (count == 0U)
+                {
+                    Serial1_SendString("ERR X EMPTY\r\n");
+                    break;
+                }
+                Serial1_Printf("OK X DUMP=%u\r\n", (unsigned)count);
+                break;
+            }
+            if ((value > (int32_t)TELEMETRY_CH_ALL) ||
+                (Capture_Arm((uint16_t)value) == 0U))
+            {
+                /* 通道数超限和掩码非法都归到这里，附带上限便于自查。 */
+                Serial1_Printf("ERR X MASK MAXCH=%u\r\n",
+                               (unsigned)CAPTURE_MAX_CHANNELS);
+                break;
+            }
+            Serial1_Printf("OK X ARM=%u CAP=%u\r\n",
+                           (unsigned)Capture_GetChannelMask(),
+                           (unsigned)Capture_GetCapacity());
+            break;
+
+        case 'Q':
+            /* 上位机据此自适应频率，不再各存一份阈值。数值本身与 M/G 无关，
+             * 任何参数都接受，一律回报当前状态。 */
+            Serial1_Printf(
+                "OK Q MAX=%u MASK=%u RATE=%u CAPST=%u CAPN=%u CAPMAX=%u\r\n",
+                (unsigned)Telemetry_GetMaxRateHz(),
+                (unsigned)Telemetry_GetFieldMask(),
+                (unsigned)Telemetry_GetRateHz(),
+                (unsigned)Capture_GetState(),
+                (unsigned)Capture_GetSampleCount(),
+                (unsigned)Capture_GetCapacity());
+            break;
+
+        case 'P':
+            if ((s_parser.isNegative != 0U) || (value <= 0) ||
+                (value > (int32_t)K230_LINK_CAPTURE_MAX_COUNT))
+            {
+                Serial1_SendString("ERR RANGE\r\n");
+                break;
+            }
+            if (K230Link_IsReady() == 0U)
+            {
+                Serial1_SendString("ERR CAP NOLINK\r\n");
+                break;
+            }
+            if (K230Link_RequestCapture((uint8_t)value) == 0U)
+            {
+                Serial1_SendString("ERR CAP BUSY\r\n");
+                break;
+            }
+            Serial1_Printf("OK CAP REQ %d\r\n", (int)value);
+            break;
+
+        default:
+            Serial1_SendString("ERR COMMAND\r\n");
+            break;
+    }
+
     BluetoothDebug_ResetParser();
-    if (byte == BLUETOOTH_DEBUG_FRAME_HEAD)
-    {
-        s_parser.state = BLUETOOTH_PARSER_FIXED_FIELDS;
-    }
 }
 
-static uint8_t BluetoothDebug_ButtonsAreValid(
-    uint8_t startForward, uint8_t startTurn)
+static void BluetoothDebug_StartCommand(char command)
 {
-    return ((startForward <= 1U) && (startTurn <= 1U)) ? 1U : 0U;
-}
-
-static void BluetoothDebug_HandleControlPayload(const uint8_t *payload)
-{
-    BluetoothControl_t next;
-
-    next.joystickXMMps = BluetoothDebug_ReadI16(&payload[0]);
-    next.joystickYMMps = BluetoothDebug_ReadI16(&payload[2]);
-    next.forwardSpeedMMps = BluetoothDebug_ReadI32(&payload[4]);
-    next.forwardDistanceMM = BluetoothDebug_ReadI32(&payload[8]);
-    next.turnAngleDeg = BluetoothDebug_ReadI16(&payload[12]);
-    next.startForward = payload[14];
-    next.startTurn = payload[15];
-
-    if (BluetoothDebug_ButtonsAreValid(
-            next.startForward, next.startTurn) == 0U)
+    if (s_parser.hasCommand != 0U)
     {
-        s_lastResult = BLUETOOTH_DEBUG_RESULT_INVALID_PARAMETER;
-        return;
+        BluetoothDebug_ExecuteCommand();
     }
 
-    /* 开始按钮只响应 0->1 上升沿，周期发送时不会重复触发动作。 */
-    if ((next.startForward != 0U) &&
-        (s_previousForwardButton == 0U))
-    {
-        s_forwardEdgePending = 1U;
-    }
-    if ((next.startTurn != 0U) &&
-        (s_previousTurnButton == 0U))
-    {
-        s_turnEdgePending = 1U;
-    }
-
-    s_previousForwardButton = next.startForward;
-    s_previousTurnButton = next.startTurn;
-    s_ticksSinceControl = 0U;
-    s_linkActive = 1U;
-    s_telemetryTicks = BLUETOOTH_DEBUG_TELEMETRY_TICKS;
-    s_control = next;
-    s_newControl = 1U;
-}
-
-static void BluetoothDebug_HandleFrame(void)
-{
-    uint8_t version = s_parser.fixedFields[0];
-    uint8_t messageId = s_parser.fixedFields[1];
-
-    if ((version != BLUETOOTH_DEBUG_PROTOCOL_VERSION) ||
-        (messageId != BLUETOOTH_DEBUG_MESSAGE_CONTROL) ||
-        (s_parser.payloadLength !=
-         BLUETOOTH_DEBUG_CONTROL_PAYLOAD_LENGTH))
-    {
-        return;
-    }
-    BluetoothDebug_HandleControlPayload(s_parser.payload);
+    s_parser.command = command;
+    s_parser.magnitude = 0;
+    s_parser.hasCommand = 1U;
+    s_parser.hasDigits = 0U;
+    s_parser.isNegative = 0U;
+    s_parser.idleTicks = 0U;
+    s_parser.textLength = 0U;
+    s_parser.textOverflow = 0U;
 }
 
 static void BluetoothDebug_ProcessByte(uint8_t byte)
 {
-    switch (s_parser.state)
+    char value = BluetoothDebug_ToUpper((char)byte);
+
+    if (BluetoothDebug_IsCommand(value) != 0U)
     {
-        case BLUETOOTH_PARSER_WAIT_HEAD:
-            if (byte == BLUETOOTH_DEBUG_FRAME_HEAD)
+        BluetoothDebug_StartCommand(value);
+        return;
+    }
+
+    /* K 命令走独立的文本参数收集：值可以是小数，还要接受 '=' 和 '?'，
+     * 不能让数字落进下面按整数累加的通用路径。 */
+    if ((s_parser.hasCommand != 0U) && (s_parser.command == 'K'))
+    {
+        if (BluetoothDebug_IsTerminator(value) != 0U)
+        {
+            BluetoothDebug_ExecuteCommand();
+            return;
+        }
+        if (((value >= '0') && (value <= '9')) ||
+            (value == '.') || (value == '-') ||
+            (value == '=') || (value == '?'))
+        {
+            if (s_parser.textLength < (BLUETOOTH_TEXT_ARGS_SIZE - 1U))
             {
-                s_parser.state = BLUETOOTH_PARSER_FIXED_FIELDS;
-                s_parser.calculatedCRC = 0xFFFFU;
-                s_parser.fixedIndex = 0U;
-            }
-            break;
-
-        case BLUETOOTH_PARSER_FIXED_FIELDS:
-            s_parser.fixedFields[s_parser.fixedIndex++] = byte;
-            s_parser.calculatedCRC = BluetoothDebug_UpdateCRC(
-                s_parser.calculatedCRC, byte);
-            if (s_parser.fixedIndex >= sizeof(s_parser.fixedFields))
-            {
-                s_parser.payloadLength = BluetoothDebug_ReadU16(
-                    &s_parser.fixedFields[4]);
-                s_parser.payloadIndex = 0U;
-                if (s_parser.payloadLength >
-                    BLUETOOTH_DEBUG_MAX_PAYLOAD_LENGTH)
-                {
-                    BluetoothDebug_RestartParser(byte);
-                }
-                else if (s_parser.payloadLength == 0U)
-                {
-                    s_parser.state = BLUETOOTH_PARSER_CRC_LOW;
-                }
-                else
-                {
-                    s_parser.state = BLUETOOTH_PARSER_PAYLOAD;
-                }
-            }
-            break;
-
-        case BLUETOOTH_PARSER_PAYLOAD:
-            s_parser.payload[s_parser.payloadIndex++] = byte;
-            s_parser.calculatedCRC = BluetoothDebug_UpdateCRC(
-                s_parser.calculatedCRC, byte);
-            if (s_parser.payloadIndex >= s_parser.payloadLength)
-            {
-                s_parser.state = BLUETOOTH_PARSER_CRC_LOW;
-            }
-            break;
-
-        case BLUETOOTH_PARSER_CRC_LOW:
-            s_parser.receivedCRC = byte;
-            s_parser.state = BLUETOOTH_PARSER_CRC_HIGH;
-            break;
-
-        case BLUETOOTH_PARSER_CRC_HIGH:
-            s_parser.receivedCRC |= (uint16_t)byte << 8;
-            s_parser.state = BLUETOOTH_PARSER_TAIL;
-            break;
-
-        case BLUETOOTH_PARSER_TAIL:
-            if ((byte == BLUETOOTH_DEBUG_FRAME_TAIL) &&
-                (s_parser.receivedCRC == s_parser.calculatedCRC))
-            {
-                BluetoothDebug_HandleFrame();
-                BluetoothDebug_ResetParser();
+                s_parser.textArgs[s_parser.textLength] = value;
+                s_parser.textLength++;
             }
             else
             {
-                BluetoothDebug_RestartParser(byte);
+                s_parser.textOverflow = 1U;
             }
-            break;
-
-        default:
-            BluetoothDebug_RestartParser(byte);
-            break;
-    }
-}
-
-static uint8_t BluetoothDebug_GetAction(void)
-{
-    switch (MotionManager_GetMode())
-    {
-        case MOTION_MANAGER_MODE_MANUAL:
-            return 1U;
-        case MOTION_MANAGER_MODE_STRAIGHT:
-            return 2U;
-        case MOTION_MANAGER_MODE_TURN:
-            return 3U;
-        case MOTION_MANAGER_MODE_BRAKE:
-            return 4U;
-        case MOTION_MANAGER_MODE_IDLE:
-        case MOTION_MANAGER_MODE_LINE:
-        default:
-            return 0U;
-    }
-}
-
-static uint8_t BluetoothDebug_AutomaticActionIsBusy(void)
-{
-    MotionManager_Mode_t mode = MotionManager_GetMode();
-
-    if ((mode != MOTION_MANAGER_MODE_STRAIGHT) &&
-        (mode != MOTION_MANAGER_MODE_TURN) &&
-        (mode != MOTION_MANAGER_MODE_BRAKE))
-    {
-        return 0U;
-    }
-    return MotionManager_IsBusy();
-}
-
-static uint8_t BluetoothDebug_SendFrame(
-    uint8_t messageId, const uint8_t *payload, uint16_t payloadLength)
-{
-    uint8_t frame[BLUETOOTH_DEBUG_TELEMETRY_PAYLOAD_LENGTH + 10U];
-    uint16_t crc = 0xFFFFU;
-    uint16_t index;
-    uint16_t frameLength = (uint16_t)(payloadLength + 10U);
-
-    if ((payload == NULL) ||
-        (payloadLength > BLUETOOTH_DEBUG_TELEMETRY_PAYLOAD_LENGTH))
-    {
-        return 0U;
-    }
-
-    frame[0] = BLUETOOTH_DEBUG_FRAME_HEAD;
-    frame[1] = BLUETOOTH_DEBUG_PROTOCOL_VERSION;
-    frame[2] = messageId;
-    BluetoothDebug_WriteU16(&frame[3], s_txSequence);
-    BluetoothDebug_WriteU16(&frame[5], payloadLength);
-    memcpy(&frame[7], payload, payloadLength);
-
-    for (index = 1U; index < (uint16_t)(7U + payloadLength); index++)
-    {
-        crc = BluetoothDebug_UpdateCRC(crc, frame[index]);
-    }
-    BluetoothDebug_WriteU16(&frame[7U + payloadLength], crc);
-    frame[9U + payloadLength] = BLUETOOTH_DEBUG_FRAME_TAIL;
-
-    if (Serial1_QueueArray(frame, frameLength) == 0U)
-    {
-        return 0U;
-    }
-    s_txSequence++;
-    return 1U;
-}
-
-static uint8_t BluetoothDebug_SendTelemetry(void)
-{
-    uint8_t payload[BLUETOOTH_DEBUG_TELEMETRY_PAYLOAD_LENGTH];
-
-    BluetoothDebug_WriteFloat(&payload[0], Odometry_GetSpeedL());
-    BluetoothDebug_WriteFloat(&payload[4], Odometry_GetSpeedR());
-    BluetoothDebug_WriteFloat(&payload[8], Heading_GetYaw());
-    BluetoothDebug_WriteU16(
-        &payload[12], Servo_GetVerticalAngle());
-    BluetoothDebug_WriteU16(
-        &payload[14], Servo_GetHorizontalAngle());
-    payload[16] = s_commandAllowed;
-    payload[17] = BluetoothDebug_GetAction();
-    payload[18] = BluetoothDebug_AutomaticActionIsBusy();
-    payload[19] = (uint8_t)s_lastResult;
-    payload[20] = (uint8_t)MotionManager_GetError();
-
-    return BluetoothDebug_SendFrame(
-        BLUETOOTH_DEBUG_MESSAGE_TELEMETRY,
-        payload, sizeof(payload));
-}
-
-static float BluetoothDebug_ApplyDeadzone(float value)
-{
-    return (fabsf(value) <=
-            BLUETOOTH_DEBUG_JOYSTICK_DEADZONE_MMPS) ? 0.0f : value;
-}
-
-static uint8_t BluetoothDebug_ControlHasMotionRequest(void)
-{
-    if ((s_forwardEdgePending != 0U) || (s_turnEdgePending != 0U))
-    {
-        return 1U;
-    }
-    if ((fabsf((float)s_control.joystickXMMps) >
-         BLUETOOTH_DEBUG_JOYSTICK_DEADZONE_MMPS) ||
-        (fabsf((float)s_control.joystickYMMps) >
-         BLUETOOTH_DEBUG_JOYSTICK_DEADZONE_MMPS))
-    {
-        return 1U;
-    }
-    return 0U;
-}
-
-static void BluetoothDebug_UpdateJoystick(void)
-{
-    float x = BluetoothDebug_ApplyDeadzone(
-        (float)s_control.joystickXMMps);
-    float y = BluetoothDebug_ApplyDeadzone(
-        (float)s_control.joystickYMMps);
-    float left = y + x;
-    float right = y - x;
-    float largest = fmaxf(fabsf(left), fabsf(right));
-
-    if (largest > BLUETOOTH_DEBUG_MANUAL_MAX_SPEED_MMPS)
-    {
-        float scale = BLUETOOTH_DEBUG_MANUAL_MAX_SPEED_MMPS / largest;
-        left *= scale;
-        right *= scale;
-    }
-
-    if (MotionManager_SetManualWheelSpeeds(left, right) !=
-        MOTION_MANAGER_RESULT_OK)
-    {
-        s_lastResult = BLUETOOTH_DEBUG_RESULT_START_FAILED;
-        s_ownsMotion = 0U;
-        return;
-    }
-
-    s_ownsMotion = ((fabsf(left) > 0.001f) ||
-                    (fabsf(right) > 0.001f)) ? 1U : 0U;
-}
-
-static void BluetoothDebug_StartRequestedAction(void)
-{
-    MotionManager_Result_t result;
-
-    if ((s_forwardEdgePending != 0U) &&
-        (s_turnEdgePending != 0U))
-    {
-        s_lastResult = BLUETOOTH_DEBUG_RESULT_BUTTON_CONFLICT;
-        s_forwardEdgePending = 0U;
-        s_turnEdgePending = 0U;
-        return;
-    }
-    if ((s_forwardEdgePending == 0U) &&
-        (s_turnEdgePending == 0U))
-    {
-        return;
-    }
-    if (BluetoothDebug_AutomaticActionIsBusy() != 0U)
-    {
-        s_lastResult = BLUETOOTH_DEBUG_RESULT_BUSY;
-        s_forwardEdgePending = 0U;
-        s_turnEdgePending = 0U;
-        return;
-    }
-
-    if (s_forwardEdgePending != 0U)
-    {
-        if ((s_control.forwardSpeedMMps <= 0) ||
-            (s_control.forwardDistanceMM <= 0))
-        {
-            s_lastResult = BLUETOOTH_DEBUG_RESULT_INVALID_PARAMETER;
-            s_forwardEdgePending = 0U;
             return;
         }
-        result = MotionManager_StartForward(
-            (uint32_t)s_control.forwardDistanceMM,
-            (float)s_control.forwardSpeedMMps, 0.0f);
+        BluetoothDebug_ResetParser();
+        Serial1_SendString("ERR CHARACTER\r\n");
+        return;
     }
-    else
+
+    if ((value >= '0') && (value <= '9'))
     {
-        if (s_control.turnAngleDeg == 0)
+        if (s_parser.hasCommand == 0U)
         {
-            s_lastResult = BLUETOOTH_DEBUG_RESULT_INVALID_PARAMETER;
-            s_turnEdgePending = 0U;
+            Serial1_SendString("ERR COMMAND\r\n");
             return;
         }
-        result = MotionManager_TurnBy(
-            (float)s_control.turnAngleDeg,
-            BLUETOOTH_DEBUG_TURN_SPEED_MMPS);
+
+        if (s_parser.magnitude < BLUETOOTH_VALUE_ACCUMULATOR_MAX)
+        {
+            s_parser.magnitude = s_parser.magnitude * 10L +
+                                 (int32_t)(value - '0');
+            if (s_parser.magnitude > BLUETOOTH_VALUE_ACCUMULATOR_MAX)
+            {
+                s_parser.magnitude = BLUETOOTH_VALUE_ACCUMULATOR_MAX;
+            }
+        }
+        s_parser.hasDigits = 1U;
+        return;
     }
 
-    s_forwardEdgePending = 0U;
-    s_turnEdgePending = 0U;
-    if (result == MOTION_MANAGER_RESULT_OK)
+    if (((value == '-') || (value == '+')) &&
+        (s_parser.hasCommand != 0U) && (s_parser.hasDigits == 0U))
     {
-        s_lastResult = BLUETOOTH_DEBUG_RESULT_OK;
-        s_ownsMotion = 1U;
-    }
-    else if (result == MOTION_MANAGER_RESULT_INVALID_ARGUMENT)
-    {
-        s_lastResult = BLUETOOTH_DEBUG_RESULT_INVALID_PARAMETER;
-    }
-    else
-    {
-        s_lastResult = BLUETOOTH_DEBUG_RESULT_START_FAILED;
+        s_parser.isNegative = (value == '-') ? 1U : 0U;
+        return;
     }
 
-    if (result != MOTION_MANAGER_RESULT_OK)
+    if ((value == '\r') || (value == '\n') || (value == ' ') ||
+        (value == ',') || (value == ';') || (value == '\t'))
     {
-        /* 启动请求失败不保留半初始化的运动模式，由命令结果说明原因。 */
-        MotionManager_Stop();
-        s_ownsMotion = 0U;
+        if (s_parser.hasCommand != 0U)
+        {
+            BluetoothDebug_ExecuteCommand();
+        }
+        return;
     }
+
+    BluetoothDebug_ResetParser();
+    Serial1_SendString("ERR CHARACTER\r\n");
 }
 
 void BluetoothDebug_Init(void)
 {
-    memset(&s_control, 0, sizeof(s_control));
     BluetoothDebug_ResetParser();
-    s_newControl = 0U;
-    s_forwardEdgePending = 0U;
-    s_turnEdgePending = 0U;
-    s_previousForwardButton = 0U;
-    s_previousTurnButton = 0U;
-    s_rearmRequired = 0U;
-    s_linkActive = 0U;
-    s_commandAllowed = 0U;
-    s_ownsMotion = 0U;
-    s_ticksSinceControl = 0U;
-    s_telemetryTicks = 0U;
-    s_txSequence = 0U;
-    s_lastResult = BLUETOOTH_DEBUG_RESULT_OK;
+    s_leftCommand = 0;
+    s_rightCommand = 0;
+    s_manualMotorEnabled = 1U;
+    s_signalPending = 0U;
+    s_pendingSignal = 0U;
+    s_debugSpeedMMps = BLUETOOTH_DEBUG_DEFAULT_SPEED_MMPS;
+    Motor_StopAll();
+    Serial1_SendString(
+        "READY: C task, L/R/U pwm, W speed, N line, K param, "
+        "O vertical, D horizontal\r\n");
 }
 
-void BluetoothDebug_Update(uint8_t elapsedTicks)
+void BluetoothDebug_Update(uint8_t elapsedTicks,
+                           uint8_t manualMotorEnabled)
 {
     uint8_t byte;
+    uint8_t receivedByte = 0U;
+
+    s_manualMotorEnabled = manualMotorEnabled;
 
     while (Serial1_ReadByte(&byte) != 0U)
     {
+        receivedByte = 1U;
         BluetoothDebug_ProcessByte(byte);
     }
 
-    if (s_linkActive != 0U)
+    if (s_parser.hasCommand == 0U)
     {
-        uint32_t elapsed = (uint32_t)s_ticksSinceControl + elapsedTicks;
-        s_ticksSinceControl = (elapsed > UINT16_MAX) ?
-            UINT16_MAX : (uint16_t)elapsed;
-        if ((s_ticksSinceControl >= BLUETOOTH_DEBUG_TIMEOUT_TICKS) &&
-            (s_rearmRequired == 0U))
-        {
-            if (s_ownsMotion != 0U)
-            {
-                MotionManager_Stop();
-                s_ownsMotion = 0U;
-            }
-            s_rearmRequired = 1U;
-            s_forwardEdgePending = 0U;
-            s_turnEdgePending = 0U;
-            s_lastResult = BLUETOOTH_DEBUG_RESULT_TIMEOUT;
-        }
+        return;
+    }
 
-        if ((uint16_t)(s_telemetryTicks + elapsedTicks) >=
-            BLUETOOTH_DEBUG_TELEMETRY_TICKS)
-        {
-            if (BluetoothDebug_SendTelemetry() != 0U)
-            {
-                s_telemetryTicks = 0U;
-            }
-        }
-        else
-        {
-            s_telemetryTicks = (uint16_t)(s_telemetryTicks + elapsedTicks);
-        }
+    if (receivedByte != 0U)
+    {
+        s_parser.idleTicks = 0U;
+        return;
+    }
+
+    if ((uint16_t)s_parser.idleTicks + elapsedTicks >=
+        BLUETOOTH_COMMAND_IDLE_TICKS)
+    {
+        BluetoothDebug_ExecuteCommand();
+    }
+    else
+    {
+        s_parser.idleTicks = (uint8_t)(s_parser.idleTicks + elapsedTicks);
     }
 }
 
-void BluetoothDebug_ControlUpdate(uint8_t commandAllowed)
+uint8_t BluetoothDebug_PopSignal(uint8_t *signal)
 {
-    uint8_t actionRequested;
-
-    s_commandAllowed = (commandAllowed != 0U) ? 1U : 0U;
-
-    if (s_commandAllowed == 0U)
-    {
-        /* 状态机离开等待态后，只释放蓝牙自己启动的运动。 */
-        if (s_ownsMotion != 0U)
-        {
-            MotionManager_Stop();
-            s_ownsMotion = 0U;
-        }
-        if ((s_newControl != 0U) &&
-            (BluetoothDebug_ControlHasMotionRequest() != 0U))
-        {
-            s_lastResult = BLUETOOTH_DEBUG_RESULT_BUSY;
-        }
-        s_newControl = 0U;
-        s_forwardEdgePending = 0U;
-        s_turnEdgePending = 0U;
-        return;
-    }
-
-    if (s_rearmRequired != 0U)
-    {
-        if (s_newControl != 0U)
-        {
-            uint8_t joystickIsCentered =
-                ((fabsf((float)s_control.joystickXMMps) <=
-                  BLUETOOTH_DEBUG_JOYSTICK_DEADZONE_MMPS) &&
-                 (fabsf((float)s_control.joystickYMMps) <=
-                  BLUETOOTH_DEBUG_JOYSTICK_DEADZONE_MMPS)) ? 1U : 0U;
-
-            if ((joystickIsCentered != 0U) &&
-                (s_control.startForward == 0U) &&
-                (s_control.startTurn == 0U))
-            {
-                s_rearmRequired = 0U;
-                s_ticksSinceControl = 0U;
-                s_lastResult = BLUETOOTH_DEBUG_RESULT_OK;
-            }
-            else
-            {
-                s_lastResult = BLUETOOTH_DEBUG_RESULT_REARM_REQUIRED;
-            }
-        }
-        s_newControl = 0U;
-        MotionManager_Stop();
-        return;
-    }
-
-    /* 运行期控制错误必须保留到遥测中，不能立即被摇杆模式覆盖。 */
-    if (MotionManager_GetError() != MOTION_MANAGER_ERROR_NONE)
-    {
-        s_lastResult = BLUETOOTH_DEBUG_RESULT_START_FAILED;
-        s_ownsMotion = 0U;
-        s_newControl = 0U;
-        return;
-    }
-
-    actionRequested = ((s_forwardEdgePending != 0U) ||
-                       (s_turnEdgePending != 0U)) ? 1U : 0U;
-    BluetoothDebug_StartRequestedAction();
-    if (actionRequested != 0U)
-    {
-        s_newControl = 0U;
-        return;
-    }
-    if (BluetoothDebug_AutomaticActionIsBusy() != 0U)
-    {
-        s_newControl = 0U;
-        return;
-    }
-
-    if ((MotionManager_GetMode() == MOTION_MANAGER_MODE_STRAIGHT) ||
-        (MotionManager_GetMode() == MOTION_MANAGER_MODE_TURN) ||
-        (MotionManager_GetMode() == MOTION_MANAGER_MODE_BRAKE))
-    {
-        MotionManager_Stop();
-        s_ownsMotion = 0U;
-    }
-    BluetoothDebug_UpdateJoystick();
-    s_newControl = 0U;
-}
-
-uint8_t BluetoothDebug_IsControlling(void)
-{
-    MotionManager_Mode_t mode = MotionManager_GetMode();
-
-    if (s_ownsMotion == 0U)
+    if (signal == NULL)
     {
         return 0U;
     }
 
-    if ((mode == MOTION_MANAGER_MODE_MANUAL) ||
-        (mode == MOTION_MANAGER_MODE_STRAIGHT) ||
-        (mode == MOTION_MANAGER_MODE_TURN) ||
-        (mode == MOTION_MANAGER_MODE_BRAKE))
+    if (s_signalPending == 0U)
     {
-        return MotionManager_IsBusy();
+        return 0U;
     }
-    return 0U;
+
+    *signal = s_pendingSignal;
+    s_signalPending = 0U;
+    return 1U;
 }
 
-BluetoothDebug_Result_t BluetoothDebug_GetLastResult(void)
+int16_t BluetoothDebug_GetLeftCommand(void)
 {
-    return s_lastResult;
+    return s_leftCommand;
+}
+
+int16_t BluetoothDebug_GetRightCommand(void)
+{
+    return s_rightCommand;
 }

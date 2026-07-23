@@ -3,13 +3,15 @@
 
 #include <stdint.h>
 
-/* 每个有效系统节拍向上层提供真实时间和按键状态。 */
+/* 每次有效系统更新提供给 Mission 的只读事件和时间数据。 */
 typedef struct
 {
     uint8_t elapsedTicks;
     float dt;
     uint8_t pressedKeys;
     uint8_t pressedEdges;
+    uint8_t hasBluetoothSignal;
+    uint8_t bluetoothSignal;
 } App_UpdateContext_t;
 
 void App_Init(void);

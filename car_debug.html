@@ -410,7 +410,7 @@ kbd {
             <button id="btnMask" disabled>应用 M</button>
         </div>
         <p class="hint">勾选后上限实时更新。二进制帧每通道 4 字节，通道越少帧越短、频率越高。DMA 发送不阻塞主循环，全 12 通道也能 100Hz 直传。</p>
-        <p class="hint">调 PID 时不必纠结这里：试验会自动切到本阶段的最优通道，并用板载捕获算指标。</p>
+        <p class="hint">调 PID 时不必纠结这里：连接/切换阶段会自动准备本阶段最优通道；开始试验会先发激励，指标按实时流计算并标注来源。</p>
     </div>
 
     <div class="panel">
@@ -733,10 +733,9 @@ class TelemetryParser {
         const sample = { ms: view.getUint32(0, true) };
         for (let c = 0; c < dataCols; c += 1) {
             const v = view.getFloat32(4 + c * 4, true);
-            if (!Number.isFinite(v)) {
-                return null;
+            if (Number.isFinite(v)) {
+                sample[columns[c + 1]] = v;
             }
-            sample[columns[c + 1]] = v;
         }
         return sample;
     }
@@ -924,7 +923,7 @@ function computeStepMetrics(samples, targetCol, actualCol) {
     let target = 0;
     for (let i = 0; i < samples.length; i += 1) {
         const t = samples[i][targetCol];
-        if (typeof t === 'number' && Math.abs(t) > 1e-6) {
+        if (Number.isFinite(t) && Math.abs(t) > 1e-6) {
             startIdx = i;
             target = t;
             break;
@@ -938,7 +937,7 @@ function computeStepMetrics(samples, targetCol, actualCol) {
     let endIdx = samples.length;
     for (let i = startIdx; i < samples.length; i += 1) {
         const t = samples[i][targetCol];
-        if (typeof t !== 'number' ||
+        if (!Number.isFinite(t) ||
             Math.abs(t - target) > Math.abs(target) * 0.01 + 1e-6) {
             endIdx = i;
             break;
@@ -956,7 +955,7 @@ function computeStepMetrics(samples, targetCol, actualCol) {
     let riseMs = null;
     for (const s of win) {
         const v = s[actualCol];
-        if (typeof v === 'number' && sign * v >= 0.9 * magnitude) {
+        if (Number.isFinite(v) && sign * v >= 0.9 * magnitude) {
             riseMs = s.ms - baseMs;
             break;
         }
@@ -965,7 +964,7 @@ function computeStepMetrics(samples, targetCol, actualCol) {
     let peak = -Infinity;
     for (const s of win) {
         const v = s[actualCol];
-        if (typeof v === 'number' && sign * v > peak) {
+        if (Number.isFinite(v) && sign * v > peak) {
             peak = sign * v;
         }
     }
@@ -977,7 +976,7 @@ function computeStepMetrics(samples, targetCol, actualCol) {
     let settleIdx = win.length;
     for (let i = win.length - 1; i >= 0; i -= 1) {
         const v = win[i][actualCol];
-        if (typeof v !== 'number' || Math.abs(sign * v - magnitude) > band) {
+        if (!Number.isFinite(v) || Math.abs(sign * v - magnitude) > band) {
             settleIdx = i + 1;
             break;
         }
@@ -991,7 +990,7 @@ function computeStepMetrics(samples, targetCol, actualCol) {
     let count = 0;
     for (const s of tail) {
         const v = s[actualCol];
-        if (typeof v === 'number') {
+        if (Number.isFinite(v)) {
             sum += v;
             count += 1;
         }
@@ -1009,7 +1008,7 @@ function computeTurnMetrics(samples, tolDeg) {
     let initial = 0;
     for (let i = 0; i < samples.length; i += 1) {
         const e = samples[i].navE;
-        if (typeof e === 'number' && Math.abs(e) > tolDeg) {
+        if (Number.isFinite(e) && Math.abs(e) > tolDeg) {
             startIdx = i;
             initial = e;
             break;
@@ -1024,7 +1023,7 @@ function computeTurnMetrics(samples, tolDeg) {
     let lastOutIdx = startIdx;
     for (let i = startIdx; i < samples.length; i += 1) {
         const e = samples[i].navE;
-        if (typeof e !== 'number') {
+        if (!Number.isFinite(e)) {
             continue;
         }
         const crossing = -sign * e;   /* 反向越过目标角的量 */
@@ -1042,7 +1041,7 @@ function computeTurnMetrics(samples, tolDeg) {
     let sum = 0;
     let count = 0;
     for (const s of tail) {
-        if (typeof s.navE === 'number') {
+        if (Number.isFinite(s.navE)) {
             sum += Math.abs(s.navE);
             count += 1;
         }
@@ -1061,11 +1060,11 @@ function computeStraightMetrics(samples, targetDistanceMM) {
     let ld0 = null;
     let rd0 = null;
     for (const s of samples) {
-        if (yaw0 === null && typeof s.yaw === 'number') {
+        if (yaw0 === null && Number.isFinite(s.yaw)) {
             yaw0 = s.yaw;
         }
-        if (ld0 === null && typeof s.LD === 'number' &&
-            typeof s.RD === 'number') {
+        if (ld0 === null && Number.isFinite(s.LD) &&
+            Number.isFinite(s.RD)) {
             ld0 = s.LD;
             rd0 = s.RD;
         }
@@ -1082,7 +1081,7 @@ function computeStraightMetrics(samples, targetDistanceMM) {
     let count = 0;
     if (yaw0 !== null) {
         for (const s of samples) {
-            if (typeof s.yaw !== 'number') {
+            if (!Number.isFinite(s.yaw)) {
                 continue;
             }
             const dev = s.yaw - yaw0;
@@ -1098,7 +1097,7 @@ function computeStraightMetrics(samples, targetDistanceMM) {
     if (ld0 !== null) {
         for (let i = samples.length - 1; i >= 0; i -= 1) {
             const s = samples[i];
-            if (typeof s.LD === 'number' && typeof s.RD === 'number') {
+            if (Number.isFinite(s.LD) && Number.isFinite(s.RD)) {
                 const travelled = ((s.LD - ld0) + (s.RD - rd0)) / 2;
                 distErrMM = Number.isFinite(targetDistanceMM) ?
                     travelled - targetDistanceMM : null;
@@ -1121,7 +1120,7 @@ function computeLineMetrics(samples) {
     let extreme = 0;
     for (const s of samples) {
         const e = s.lerr;
-        if (typeof e !== 'number') {
+        if (!Number.isFinite(e)) {
             continue;
         }
         sumSq += e * e;
@@ -1260,7 +1259,7 @@ function downsampleForPlot(samples, maxPoints, columns) {
             let score = 0;
             for (const key of keys) {
                 const value = samples[i][key];
-                if (typeof value === 'number') {
+                if (Number.isFinite(value)) {
                     score = Math.max(score, Math.abs(value));
                 }
             }
@@ -1589,8 +1588,26 @@ function log(text, cls) {
     }
 }
 
+function describeErrorLine(line) {
+    if (line === 'ERR MOTION 3') {
+        return '提示：运动层传感器未就绪，通常是 Heading/MPU6050 离线；先试 Z2，若仍 ERR Z OFFLINE，请查 MPU6050 供电、GND、PA10/PA11、I2C 地址 0x68 和线序。';
+    }
+    if (line === 'ERR Z OFFLINE') {
+        return '提示：MPU6050 离线或初始化失败；yaw 会显示为空/无效，不再把默认 0° 当成有效航向。';
+    }
+    if (line === 'ERR MOTION 2') {
+        return '提示：运动控制尚未配置完成，请先确认参数表和底层初始化正常。';
+    }
+    if (line === 'ERR MOTION 4') {
+        return '提示：运动启动失败，先排除传感器就绪、忙状态和参数范围。';
+    }
+    return '';
+}
+
 function logReply(line) {
-    log('< ' + line, line.startsWith('OK') ? 'ok' : (line.startsWith('ERR') ? 'err' : ''));
+    const hint = describeErrorLine(line);
+    const text = hint ? `${line}  |  ${hint}` : line;
+    log('< ' + text, line.startsWith('OK') ? 'ok' : (line.startsWith('ERR') ? 'err' : ''));
 }
 
 /* 固件文本行统一入口：先提取参数/频率/标定信息更新界面，再进终端。 */
@@ -2112,7 +2129,7 @@ function latestSample() {
 
 function odomMark() {
     const s = latestSample();
-    if (!s || typeof s.LD !== 'number' || typeof s.RD !== 'number') {
+    if (!s || !Number.isFinite(s.LD) || !Number.isFinite(s.RD)) {
         log('没有 LD/RD 数据：请先在遥测里开启「LD/RD 左右路程」并设定频率', 'err');
         return;
     }
@@ -2127,7 +2144,7 @@ function odomCalc() {
         log('先记录起点', 'err');
         return;
     }
-    if (!s || typeof s.LD !== 'number') {
+    if (!s || !Number.isFinite(s.LD)) {
         log('没有 LD/RD 数据', 'err');
         return;
     }
@@ -2187,11 +2204,24 @@ async function queryCapability(timeoutMs = 1200) {
     }
 }
 
+function requestedTelemetryRate(desired) {
+    const explicit = Number(desired);
+    if (Number.isFinite(explicit) && explicit > 0) {
+        return explicit;
+    }
+    const fromInput = parseInt($('gVal').value, 10);
+    if (Number.isFinite(fromInput) && fromInput > 0) {
+        return fromInput;
+    }
+    return (Number.isFinite(lastRateHz) && lastRateHz > 0) ? lastRateHz : 20;
+}
+
 /* 期望频率与固件上限取小。上限未知时用本地估算兜底。 */
 function resolveSessionRate(mask, desired) {
+    const requested = requestedTelemetryRate(desired);
     const cap = firmwareMaxRateHz !== null ?
         firmwareMaxRateHz : estimateMaxRateHz(mask);
-    return Math.max(1, Math.min(desired, cap));
+    return Math.max(1, Math.min(requested, cap));
 }
 
 function focusLoopConfig() {
@@ -2245,6 +2275,9 @@ async function applyFocusedTelemetrySelection(sendToDevice = true) {
     $('gVal').value = resolveSessionRate(preset.mask, preset.rate);
     renderRateLimit();
     if (!sendToDevice || !writer) {
+        return;
+    }
+    if (session) {
         return;
     }
     const targetWriter = writer;
@@ -2480,46 +2513,10 @@ async function startSession() {
         $('sessDur').value = duration;
     }
 
-    $('btnSessStart').disabled = true;
-    $('sessStatus').textContent = '正在确认遥测掩码、频率和表头…';
-
-    let sessionRate = p.rate;
-    let captureArmed = false;
-    try {
-        /* 文案写的是“预设掩码高频采样”，因此必须等固件确认和正确表头后再激励。 */
-        await sendAndWait('G0', (line) => line === 'OK G=0');
-        await sendAndWait('M' + p.mask,
-            (line) => line.startsWith(`OK M=${p.mask} G=`));
-        /* 频率不再用硬编码：先问固件当前掩码下的真实上限，再取小。 */
-        await queryCapability();
-        sessionRate = resolveSessionRate(p.mask, p.rate);
-        await sendAndWait('G' + sessionRate,
-            (line) => line === `OK G=${sessionRate}`);
-        await waitForTelemetryColumns(expectedColumnsForMask(p.mask));
-
-        /* 板载捕获：100 Hz 无损，是指标的可信来源。arm 失败不阻断试验——
-           实时流仍能用，只是指标精度回落，UI 会明确标注来源。 */
-        if (p.capture) {
-            parser.clearCapture();
-            try {
-                await sendAndWait('X' + p.capture,
-                    (line) => line.startsWith('OK X ARM='), 1000);
-                captureArmed = true;
-            } catch (err) {
-                log('板载捕获未启用（固件可能不支持 X 命令），指标将基于实时流', 'err');
-            }
-        }
-    } catch (err) {
-        log('试验准备失败：' + err.message, 'err');
-        await emergencyStop();
-        $('btnSessStart').disabled = !writer;
-        $('sessStatus').textContent = '准备失败，未发送运动激励。';
-        return;
-    }
-
     /* 专属数据：清终端与曲线，本次日志从试验标记开始。 */
     termEl.innerHTML = '';
     parser.clear();
+    parser.clearCapture();
     requestRedraw();
     const excitation = p.excite(amp);
     const focusPath = $('focusPath').textContent;
@@ -2536,20 +2533,26 @@ async function startSession() {
     session = {
         loop: focusState.loop, focusSide: focusState.side, focusStage: focusState.stage,
         focusPath, preset: p, excitation, snapshot, paramValues, amp,
-        rateHz: sessionRate, captureArmed,
+        rateHz: resolveSessionRate(p.mask, p.rate),
+        captureArmed: false,
         sawActive: false, done: false, endTimer: null, stopTimer: null,
         guardTimer: null, stopFallbackTimer: null, finalizing: false,
     };
+    focusedTelemetryGeneration += 1;
     $('sessResult').style.display = 'none';
     $('btnSessStart').disabled = true;
     $('btnSessAbort').disabled = false;
-    $('sessStatus').textContent = `试验进行中：${excitation} …`;
+    $('sessStatus').textContent = `试验进行中：${excitation}（直启，指标使用实时流）…`;
 
     try {
         await sendAndWait(excitation, excitationReplyMatcher(p, amp));
     } catch (err) {
         await stopSession('激励失败：' + err.message, true);
         return;
+    }
+    const wantedColumns = expectedColumnsForMask(p.mask).join(',');
+    if (parser.columns.join(',') !== wantedColumns) {
+        log(`提醒：当前遥测列还不是本阶段预设（${wantedColumns}），本次指标将按实时流可用列计算`, 'err');
     }
     if (p.timed) {
         session.stopTimer = setTimeout(() => {
@@ -2604,6 +2607,66 @@ function stopReplyMatcher(command) {
     if (command === 'W0') return (line) => line === 'OK W=0';
     if (command === 'N0') return (line) => line === 'OK N=0';
     return (line) => line === 'OK C=0';
+}
+
+function sampleModeIdleState(sample) {
+    if (!sample || typeof sample.mode !== 'string') {
+        return null;
+    }
+    return sample.mode === 'IDLE' || sample.mode === 'DONE';
+}
+
+function sessionSampleCompletionState(activeSession, sample, toleranceDeg = 2) {
+    if (!activeSession || !sample) {
+        return false;
+    }
+    const idle = sampleModeIdleState(sample);
+    if (idle !== null) {
+        if (!idle) {
+            activeSession.sawActive = true;
+            return false;
+        }
+        return activeSession.sawActive;
+    }
+
+    if (activeSession.loop === 'straight') {
+        if (!Number.isFinite(sample.LD) || !Number.isFinite(sample.RD)) {
+            return false;
+        }
+        if (!activeSession.startSample) {
+            activeSession.startSample = { LD: sample.LD, RD: sample.RD };
+            return false;
+        }
+        const target = Number(activeSession.amp);
+        if (!Number.isFinite(target)) {
+            return false;
+        }
+        const traveled = ((sample.LD - activeSession.startSample.LD) +
+            (sample.RD - activeSession.startSample.RD)) / 2;
+        if (Math.abs(traveled) > 5) {
+            activeSession.sawActive = true;
+        }
+        const targetTolerance = Math.max(5, Math.abs(target) * 0.03);
+        const nearTarget = Math.abs(traveled - target) <= targetTolerance;
+        const speedKnown = Number.isFinite(sample.LV) || Number.isFinite(sample.RV);
+        const nearlyStopped = !speedKnown ||
+            (((Math.abs(sample.LV || 0) + Math.abs(sample.RV || 0)) / 2) <= 20);
+        return activeSession.sawActive && nearTarget && nearlyStopped;
+    }
+
+    if (activeSession.loop === 'turn') {
+        if (!Number.isFinite(sample.navE)) {
+            return false;
+        }
+        const tolerance = Math.max(0.5, Number(toleranceDeg) || 2);
+        if (Math.abs(sample.navE) > tolerance * 1.5) {
+            activeSession.sawActive = true;
+            return false;
+        }
+        return activeSession.sawActive && Math.abs(sample.navE) <= tolerance;
+    }
+
+    return false;
 }
 
 async function requestSessionStop(reason) {
@@ -2662,15 +2725,13 @@ function watchSession() {
         return;
     }
     const s = latestSample();
-    if (!s || typeof s.mode !== 'string') {
+    const tolEntry = paramByName('ntl');
+    const completed = sessionSampleCompletionState(session, s,
+        tolEntry ? tolEntry.value : 2);
+    if (!completed) {
         return;
     }
-    const idle = (s.mode === 'IDLE' || s.mode === 'DONE');
-    if (!idle) {
-        session.sawActive = true;
-        return;
-    }
-    if (session.sawActive && !session.endTimer) {
+    if (!session.endTimer) {
         /* finalizeSession 现在要等板载捕获 dump 完，是异步的；
            这里不阻塞定时器回调，失败也只影响本次收尾。 */
         session.endTimer = setTimeout(() => {
@@ -3364,7 +3425,7 @@ function drawPlot() {
         }
         for (const s of samples) {
             const v = s[col];
-            if (typeof v === 'number') {
+            if (Number.isFinite(v)) {
                 if (v < range.min) { range.min = v; }
                 if (v > range.max) { range.max = v; }
             }
@@ -3400,7 +3461,7 @@ function drawPlot() {
         let started = false;
         for (let i = 0; i < samples.length; i += 1) {
             const v = samples[i][col];
-            if (typeof v !== 'number') {
+            if (!Number.isFinite(v)) {
                 continue;
             }
             const x = xFn(i, samples[i]);
@@ -3475,7 +3536,7 @@ function drawPlot() {
         ctx.font = '11px Consolas, monospace';
         ctx.textAlign = 'left';
         ctx.fillText(col, pad.l + plotW + 6, legendY + 8);
-        ctx.fillText(typeof last === 'number' ? last.toFixed(2) : '—',
+        ctx.fillText(Number.isFinite(last) ? last.toFixed(2) : '—',
             pad.l + plotW + 6, legendY + 20);
         legendY += 28;
     }
@@ -3517,7 +3578,7 @@ function drawPlot() {
         const lines = [((s.ms - baseMs) / 1000).toFixed(2) + 's'];
         for (const col of selected) {
             const v = s[col];
-            lines.push(col + ' ' + (typeof v === 'number' ? v.toFixed(2) : '—'));
+            lines.push(col + ' ' + (Number.isFinite(v) ? v.toFixed(2) : '—'));
         }
         const boxW = 92;
         const boxH = lines.length * 14 + 8;

@@ -9,6 +9,7 @@
 #include "Hardware/Comms/Serial.h"
 #include "Hardware/Sensors/Graydetect.h"
 #include "ti_msp_dl_config.h"
+#include <math.h>
 #include <stddef.h>
 
 #define TELEMETRY_TICK_HZ 100U
@@ -38,8 +39,15 @@ static float Telemetry_ReadPL(void)   { return MotionWheel_GetLeftCommandPWM(); 
 static float Telemetry_ReadTR(void)   { return MotionWheel_GetTargetSpeedR(); }
 static float Telemetry_ReadRV(void)   { return Odometry_GetSpeedR(); }
 static float Telemetry_ReadPR(void)   { return MotionWheel_GetRightCommandPWM(); }
-static float Telemetry_ReadYaw(void)  { return Heading_GetYaw(); }
-static float Telemetry_ReadNavE(void) { return Nav_GetAngleErrorDeg(); }
+static float Telemetry_ReadYaw(void)
+{
+    return (Heading_IsReady() != 0U) ? Heading_GetYaw() : NAN;
+}
+
+static float Telemetry_ReadNavE(void)
+{
+    return (Heading_IsReady() != 0U) ? Nav_GetAngleErrorDeg() : NAN;
+}
 static float Telemetry_ReadLerr(void) { return MotionLine_GetLineError(); }
 static float Telemetry_ReadGray(void) { return (float)Graydetect_GetState(); }
 static float Telemetry_ReadLD(void)   { return Odometry_GetDistanceLMM(); }

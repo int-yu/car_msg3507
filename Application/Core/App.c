@@ -1,8 +1,10 @@
 #include "Application/Core/App.h"
 #include "Application/Comms/BluetoothDebug.h"
+#include "Application/Comms/K230Link.h"
 #include "Application/Control/MotionManager.h"
 #include "Application/Debug/DebugDisplay.h"
-#include "Application/Gimbal/Gimbal.h"
+#include "Application/Debug/Capture.h"
+#include "Application/Debug/Telemetry.h"
 #include "Application/Servo/Servo.h"
 #include "Application/State/Heading.h"
 #include "Application/State/Odometry.h"
@@ -45,12 +47,7 @@ void App_Init(void)
     Motor_Init();
     Servo_Init();
     Serial1_Init();
-
-    /* 只初始化 F32C 通信，不使能或驱动无刷电机。 */
-    if (Gimbal_Init() != GIMBAL_RESULT_OK)
-    {
-        Beep_Long();
-    }
+    K230Link_Init();
     Odometry_Init();
 
     DebugDisplay_Init();
@@ -58,11 +55,13 @@ void App_Init(void)
     DebugDisplay_ShowHeadingCalibration(Heading_IsReady());
     Heading_Calibrate();
 
-    /* 零漂标定期间中断保持关闭，正式运行前重新开始计时和里程。 */
+    /* 标定期间全局中断保持关闭，从正式流程的零时刻重新开始计数。 */
     Tick_Init();
     Odometry_Reset();
 
     BluetoothDebug_Init();
+    Telemetry_Init();
+    Capture_Init();
     if (MotionManager_Init() != MOTION_MANAGER_RESULT_OK)
     {
         Beep_Long();
@@ -93,6 +92,8 @@ uint8_t App_Update(App_UpdateContext_t *context)
 
     context->elapsedTicks = elapsedTicks;
     context->dt = (float)elapsedTicks * TICK_DT;
+    context->hasBluetoothSignal = 0U;
+    context->bluetoothSignal = 0U;
 
     Heading_Update(context->dt);
     Odometry_Update(elapsedTicks);
@@ -104,10 +105,49 @@ uint8_t App_Update(App_UpdateContext_t *context)
         (uint8_t)(keyMask & (uint8_t)~s_previousKeyMask);
     s_previousKeyMask = keyMask;
 
-    BluetoothDebug_Update(elapsedTicks);
+    K230Link_Update(elapsedTicks);
+
+    BluetoothDebug_Update(
+        elapsedTicks, (MotionManager_IsBusy() == 0U) ? 1U : 0U);
+    context->hasBluetoothSignal =
+        BluetoothDebug_PopSignal(&context->bluetoothSignal);
+
+    /* C0 是不受 Mission 可打断属性限制的全局停车信号。 */
+    if ((context->hasBluetoothSignal != 0U) &&
+        (context->bluetoothSignal == 0U))
+    {
+        MotionManager_Stop();
+        Motor_StopAll();
+        (void)Gimbal_Disable();
+    }
 
     MotionManager_Update(context->dt);
     App_ReportMotionError();
+
+    {
+        uint8_t captureOk;
+        uint16_t captureIndex;
+
+        if (K230Link_PopCaptureAck(&captureOk, &captureIndex) != 0U)
+        {
+            if (captureOk != 0U)
+            {
+                Serial1_Printf("OK CAP %u\r\n", (unsigned)captureIndex);
+            }
+            else
+            {
+                Serial1_SendString("ERR CAP FAIL\r\n");
+            }
+        }
+    }
+
+    /* 必须在 MotionManager_Update() 之后：目标速度和输出 PWM 都是本拍算出的，
+     * 提前采会记录到上一拍的值，阶跃起点会整体偏移一个控制周期。 */
+    Capture_Update((uint32_t)elapsedTicks * 10U);
+
+    Telemetry_Update(elapsedTicks, context->pressedKeys);
+    /* dump 与实时流互斥：捕获输出期间车已停稳，让它独占串口。 */
+    Capture_DumpNext();
 
     for (index = 0U; index < elapsedTicks; index++)
     {

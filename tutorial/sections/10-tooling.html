@@ -149,29 +149,14 @@
             &lt;span class="hint" id="rateLimitHint"&gt;上限：勾选字段后自动计算&lt;/span&gt;
         &lt;/div&gt;
         &lt;div class="row" style="align-items:flex-start"&gt;
-            &lt;label style="padding-top:2px"&gt;字段&lt;/label&gt;
-            &lt;div class="masks" style="flex:1"&gt;
-                &lt;label&gt;&lt;input type="checkbox" class="mk" value="1" checked&gt;yaw 航向角&lt;/label&gt;
-                &lt;label&gt;&lt;input type="checkbox" class="mk" value="2" checked&gt;gray/keys 灰度按键&lt;/label&gt;
-                &lt;label&gt;&lt;input type="checkbox" class="mk" value="4" checked&gt;LD/RD 左右路程&lt;/label&gt;
-                &lt;label&gt;&lt;input type="checkbox" class="mk" value="8" checked&gt;LV/RV 左右速度&lt;/label&gt;
-                &lt;label&gt;&lt;input type="checkbox" class="mk" value="16" checked&gt;mode 运动模式&lt;/label&gt;
-                &lt;label&gt;&lt;input type="checkbox" class="mk" value="32" checked&gt;k230 视觉目标&lt;/label&gt;
-                &lt;label&gt;&lt;input type="checkbox" class="mk" value="64" checked&gt;TL/TR 目标轮速&lt;/label&gt;
-                &lt;label&gt;&lt;input type="checkbox" class="mk" value="128" checked&gt;PL/PR 输出 PWM&lt;/label&gt;
-                &lt;label&gt;&lt;input type="checkbox" class="mk" value="256" checked&gt;navT/navE 转向&lt;/label&gt;
-                &lt;label&gt;&lt;input type="checkbox" class="mk" value="512" checked&gt;lerr 巡线误差&lt;/label&gt;
-                &lt;label&gt;&lt;input type="checkbox" class="mk" value="1024"&gt;LV 仅左轮速度&lt;/label&gt;
-                &lt;label&gt;&lt;input type="checkbox" class="mk" value="2048"&gt;RV 仅右轮速度&lt;/label&gt;
-                &lt;label&gt;&lt;input type="checkbox" class="mk" value="4096"&gt;TL 仅左目标&lt;/label&gt;
-                &lt;label&gt;&lt;input type="checkbox" class="mk" value="8192"&gt;TR 仅右目标&lt;/label&gt;
-                &lt;label&gt;&lt;input type="checkbox" class="mk" value="16384"&gt;PL 仅左 PWM&lt;/label&gt;
-                &lt;label&gt;&lt;input type="checkbox" class="mk" value="32768"&gt;PR 仅右 PWM&lt;/label&gt;
+            &lt;label style="padding-top:2px"&gt;通道&lt;/label&gt;
+            &lt;div class="masks" id="maskBoxes" style="flex:1"&gt;
+                &lt;!-- 由 CH_LIST 动态生成，避免与固件通道定义漂移 --&gt;
             &lt;/div&gt;
             &lt;button id="btnMask" disabled&gt;应用 M&lt;/button&gt;
         &lt;/div&gt;
-        &lt;p class="hint"&gt;勾选后上限实时更新。调单轮请用「仅左/仅右」单侧字段——行长减半、可用频率翻倍。固件遥测是阻塞发送，超限会拖慢 100 Hz 主循环里的运动控制。&lt;/p&gt;
-        &lt;p class="hint"&gt;调 PID 时不必纠结这里：试验会自动切到本阶段的最优掩码，并用板载 100 Hz 捕获算指标。&lt;/p&gt;
+        &lt;p class="hint"&gt;勾选后上限实时更新。二进制帧每通道 4 字节，通道越少帧越短、频率越高。DMA 发送不阻塞主循环，全 12 通道也能 100Hz 直传。&lt;/p&gt;
+        &lt;p class="hint"&gt;调 PID 时不必纠结这里：连接/切换阶段会自动准备本阶段最优通道；开始试验会先发激励，指标按实时流计算并标注来源。&lt;/p&gt;
     &lt;/div&gt;
 
     &lt;div class="panel"&gt;
@@ -195,7 +180,22 @@
         &lt;h2&gt;原始终端&lt;/h2&gt;
         &lt;div id="terminal"&gt;&lt;/div&gt;
         &lt;div class="row" style="margin-top:8px"&gt;
-            &lt;input type="text" id="rawCmd" placeholder="直接输入命令，回车发送" style="flex:1;width:auto"&gt;</code></pre>
+            &lt;input type="text" id="rawCmd" placeholder="直接输入命令，回车发送" style="flex:1;width:auto"&gt;
+            &lt;button id="btnRaw" disabled&gt;发送&lt;/button&gt;
+            &lt;button id="btnClearTerm"&gt;清屏&lt;/button&gt;
+        &lt;/div&gt;
+    &lt;/div&gt;
+
+&lt;/div&gt;
+&lt;/div&gt;
+
+&lt;script&gt;
+/* ==PARSER_BEGIN== */
+/*
+ * 二进制遥测解析器（字节流状态机）。
+ *
+ * 固件遥测已从 ASCII 改为二进制帧（见 docs/superpowers/specs/2026-07-21-二进制DMA架构-design.md）：
+ *   0xAA 0x55 | VER | TYPE | SEQ | LEN | PAYLOAD | CRC8</code></pre>
   <ol class="line-notes">
     <li><strong>第 223～229 行：</strong>遥测频率 G 可设 0～100；动态上限仍由固件裁决。</li>
     <li><strong>第 230～245 行：</strong>字段掩码已扩为 10 组：除原六组外，新增目标轮速 TL/TR、输出 PL/PR、转向 navT/navE 和巡线误差 lerr，对应权值一直到 512。</li>
@@ -206,66 +206,66 @@
   </ol>
 
   <h4>4.3 TelemetryParser：动态列类型</h4>
-  <pre class="source-code"><code data-source="car_debug.html" data-lines="462-521">/* ==PARSER_BEGIN== */
+  <pre class="source-code"><code data-source="car_debug.html" data-lines="447-506">/* ==PARSER_BEGIN== */
 /*
- * 遥测 CSV 解析器。
+ * 二进制遥测解析器（字节流状态机）。
  *
- * 固件在掩码改变时重发一行表头 H,...，随后每行数据以 D, 开头。
- * 列的语义不是「一个掩码位一列」——gray/keys、LD/RD、LV/RV 各占两列，
- * 而 k230 只占一列却装着 valid:x:y 三个值，所以一律按表头列名逐列取值。
+ * 固件遥测已从 ASCII 改为二进制帧（见 docs/superpowers/specs/2026-07-21-二进制DMA架构-design.md）：
+ *   0xAA 0x55 | VER | TYPE | SEQ | LEN | PAYLOAD | CRC8
+ * 而命令回应（OK/ERR/K?）仍是 ASCII 文本行。两者共用同一串口，靠 0xAA 区分：
+ * 0xAA 是非 ASCII 可打印字符，绝不出现在文本里；见到 0xAA 进二进制帧解析，
+ * 否则把字节累积成文本行（遇 \n 交出）。
+ *
+ * 关键难点：二进制 PAYLOAD 里可能恰好有 0x0A(\n) 或 0xAA 字节，所以绝不能用
+ * 换行去切分二进制段——必须严格按 LEN 读满 PAYLOAD。状态机天然解决这点。
+ *
+ * 对外接口（samples/captureSamples 是 {ms,TL,...} 对象数组，columns 是列名数组）
+ * 与旧 ASCII 解析器保持一致，因此下游的曲线、指标、导出、录制全部无需改动。
  */
+const FRAME_MAGIC_0 = 0xAA;
+const FRAME_MAGIC_1 = 0x55;
+const FRAME_VERSION = 0x01;
+const FRAME_TYPE_SCHEMA = 0x30;
+const FRAME_TYPE_SAMPLE = 0x31;
+const FRAME_TYPE_CAP_META = 0x32;
+const FRAME_TYPE_CAP_SAMPLE = 0x33;
+const FRAME_TYPE_CAP_END = 0x34;
+const UNIT_NAMES = ['raw', 'mmps', 'pwm', 'deg', 'mm', 'bits'];
+
+/* CRC-8/ATM，与固件 TelemFrame_Crc8Update 完全一致。 */
+function crc8Update(crc, data) {
+    crc ^= data;
+    for (let bit = 0; bit &lt; 8; bit += 1) {
+        crc = (crc &amp; 0x80) ? (((crc &lt;&lt; 1) ^ 0x07) &amp; 0xFF) : ((crc &lt;&lt; 1) &amp; 0xFF);
+    }
+    return crc;
+}
+
 class TelemetryParser {
     constructor() {
-        this.buffer = '';       /* 串口数据不保证按行到达，未成行的尾巴留在这里 */
-        this.columns = [];      /* 当前表头的列名，不含前导的 H */
         this.samples = [];
         this.maxSamples = 20000;
-        this.trimBatch = 1000;  /* 分块裁剪，避免满容量后每行 shift() 搬动整个数组 */
-        /* 板载捕获（通道 B）与实时流分开保存：前者 100 Hz 与控制环同频，
-           是调参指标的可信来源；后者频率低但连续，用于监视。 */
+        this.trimBatch = 1000;
+        this.columns = [];          /* 实时流当前列名，来自 SCHEMA 帧 */
+        this.units = {};            /* 列名 → 单位码字符串 */
+        /* 板载捕获与实时流分开保存：列集和采样率可能不同。 */
         this.captureColumns = [];
+        this.captureUnits = {};
         this.captureSamples = [];
+
+        /* 字节流状态机。 */
+        this._reset();
+        this.textBuffer = '';       /* 累积中的 ASCII 文本行 */
+        this.lastSeq = null;        /* 上一帧 SEQ，用于丢帧检测 */
+        this.droppedFrames = 0;     /* CRC 失败或 SEQ 跳变累计 */
     }
 
-    /* gray 是十六进制两位（1F），其余数值列都是十进制。 */
-    static get HEX_COLUMNS() { return ['gray']; }
-
-    /* mode 是文本，画不了图，只能显示。 */
-    static get TEXT_COLUMNS() { return ['mode']; }
-
-    /* ms 是时间戳，作为横轴使用；画成曲线只会是一条单调直线，还白占一个颜色。 */
-    static get AXIS_COLUMNS() { return ['ms']; }
-
-    /* 冒号分隔的复合列，展开成多个虚拟列后才能进曲线选择器。 */
-    static get COMPOSITE_COLUMNS() {
-        return { k230: ['k230_valid', 'k230_x', 'k230_y'] };
-    }
-
-    /* 列 → 量纲分组。同组曲线共享纵轴缩放，目标 vs 实测才能直接对比；
-       不在表里的列各自独立归一化（组名就是列名自己）。 */
-    static get UNIT_GROUPS() {
-        return {
-            LV: 'mmps', RV: 'mmps', TL: 'mmps', TR: 'mmps',
-            PL: 'pwm', PR: 'pwm',
-            yaw: 'deg', navT: 'deg', navE: 'deg',
-            LD: 'mm', RD: 'mm',
-        };
-    }
-
-    static unitOf(column) {
-        return TelemetryParser.UNIT_GROUPS[column] || column;
-    }
-
-    /* 展开复合列后，实际可画图的列名清单。 */
-    numericColumns() {
-        const composite = TelemetryParser.COMPOSITE_COLUMNS;
-        const text = TelemetryParser.TEXT_COLUMNS;
-        const axis = TelemetryParser.AXIS_COLUMNS;
-        const out = [];
-        for (const col of this.columns) {
-            if (composite[col]) {
-                out.push(...composite[col]);
-            } else if (!text.includes(col) &amp;&amp; !axis.includes(col)) {</code></pre>
+    _reset() {
+        this.state = 'idle';        /* idle → magic1 → header → payload → crc */
+        this.frameType = 0;
+        this.frameSeq = 0;
+        this.frameLen = 0;
+        this.headerBytes = [];      /* VER TYPE SEQ LEN，用于算 CRC */</code></pre>
   <ol class="line-notes">
     <li><strong>第 279～293 行：</strong>PARSER_BEGIN 后定义类；构造器保存半行、列名、样本和 20000 条上限。</li>
     <li><strong>第 295～307 行：</strong>gray、mode、ms 与 k230 分别声明为十六进制、文本、横轴和复合列。</li>
@@ -275,62 +275,63 @@ class TelemetryParser {
   </ol>
 
   <h4>4.4 分包缓存、H/D 分流和样本上限</h4>
-  <pre class="source-code"><code data-source="car_debug.html" data-lines="528-584">    /*
-     * 喂入一段原始文本。返回 { textLines, headerChanged }：
-     * textLines 是本次收到的非遥测行（OK/ERR 等），供终端显示。
+  <pre class="source-code"><code data-source="car_debug.html" data-lines="528-584">        return g[column] || column;
+    }
+
+    numericColumns() {
+        return this.columns.filter(
+            (col) =&gt; !TelemetryParser.AXIS_COLUMNS.includes(col));
+    }
+
+    captureNumericColumns() {
+        return this.captureColumns.filter(
+            (col) =&gt; !TelemetryParser.AXIS_COLUMNS.includes(col));
+    }
+
+    /*
+     * 喂入一段字节（Uint8Array 或 number[]）。返回 { textLines, schemaChanged,
+     * samplesAdded, captureStarted, captureAdded, captureEnded }。
      */
-    feed(text) {
-        this.buffer += text;
+    feed(bytes) {
         const textLines = [];
-        let headerChanged = false;
+        let schemaChanged = false;
         let samplesAdded = 0;
         let captureStarted = false;
         let captureAdded = 0;
+        let captureEnded = false;
 
-        /* \r\n 和 \n 都要能拆；固件用 \r\n，但转发链路上可能被规整过。 */
-        const lines = this.buffer.split(/\r?\n/);
-        this.buffer = lines.pop();   /* 最后一段没有换行符，是半截行，留待下次拼接 */
+        for (let i = 0; i &lt; bytes.length; i += 1) {
+            const b = bytes[i] &amp; 0xFF;
 
-        for (const raw of lines) {
-            const line = raw.trim();
-            if (line === '') {
+            if (this.state === 'idle') {
+                if (b === FRAME_MAGIC_0) {
+                    this.state = 'magic1';
+                } else {
+                    this._feedTextByte(b, textLines);
+                }
                 continue;
             }
-            if (line.startsWith('H,')) {
-                this.columns = line.slice(2).split(',');
-                /* 列定义变了，旧样本的列对不上，只能丢弃。 */
-                this.samples = [];
-                headerChanged = true;
-            } else if (line.startsWith('D,')) {
-                const sample = this._parseRow(line);
-                if (sample !== null) {
-                    this.samples.push(sample);
-                    samplesAdded += 1;
-                    if (this.samples.length &gt; this.maxSamples) {
-                        this.samples.splice(0, Math.min(this.trimBatch,
-                            this.samples.length - 1));
-                    }
+            if (this.state === 'magic1') {
+                if (b === FRAME_MAGIC_1) {
+                    this.state = 'header';
+                    this.headerBytes = [];
+                } else if (b === FRAME_MAGIC_0) {
+                    /* 连续两个 0xAA：留在 magic1 等下一个字节。 */
+                } else {
+                    /* 不是帧头，0xAA 与这个字节都回退成文本。 */
+                    this._feedTextByte(FRAME_MAGIC_0, textLines);
+                    this._feedTextByte(b, textLines);
+                    this.state = 'idle';
                 }
-            } else if (line.startsWith('CH,')) {
-                /* 捕获 dump 的表头：与实时流分开存，两者列集和采样率都不同。 */
-                this.captureColumns = line.slice(3).split(',');
-                this.captureSamples = [];
-                captureStarted = true;
-            } else if (line.startsWith('C,')) {
-                const sample = this._parseCaptureRow(line);
-                if (sample !== null) {
-                    this.captureSamples.push(sample);
-                    captureAdded += 1;
-                }
-            } else {
-                textLines.push(line);
+                continue;
             }
-        }
-        return {
-            textLines, headerChanged, samplesAdded,
-            captureStarted, captureAdded,
-        };
-    }</code></pre>
+            if (this.state === 'header') {
+                this.headerBytes.push(b);
+                if (this.headerBytes.length === 4) {
+                    const [ver, type, seq, len] = this.headerBytes;
+                    if (ver !== FRAME_VERSION) {
+                        this.droppedFrames += 1;
+                        this._reset();</code></pre>
   <ol class="line-notes">
     <li><strong>第 532～542 行：</strong>feed 追加旧半行，按 CRLF/LF 拆分，并把最后未闭合部分留在 buffer。四个计数器分别汇报本次的表头变化、新增实时样本、捕获开始与新增捕获样本。</li>
     <li><strong>第 544～548 行：</strong>逐个 trim 完整行并跳过空行。</li>
@@ -350,117 +351,116 @@ class TelemetryParser {
   </div>
 
   <h4>4.5 类型解析、k230 展开与导出</h4>
-  <pre class="source-code"><code data-source="car_debug.html" data-lines="614-724">    /* 返回 null 表示这一行不可信，整行丢弃。 */
-    _parseRow(line) {
-        const values = line.slice(2).split(',');
-        /* 列数对不上多半是掉电重连或掩码切换瞬间的残行，不要勉强解析。 */
-        if (this.columns.length === 0 || values.length !== this.columns.length) {
-            return null;
-        }
-
-        const composite = TelemetryParser.COMPOSITE_COLUMNS;
-        const hex = TelemetryParser.HEX_COLUMNS;
-        const text = TelemetryParser.TEXT_COLUMNS;
-        const sample = {};
-
-        for (let i = 0; i &lt; this.columns.length; i += 1) {
-            const col = this.columns[i];
-            const value = values[i];
-
-            if (composite[col]) {
-                const names = composite[col];
-                const parts = value.split(':');
-                if (parts.length !== names.length || parts.some((part) =&gt; part.trim() === '')) {
-                    return null;
+  <pre class="source-code"><code data-source="car_debug.html" data-lines="614-724">                    captureEnded = captureEnded || r.captureEnded;
+                } else {
+                    this.droppedFrames += 1;
                 }
-                for (let j = 0; j &lt; names.length; j += 1) {
-                    const n = Number(parts[j]);
-                    if (!Number.isFinite(n)) {
-                        return null;
-                    }
-                    sample[names[j]] = n;
-                }
-            } else if (text.includes(col)) {
-                sample[col] = value;
-            } else if (hex.includes(col)) {
-                if (!/^[0-9a-f]+$/i.test(value)) {
-                    return null;
-                }
-                const n = parseInt(value, 16);
-                if (!Number.isFinite(n)) {
-                    return null;
-                }
-                sample[col] = n;
-            } else {
-                if (value.trim() === '') {
-                    return null;
-                }
-                const n = Number(value);
-                if (!Number.isFinite(n)) {
-                    return null;
-                }
-                sample[col] = n;
+                this._reset();
+                continue;
             }
         }
-        return sample;
+
+        return {
+            textLines, schemaChanged, samplesAdded,
+            captureStarted, captureAdded, captureEnded,
+        };
     }
 
-    clear() {
-        this.samples = [];
+    _feedTextByte(b, textLines) {
+        if (b === 0x0A) {            /* \n 结束一行 */
+            const line = this.textBuffer.replace(/\r$/, '');
+            if (line !== '') {
+                textLines.push(line);
+            }
+            this.textBuffer = '';
+        } else if (b &gt;= 0x09 &amp;&amp; b &lt; 0x7F) {
+            this.textBuffer += String.fromCharCode(b);
+            /* 防御：命令回应异常长时不无限增长。 */
+            if (this.textBuffer.length &gt; 512) {
+                this.textBuffer = this.textBuffer.slice(-256);
+            }
+        }
+        /* 其余不可打印字节丢弃：文本流里不该出现。 */
     }
 
-    /* 导出时把当前样本还原成标准 CSV（复合列已展开，比原始格式更好用）。 */
-    toCsv() {
-        return samplesToCsv(this.samples);
-    }
-}
+    _handleFrame() {
+        const out = {
+            schemaChanged: false, samplesAdded: 0,
+            captureStarted: false, captureAdded: 0, captureEnded: false,
+        };
 
-/* 样本数组 → 标准 CSV 文本；试验记录导出与实时导出共用。 */
-function samplesToCsv(samples) {
-    if (samples.length === 0) {
-        return '';
-    }
-    const cols = Object.keys(samples[0]);
-    const head = cols.join(',');
-    const body = samples.map((s) =&gt; cols.map((c) =&gt; s[c]).join(',')).join('\n');
-    return head + '\n' + body + '\n';
-}
+        /* SEQ 跳变检测（仅对样本类帧，schema/meta/end 不算数据丢失）。 */
+        if (this.lastSeq !== null &amp;&amp;
+            ((this.lastSeq + 1) &amp; 0xFF) !== this.frameSeq) {
+            this.droppedFrames += 1;
+        }
+        this.lastSeq = this.frameSeq;
 
-/*
- * 生成可直接粘贴给 AI 的调参数据包（Markdown）。
- * meta: { loop, structure, params, excitation, rateHz, columnsNote, expectation }
- */
-function buildAiPack(meta, samples) {
-    const lines = [];
-    lines.push('# PID 调参数据包 — ' + meta.loop);
-    lines.push('');
-    lines.push('- 控制结构: ' + meta.structure);
-    lines.push('- 本次参数: ' + meta.params);
-    lines.push('- 激励: ' + meta.excitation);
-    lines.push('- 采样率: ' + meta.rateHz + ' Hz（ms 列为固件毫秒时间戳）');
-    lines.push('- 列说明: ' + meta.columnsNote);
-    lines.push('- 调参目标: ' + meta.expectation);
-    if (meta.metricsNote) {
-        lines.push('- 网页自动指标: ' + meta.metricsNote);
+        if (this.frameType === FRAME_TYPE_SCHEMA) {
+            const parsed = this._parseSchema();
+            if (parsed) {
+                this.columns = parsed.columns;
+                this.units = parsed.units;
+                this.samples = [];   /* 列定义变了，旧样本对不上。 */
+                out.schemaChanged = true;
+            }
+        } else if (this.frameType === FRAME_TYPE_SAMPLE) {
+            const sample = this._parseSample(this.columns);
+            if (sample) {
+                this.samples.push(sample);
+                out.samplesAdded = 1;
+                if (this.samples.length &gt; this.maxSamples) {
+                    this.samples.splice(0, Math.min(this.trimBatch,
+                        this.samples.length - 1));
+                }
+            }
+        } else if (this.frameType === FRAME_TYPE_CAP_META) {
+            const parsed = this._parseSchema();
+            if (parsed) {
+                this.captureColumns = parsed.columns;
+                this.captureUnits = parsed.units;
+                this.captureSamples = [];
+                out.captureStarted = true;
+            }
+        } else if (this.frameType === FRAME_TYPE_CAP_SAMPLE) {
+            const sample = this._parseSample(this.captureColumns);
+            if (sample) {
+                this.captureSamples.push(sample);
+                out.captureAdded = 1;
+            }
+        } else if (this.frameType === FRAME_TYPE_CAP_END) {
+            out.captureEnded = true;
+        }
+        return out;
     }
-    lines.push('');
-    lines.push('请根据以下数据评估本次响应（上升时间、超调、振荡、稳态误差、输出饱和），' +
-               '并给出下一组参数的具体数值建议和理由。');
-    lines.push('');
-    lines.push('```csv');
-    lines.push(samplesToCsv(samples).trimEnd());
-    lines.push('```');
-    return lines.join('\n');
-}
 
-/*
- * 解析 Q 命令回应：
- * "OK Q MAX=57 MASK=5136 RATE=50 CAPST=0 CAPN=0 CAPMAX=1024"
- * 返回 null 表示不是合法的 Q 回应（例如老固件不支持）。
- */
-function parseCapabilityReply(line) {
-    const m = /^OK Q MAX=(\d+) MASK=(\d+) RATE=(\d+)(?: CAPST=(\d+) CAPN=(\d+) CAPMAX=(\d+))?/
-        .exec(line || '');</code></pre>
+    /* SCHEMA/CAP_META payload：mask(u16) + 每通道 {nameLen(u8), name[], unit(u8)}。 */
+    _parseSchema() {
+        const p = this.payload;
+        if (p.length &lt; 2) {
+            return null;
+        }
+        const columns = ['ms'];
+        const units = { ms: 'ms' };
+        let offset = 2;   /* 跳过 mask（列序由帧本身给出，掩码仅供参考） */
+        while (offset &lt; p.length) {
+            const nameLen = p[offset];
+            offset += 1;
+            if (offset + nameLen + 1 &gt; p.length) {
+                return null;   /* 长度自洽性检查 */
+            }
+            let name = '';
+            for (let k = 0; k &lt; nameLen; k += 1) {
+                name += String.fromCharCode(p[offset + k]);
+            }
+            offset += nameLen;
+            const unitCode = p[offset];
+            offset += 1;
+            columns.push(name);
+            units[name] = UNIT_NAMES[unitCode] || 'raw';
+        }
+        return { columns, units };
+    }</code></pre>
   <ol class="line-notes">
     <li><strong>第 378～384 行：</strong>_parseRow 去掉 D 前缀并校验表头存在、列数完全一致。</li>
     <li><strong>第 386～424 行：</strong>逐列处理复合、文本、十六进制和普通数值；任一结构/数值非法就丢整行。</li>
@@ -472,7 +472,7 @@ function parseCapabilityReply(line) {
   </ol>
 
   <h4>4.6 页面状态和安全终端输出</h4>
-  <pre class="source-code"><code data-source="car_debug.html" data-lines="1468-1511">let port = null;
+  <pre class="source-code"><code data-source="car_debug.html" data-lines="1538-1581">let port = null;
 let writer = null;
 /* reader 和读循环本身都要能被 disconnect() 取到：readable 流还锁着时
    port.close() 会被拒绝，必须先 cancel 再等读循环退出。 */
@@ -525,7 +525,7 @@ function log(text, cls) {
   </ol>
 
   <h4>4.7 Web Serial 连接、读取与 reader cancel</h4>
-  <pre class="source-code"><code data-source="car_debug.html" data-lines="1553-1664">/* ---------- 串口 ---------- */
+  <pre class="source-code"><code data-source="car_debug.html" data-lines="1641-1752">/* ---------- 串口 ---------- */
 
 function setConnected(on) {
     $('connState').textContent = on ? '已连接' : '未连接';
@@ -575,7 +575,6 @@ async function connect() {
 }
 
 async function readLoop() {
-    const decoder = new TextDecoder();
     reader = port.readable.getReader();
     try {
         while (!readAbort) {
@@ -583,10 +582,14 @@ async function readLoop() {
             if (done) {
                 break;
             }
-            const { textLines, headerChanged, samplesAdded, captureAdded } =
-                parser.feed(decoder.decode(value, { stream: true }));
+            /* value 是 Uint8Array，直接喂字节流状态机——不再 TextDecoder，
+               因为二进制帧里的 0x0A/0xAA 字节不能当文本换行处理。 */
+            const {
+                textLines, schemaChanged, samplesAdded,
+                captureAdded, captureEnded,
+            } = parser.feed(value);
             textLines.forEach(handleTextLine);
-            if (headerChanged) {
+            if (schemaChanged) {
                 rebuildSeries();
             }
             if (session &amp;&amp; samplesAdded &gt; 0) {
@@ -594,11 +597,14 @@ async function readLoop() {
             }
             captureForRecording(samplesAdded);
             if (captureAdded &gt; 0) {
-                /* dump 可能有上千行，进度只在状态栏更新，不触发重绘。 */
+                /* dump 可能有上千帧，进度只在状态栏更新，不触发重绘。 */
                 $('sessStatus').textContent =
                     `正在取回板载 100 Hz 捕获数据… ${parser.captureSamples.length} 样本`;
             }
-            if (headerChanged || samplesAdded &gt; 0) {
+            if (captureEnded &amp;&amp; captureEndResolve) {
+                captureEndResolve();
+            }
+            if (schemaChanged || samplesAdded &gt; 0) {
                 requestRedraw();
             }
         }
@@ -630,13 +636,7 @@ async function disconnect() {
         }
         readAbort = true;
         /* 必须先解除挂起的 read() 并等读循环真正退出（它在 finally 里
-           releaseLock），否则 readable 仍处于 locked，port.close() 会被拒绝，
-           port 不会置空，下次连接就会失败。 */
-        if (reader) {
-            await reader.cancel().catch(() =&gt; {});
-        }
-        if (readTask) {
-            await readTask.catch(() =&gt; {});</code></pre>
+           releaseLock），否则 readable 仍处于 locked，port.close() 会被拒绝，</code></pre>
   <ol class="line-notes">
     <li><strong>第 627～643 行：</strong>setConnected 同步连接状态，并启停普通命令、参数、标定、试验和舵机控件；断开时结束正在进行的会话。</li>
     <li><strong>第 646～660 行：</strong>检测 Web Serial，按 115200 8N1 打开、取得 writer 并启动读循环；连接 300ms 后发送 K? 拉取参数表。</li>
@@ -656,7 +656,7 @@ async function disconnect() {
   </div>
 
   <h4>4.8 动态曲线选择器</h4>
-  <pre class="source-code"><code data-source="car_debug.html" data-lines="3153-3197">/* ---------- 绘图 ---------- */
+  <pre class="source-code"><code data-source="car_debug.html" data-lines="3313-3357">/* ---------- 绘图 ---------- */
 
 function rebuildSeries() {
     const cols = parser.numericColumns();
@@ -695,7 +695,7 @@ function rebuildSeries() {
         sw.className = 'sw';
         sw.style.background = color;
         label.append(cb, sw, document.createTextNode(col));
-        label.title = '刻度组：' + TelemetryParser.unitOf(col);
+        label.title = '刻度组：' + parser.unitOf(col);
         box.appendChild(label);
     });
 }
@@ -709,7 +709,7 @@ function drawPlot() {</code></pre>
   </ol>
 
   <h4>4.9 Canvas 绘图与按帧合并</h4>
-  <pre class="source-code"><code data-source="car_debug.html" data-lines="3197-3313">function drawPlot() {
+  <pre class="source-code"><code data-source="car_debug.html" data-lines="3357-3473">function drawPlot() {
     /* 超高 DPI 画布像素数会成倍放大；2 倍已足够清晰。 */
     const dpr = Math.min(window.devicePixelRatio || 1, 2);
     const w = plotEl.clientWidth;
@@ -772,7 +772,7 @@ function drawPlot() {</code></pre>
     /* 同量纲曲线共用一组 min/max：目标、实测和基准在同一刻度上才能比。 */
     const groupRange = {};
     const feedRange = (samples, col) =&gt; {
-        const group = TelemetryParser.unitOf(col);
+        const group = parser.unitOf(col);
         let range = groupRange[group];
         if (!range) {
             range = { min: Infinity, max: -Infinity };
@@ -780,7 +780,7 @@ function drawPlot() {</code></pre>
         }
         for (const s of samples) {
             const v = s[col];
-            if (typeof v === 'number') {
+            if (Number.isFinite(v)) {
                 if (v &lt; range.min) { range.min = v; }
                 if (v &gt; range.max) { range.max = v; }
             }
@@ -804,7 +804,7 @@ function drawPlot() {</code></pre>
         pad.t + plotH - ((v - range.min) / range.span) * plotH;
 
     const drawSeries = (samples, col, color, dashed, xFn) =&gt; {
-        const range = groupRange[TelemetryParser.unitOf(col)];
+        const range = groupRange[parser.unitOf(col)];
         if (!range || !Number.isFinite(range.min)) {
             return;
         }
@@ -816,7 +816,7 @@ function drawPlot() {</code></pre>
         let started = false;
         for (let i = 0; i &lt; samples.length; i += 1) {
             const v = samples[i][col];
-            if (typeof v !== 'number') {
+            if (!Number.isFinite(v)) {
                 continue;
             }
             const x = xFn(i, samples[i]);
@@ -835,7 +835,7 @@ function drawPlot() {</code></pre>
   </ol>
 
   <h4>4.10 命令按钮、舵机节流、清空与 CSV 下载</h4>
-  <pre class="source-code"><code data-source="car_debug.html" data-lines="3474-3574">/* ---------- 事件绑定 ---------- */
+  <pre class="source-code"><code data-source="car_debug.html" data-lines="3634-3734">/* ---------- 事件绑定 ---------- */
 
 $('btnConnect').onclick = connect;
 $('btnDisconnect').onclick = disconnect;
@@ -905,8 +905,11 @@ $('btnMaxRate').onclick = async () =&gt; {
     renderRateLimit();
 };
 
-document.querySelectorAll('.mk').forEach((cb) =&gt; {
-    cb.addEventListener('change', renderRateLimit);
+/* 事件委托：勾选框是动态生成的，绑在容器上对重建也有效。 */
+$('maskBoxes').addEventListener('change', (e) =&gt; {
+    if (e.target.classList.contains('mk')) {
+        renderRateLimit();
+    }
 });
 $('gVal').addEventListener('input', renderRateLimit);
 
@@ -932,10 +935,7 @@ document.querySelectorAll('.drive-key').forEach((btn) =&gt; {
  * 数字键标记则在录制中始终可用，因为打标记本身没有危险。
  */
 document.addEventListener('keydown', (e) =&gt; {
-    /* 正在输入框里打字时不接管按键。 */
-    const typing = e.target &amp;&amp; (e.target.tagName === 'INPUT' ||
-        e.target.tagName === 'TEXTAREA' || e.target.isContentEditable);
-    if (typing) {</code></pre>
+    /* 正在输入框里打字时不接管按键。 */</code></pre>
   <ol class="line-notes">
     <li><strong>第 1307～1318 行：</strong>绑定连接/C0；所有 data-send 与 data-cmd 共用通用处理，因此新增 Z2 按钮无需专用 JS，点击就发送字符串 <code>Z2</code>。</li>
     <li><strong>第 1320～1328 行：</strong>汇总最多 10 个掩码 checkbox 并发送 M。</li>
@@ -1010,212 +1010,33 @@ function eq(actual, expected, what) {
     <li><strong>第 39～43 行：</strong>断言异常时打印 FAIL 与消息，但继续后续测试。</li>
     <li><strong>第 46～50 行：</strong>eq 使用严格比较；失败消息同时显示期望和实际值。</li>
   </ol>
-  <pre class="source-code"><code data-source="tests/test_csv_parse.mjs" data-lines="63-82">const FULL_HEADER = 'H,ms,yaw,gray,keys,LD,RD,LV,RV,mode,k230\r\n';
-const FULL_ROW = 'D,12340,-91.25,1F,0,1203.4,1198.7,0.0,0.0,IDLE,1:-123:-45\r\n';
+  <pre class="source-code"><code data-source="tests/test_csv_parse.mjs" data-lines="63-82">console.log('遥测纯函数测试（帧解析见 test_binary_frame.mjs）\n');
 
-console.log('遥测 CSV 解析器测试\n');
+/* 二进制协议后，帧解析类测试全部迁到 tests/test_binary_frame.mjs。
+   本文件只保留与协议无关的纯函数测试（指标、AI 包、会话、频率估算）。 */
 
-check('1. 正常表头+数据行，各列取值正确', () =&gt; {
-    const p = new TelemetryParser();
-    p.feed(FULL_HEADER);
-    p.feed(FULL_ROW);
-    eq(p.samples.length, 1, 'samples 条数');
-    const s = p.samples[0];
-    eq(s.ms, 12340, 'ms');
-    eq(s.yaw, -91.25, 'yaw');
-    eq(s.keys, 0, 'keys');
-    eq(s.LD, 1203.4, 'LD');
-    eq(s.RD, 1198.7, 'RD');
-    eq(s.LV, 0, 'LV');
-    eq(s.RV, 0, 'RV');
-    eq(s.mode, 'IDLE', 'mode');
-});</code></pre>
+check('17. 静态 unitOf 兜底量纲分组（无 schema 上下文时）', () =&gt; {
+    /* 实例方法 unitOf 用 schema 单位码，见 test_binary_frame.mjs；
+       静态版是无实例时的兜底，按已知列名给量纲。 */
+    eq(TelemetryParser.unitOf('LV'), 'mmps', 'LV');
+    eq(TelemetryParser.unitOf('TL'), 'mmps', 'TL 与 LV 同组才能同刻度对比');
+    eq(TelemetryParser.unitOf('PL'), 'pwm', 'PL');
+    eq(TelemetryParser.unitOf('yaw'), 'deg', 'yaw');
+    eq(TelemetryParser.unitOf('navE'), 'deg', 'navE 与 yaw 同组');
+    eq(TelemetryParser.unitOf('lerr'), 'lerr', '未知列自成一组');
+});
+
+check('18. buildAiPack 包含参数、结构说明与完整 CSV 数据', () =&gt; {
+    const samples = [
+        { ms: 0, TL: 0, LV: 0 },
+        { ms: 20, TL: 300, LV: 12.5 },</code></pre>
   <ol class="line-notes">
     <li><strong>第 52～53 行：</strong>完整 H/D 样例覆盖所有字段与 CRLF。</li>
     <li><strong>第 55 行：</strong>打印标题。</li>
     <li><strong>第 57～60 行：</strong>测试 1 分别喂表头和数据，模拟正常串口顺序。</li>
     <li><strong>第 61～71 行：</strong>确认一个样本，并核对时间、航向、按键、路程、速度和 mode。</li>
   </ol>
-  <pre class="source-code"><code data-source="tests/test_csv_parse.mjs" data-lines="84-121">check('2. 数据行列数少于表头 → 丢弃', () =&gt; {
-    const p = new TelemetryParser();
-    p.feed(FULL_HEADER);
-    p.feed('D,12340,-91.25,1F\r\n');
-    eq(p.samples.length, 0, 'samples 条数');
-});
-
-check('3. 数据行列数多于表头 → 丢弃', () =&gt; {
-    const p = new TelemetryParser();
-    p.feed(FULL_HEADER);
-    p.feed('D,12340,-91.25,1F,0,1203.4,1198.7,0.0,0.0,IDLE,1:-123:-45,999\r\n');
-    eq(p.samples.length, 0, 'samples 条数');
-});
-
-check('4. 中途收到新表头（掩码切换）→ 清空旧 samples 并按新表头解析', () =&gt; {
-    const p = new TelemetryParser();
-    p.feed(FULL_HEADER);
-    p.feed(FULL_ROW);
-    eq(p.samples.length, 1, '切换前 samples 条数');
-
-    p.feed('H,ms,yaw\r\n');
-    eq(p.samples.length, 0, '切换后应清空');
-
-    p.feed('D,500,12.50\r\n');
-    eq(p.samples.length, 1, '新表头下 samples 条数');
-    eq(p.samples[0].yaw, 12.5, '新表头下 yaw');
-    eq(p.samples[0].LD, undefined, '旧列不应残留');
-});
-
-check('5. OK/ERR 行不进 samples，只进文本行', () =&gt; {
-    const p = new TelemetryParser();
-    p.feed(FULL_HEADER);
-    const out = p.feed('OK G=20\r\nERR RANGE MAX=23\r\n');
-    eq(p.samples.length, 0, 'samples 条数');
-    eq(out.textLines.length, 2, '文本行条数');
-    eq(out.textLines[0], 'OK G=20', '第一条文本行');
-    eq(out.textLines[1], 'ERR RANGE MAX=23', '第二条文本行');
-});</code></pre>
-  <ol class="line-notes">
-    <li><strong>第 73～85 行：</strong>测试 2/3 锁住少列和多列行为：都必须整行丢弃。</li>
-    <li><strong>第 87～100 行：</strong>测试 4：新表头清旧 samples，并按新列解析，旧字段不残留。</li>
-    <li><strong>第 102～110 行：</strong>测试 5：OK/ERR 只进入 textLines，不进入 samples。</li>
-  </ol>
-  <pre class="source-code"><code data-source="tests/test_csv_parse.mjs" data-lines="123-168">check('6. 半截行先缓冲，拼接完整后才解析', () =&gt; {
-    const p = new TelemetryParser();
-    p.feed(FULL_HEADER);
-    p.feed('D,12340,-91.25,1F,0,1203.4,');
-    eq(p.samples.length, 0, '半截行不应产生 sample');
-    p.feed('1198.7,0.0,0.0,IDLE,1:-123:-45\r\n');
-    eq(p.samples.length, 1, '拼接后应产生 sample');
-    eq(p.samples[0].RD, 1198.7, '拼接后 RD');
-});
-
-check('7. \\r\\n 与 \\n 两种换行都能拆', () =&gt; {
-    const p = new TelemetryParser();
-    p.feed('H,ms,yaw\n');
-    p.feed('D,100,1.00\nD,200,2.00\r\n');
-    eq(p.samples.length, 2, 'samples 条数');
-    eq(p.samples[0].yaw, 1, '第一条 yaw');
-    eq(p.samples[1].yaw, 2, '第二条 yaw');
-});
-
-check('8. gray 列按十六进制解析（1F → 31，不是 1）', () =&gt; {
-    const p = new TelemetryParser();
-    p.feed(FULL_HEADER);
-    p.feed(FULL_ROW);
-    eq(p.samples[0].gray, 31, 'gray');
-});
-
-check('9. k230 列展开为三个虚拟列', () =&gt; {
-    const p = new TelemetryParser();
-    p.feed(FULL_HEADER);
-    p.feed(FULL_ROW);
-    const s = p.samples[0];
-    eq(s.k230_valid, 1, 'k230_valid');
-    eq(s.k230_x, -123, 'k230_x');
-    eq(s.k230_y, -45, 'k230_y');
-    eq(s.k230, undefined, '原始复合列不应保留');
-});
-
-check('10. k230 为 0:0:0 时也能正确展开', () =&gt; {
-    const p = new TelemetryParser();
-    p.feed(FULL_HEADER);
-    p.feed('D,1,0.00,00,0,0.0,0.0,0.0,0.0,IDLE,0:0:0\r\n');
-    const s = p.samples[0];
-    eq(s.k230_valid, 0, 'k230_valid');
-    eq(s.k230_x, 0, 'k230_x');
-    eq(s.k230_y, 0, 'k230_y');
-});</code></pre>
-  <ol class="line-notes">
-    <li><strong>第 112～120 行：</strong>测试 6 把一条 D 行拆成两次 feed，验证半行缓存与拼接。</li>
-    <li><strong>第 122～129 行：</strong>测试 7 同时支持 LF 和 CRLF。</li>
-    <li><strong>第 131～136 行：</strong>测试 8 验证 gray 的 1F 按十六进制得到 31。</li>
-    <li><strong>第 138～147 行：</strong>测试 9 验证 k230 展开且不保留原始复合键。</li>
-    <li><strong>第 149～157 行：</strong>测试 10 验证 <code>0:0:0</code> 占位。</li>
-  </ol>
-  <pre class="source-code"><code data-source="tests/test_csv_parse.mjs" data-lines="170-203">/* 以下两条不在需求清单里，但同属解析器最容易出错的地方，一并锁住。 */
-
-check('11. k230 分段数不为 3 的畸形行 → 整行丢弃', () =&gt; {
-    const p = new TelemetryParser();
-    p.feed(FULL_HEADER);
-    p.feed('D,12340,-91.25,1F,0,1203.4,1198.7,0.0,0.0,IDLE,1:-123\r\n');
-    eq(p.samples.length, 0, 'samples 条数');
-});
-
-check('12. 曲线选择器只列数值列：排除文本列 mode 和横轴列 ms', () =&gt; {
-    const p = new TelemetryParser();
-    p.feed(FULL_HEADER);
-    const numeric = p.numericColumns();
-    eq(numeric.includes('mode'), false, 'mode 是文本，不应可画图');
-    eq(numeric.includes('ms'), false, 'ms 是横轴，画出来只是单调直线');
-    eq(numeric.includes('k230'), false, '复合原始列不应可画图');
-    eq(numeric.includes('k230_x'), true, 'k230_x 应可画图');
-    eq(numeric.includes('yaw'), true, 'yaw 应可画图');
-    eq(numeric.includes('gray'), true, 'gray 应可画图');
-});
-
-check('13. gray 为非法十六进制 → 整行丢弃', () =&gt; {
-    const p = new TelemetryParser();
-    p.feed(FULL_HEADER);
-    p.feed('D,12340,-91.25,GG,0,1203.4,1198.7,0.0,0.0,IDLE,1:-123:-45\r\n');
-    eq(p.samples.length, 0, 'samples 条数');
-});
-
-check('14. 还没收到任何表头就来了数据行 → 整行丢弃', () =&gt; {
-    const p = new TelemetryParser();
-    const out = p.feed('D,12340,-91.25,1F\r\n');
-    eq(p.samples.length, 0, 'samples 条数');
-    eq(out.textLines.length, 0, '数据行不该混进终端文本');
-});</code></pre>
-  <ol class="line-notes">
-    <li><strong>第 159～166 行：</strong>额外测试 11：k230 段数不为 3 时整行拒绝。</li>
-    <li><strong>第 168～178 行：</strong>测试 12：曲线列排除 mode/ms/原始 k230，保留数值与展开列。</li>
-    <li><strong>第 180～185 行：</strong>测试 13：完全非法十六进制 GG 使整行无效。</li>
-    <li><strong>第 187～192 行：</strong>测试 14：无表头的 D 行既不进样本，也不混进终端文本。</li>
-  </ol>
-  <pre class="source-code"><code data-source="tests/test_csv_parse.mjs" data-lines="205-295">check('15. 导出 CSV 仍保留 ms 与 mode（只是不画图，不是不记录）', () =&gt; {
-    const p = new TelemetryParser();
-    p.feed(FULL_HEADER);
-    p.feed(FULL_ROW);
-    const csv = p.toCsv();
-    const head = csv.split('\n')[0].split(',');
-    eq(head.includes('ms'), true, '导出应含 ms');
-    eq(head.includes('mode'), true, '导出应含 mode');
-    eq(head.includes('k230_x'), true, '导出应含展开后的 k230_x');
-    eq(csv.split('\n')[1], '12340,-91.25,31,0,1203.4,1198.7,0,0,IDLE,1,-123,-45', '数据行内容');
-});
-
-/* ---- 遥测调参升级（分支 update-遥测）新增行为 ---- */
-
-check('16. 新调参列 TL/TR、PL/PR、navT/navE、lerr 正常解析', () =&gt; {
-    const p = new TelemetryParser();
-    p.feed('H,ms,LV,RV,mode,TL,TR,PL,PR,navT,navE,lerr\r\n');
-    p.feed('D,100,198.5,201.0,SPEED,200.0,200.0,412,-388,90.00,-1.25,-3.0\r\n');
-    eq(p.samples.length, 1, 'samples 条数');
-    const s = p.samples[0];
-    eq(s.TL, 200, 'TL');
-    eq(s.PR, -388, 'PR');
-    eq(s.navT, 90, 'navT');
-    eq(s.navE, -1.25, 'navE');
-    eq(s.lerr, -3, 'lerr');
-    eq(s.mode, 'SPEED', 'mode 支持新模式文本');
-});
-
-check('17. unitOf 量纲分组：目标与实测同组，未知列自成一组', () =&gt; {
-    eq(TelemetryParser.unitOf('LV'), 'mmps', 'LV');
-    eq(TelemetryParser.unitOf('TL'), 'mmps', 'TL 与 LV 同组才能同刻度对比');
-    eq(TelemetryParser.unitOf('PL'), 'pwm', 'PL');
-    eq(TelemetryParser.unitOf('yaw'), 'deg', 'yaw');
-    eq(TelemetryParser.unitOf('navT'), 'deg', 'navT 与 yaw 同组');
-    eq(TelemetryParser.unitOf('lerr'), 'lerr', '未知列自成一组');
-    eq(TelemetryParser.unitOf('k230_x'), 'k230_x', '复合虚拟列自成一组');
-});
-
-check('18. buildAiPack 包含参数、结构说明与完整 CSV 数据', () =&gt; {
-    const samples = [
-        { ms: 0, TL: 0, LV: 0 },
-        { ms: 20, TL: 300, LV: 12.5 },
-    ];
-    const pack = buildAiPack({
+  <pre class="source-code"><code data-source="tests/test_csv_parse.mjs" data-lines="84-121">    const pack = buildAiPack({
         loop: '轮速 PI',
         structure: 'PI+前馈',
         params: 'wkp=1 wki=0',
@@ -1234,8 +1055,8 @@ check('18. buildAiPack 包含参数、结构说明与完整 CSV 数据', () =&gt
 
 check('19. samplesToCsv 与 toCsv 输出一致', () =&gt; {
     const p = new TelemetryParser();
-    p.feed(FULL_HEADER);
-    p.feed(FULL_ROW);
+    /* 直接塞样本，绕开帧解析（帧解析在 test_binary_frame.mjs 测）。 */
+    p.samples = [{ ms: 0, TL: 300, LV: 12.5 }, { ms: 10, TL: 300, LV: 40 }];
     eq(p.toCsv(), samplesToCsv(p.samples), '两个入口共用一份实现');
 });
 
@@ -1251,17 +1072,196 @@ check('21. 速度→基础PWM：零速不施加静摩擦', () =&gt; {
     const stopped = estimateWheelBasePwm(0, 2, 50);
     eq(stopped.raw, 0, '零速基础PWM');
     eq(stopped.clamped, 0, '零速限幅值');
-});
-
-check('22. 速度→基础PWM：超过±1000时明确报告饱和', () =&gt; {
-    const result = estimateWheelBasePwm(800, 2, 0);
+});</code></pre>
+  <ol class="line-notes">
+    <li><strong>第 73～85 行：</strong>测试 2/3 锁住少列和多列行为：都必须整行丢弃。</li>
+    <li><strong>第 87～100 行：</strong>测试 4：新表头清旧 samples，并按新列解析，旧字段不残留。</li>
+    <li><strong>第 102～110 行：</strong>测试 5：OK/ERR 只进入 textLines，不进入 samples。</li>
+  </ol>
+  <pre class="source-code"><code data-source="tests/test_csv_parse.mjs" data-lines="123-168">    const result = estimateWheelBasePwm(800, 2, 0);
     eq(result.raw, 1600, '限幅前PWM');
     eq(result.clamped, 1000, '限幅后PWM');
     eq(result.saturated, true, '必须标记饱和');
     eq(estimateWheelBasePwm(500, 2, 0).saturated, true, '刚好触及1000也没有PI余量');
 });
 
-/* ---- 自动调参指标（网页二期）---- */</code></pre>
+/* ---- 自动调参指标（网页二期）---- */
+
+/* 构造 20ms 一拍的阶跃数据：目标 300，实测按给定序列。 */
+function stepSamples(actuals) {
+    return actuals.map((v, i) =&gt; ({ ms: i * 20, TL: i === 0 ? 0 : 300, LV: v }));
+}
+
+check('23. 阶跃指标：上升时间、超调、稳定时间、稳态误差', () =&gt; {
+    /* 实测：0 →(20ms 目标出现) 100, 200, 280, 330, 310, 300, 300, 300, 300 */
+    const samples = stepSamples([0, 100, 200, 280, 330, 310, 300, 300, 300, 300]);
+    const m = computeStepMetrics(samples, 'TL', 'LV');
+    eq(m !== null, true, '应能识别阶跃');
+    eq(m.target, 300, '目标');
+    /* 窗口从 i=1(ms=20) 开始；实测首次 ≥270 在 i=3(ms=60) → 上升 40ms */
+    eq(m.riseMs, 40, '上升时间');
+    eq(Math.round(m.overshootPct), 10, '超调=330/300-1');
+    /* 从 i=5(ms=100,310) 起有出带（310&lt;315 在带内!）——±5% 带为 285~315，
+       330(i=4) 出带，其后 310、300... 都在带内 → 稳定点 i=5(ms=100) − 20 = 80ms */
+    eq(m.settleMs, 80, '稳定时间');
+    eq(m.ssePct !== null &amp;&amp; Math.abs(m.ssePct) &lt; 2, true, '稳态误差接近 0');
+});
+
+check('24. 阶跃指标：负速度阶跃同样可分析', () =&gt; {
+    const samples = [0, -120, -250, -290, -300, -300, -300]
+        .map((v, i) =&gt; ({ ms: i * 20, TL: i === 0 ? 0 : -300, LV: v }));
+    const m = computeStepMetrics(samples, 'TL', 'LV');
+    eq(m.target, -300, '负目标');
+    eq(m.riseMs, 40, '负阶跃上升时间（首次 ≤ −270 在 ms=60，窗口起点 20）');
+    eq(m.overshootPct, 0, '无超调');
+});
+
+check('25. 阶跃指标：没有阶跃返回 null', () =&gt; {
+    const flat = [{ ms: 0, TL: 0, LV: 0 }, { ms: 20, TL: 0, LV: 1 }, { ms: 40, TL: 0, LV: 0 }];
+    eq(computeStepMetrics(flat, 'TL', 'LV'), null, '全零目标');
+});
+
+check('26. 转向指标：到角时间、过冲与残差', () =&gt; {
+    const navE = [90, 60, 30, 10, -4, -1, 0.5, 0.3, 0.2, 0.1];
+    const samples = navE.map((e, i) =&gt; ({ ms: i * 50, navE: e }));</code></pre>
+  <ol class="line-notes">
+    <li><strong>第 112～120 行：</strong>测试 6 把一条 D 行拆成两次 feed，验证半行缓存与拼接。</li>
+    <li><strong>第 122～129 行：</strong>测试 7 同时支持 LF 和 CRLF。</li>
+    <li><strong>第 131～136 行：</strong>测试 8 验证 gray 的 1F 按十六进制得到 31。</li>
+    <li><strong>第 138～147 行：</strong>测试 9 验证 k230 展开且不保留原始复合键。</li>
+    <li><strong>第 149～157 行：</strong>测试 10 验证 <code>0:0:0</code> 占位。</li>
+  </ol>
+  <pre class="source-code"><code data-source="tests/test_csv_parse.mjs" data-lines="170-203">    eq(m.initialErrDeg, 90, '初始误差');
+    /* 最后一次 |navE|&gt;2 在 i=4(-4, ms=200)，其后进带 → settle = 250-0 */
+    eq(m.settleMs, 250, '到角时间');
+    eq(m.overshootDeg, 4, '过冲 4°');
+    eq(m.finalErrDeg &lt; 2, true, '残差');
+});
+
+check('27. analyzeRun：按环路分派并容忍字段缺失', () =&gt; {
+    const wheel = analyzeRun('wheel',
+        stepSamples([0, 100, 200, 290, 300, 300, 300]), 300, 2);
+    eq(wheel.left !== null, true, '轮速左侧有指标');
+    eq(wheel.right, null, '缺 TR/RV 列时右侧为 null 而不是抛错');
+    eq(analyzeRun('line', [{ ms: 0 }, { ms: 20 }, { ms: 40 }], 200, 2), null,
+        '巡线缺 lerr 列返回 null');
+    eq(analyzeRun('wheel', [], 300, 2), null, '空样本返回 null');
+});
+
+check('28. 前馈建议：按稳态差比例修正，异常输入拒绝', () =&gt; {
+    /* 目标 300 实测稳态 270 → ff 2.0 → 2.222 */
+    const next = suggestFeedforward(2.0, 300, 270);
+    eq(Math.abs(next - 2.2222) &lt; 0.001, true, '比例外推');
+    eq(suggestFeedforward(2.0, 300, 297), null, '3% 内不建议');
+    eq(suggestFeedforward(2.0, 300, 30), null, '稳态过低视为堵转，不外推');
+    eq(suggestFeedforward(0, 300, 270), null, 'ff=0 无从缩放');
+    eq(suggestFeedforward(2.0, 0, 0), null, '零目标拒绝');
+});
+
+check('29. AI 包携带自动指标行（可选字段，不给不出现）', () =&gt; {
+    const meta = {
+        loop: 'x', structure: 's', params: 'p', excitation: 'e',
+        rateHz: 30, columnsNote: 'c', expectation: 'g',
+    };
+    const bare = buildAiPack(meta, [{ ms: 0, LV: 1 }]);
+    eq(bare.includes('网页自动指标'), false, '未提供时不输出');</code></pre>
+  <ol class="line-notes">
+    <li><strong>第 159～166 行：</strong>额外测试 11：k230 段数不为 3 时整行拒绝。</li>
+    <li><strong>第 168～178 行：</strong>测试 12：曲线列排除 mode/ms/原始 k230，保留数值与展开列。</li>
+    <li><strong>第 180～185 行：</strong>测试 13：完全非法十六进制 GG 使整行无效。</li>
+    <li><strong>第 187～192 行：</strong>测试 14：无表头的 D 行既不进样本，也不混进终端文本。</li>
+  </ol>
+  <pre class="source-code"><code data-source="tests/test_csv_parse.mjs" data-lines="205-295">        { ...meta, metricsNote: '左 上升40ms' }, [{ ms: 0, LV: 1 }]);
+    eq(withMetrics.includes('- 网页自动指标: 左 上升40ms'), true, '提供时输出');
+});
+
+/* ---- 精测、保护与绘图降载 ---- */
+
+/* 帧解析行为已迁至 tests/test_binary_frame.mjs，此处不再重复。 */
+
+check('31. 绘图抽样限制点数并保留首尾与窄尖峰', () =&gt; {
+    const samples = Array.from({ length: 1000 }, (_, i) =&gt; ({
+        ms: i, LV: i === 503 ? 999 : 0,
+    }));
+    const out = downsampleForPlot(samples, 120, ['LV']);
+    eq(out.length &lt;= 120, true, '抽样后点数上限');
+    eq(out[0], samples[0], '保留首点');
+    eq(out[out.length - 1], samples[samples.length - 1], '保留末点');
+    eq(out.some((s) =&gt; s.ms === 503), true, '保留尖峰');
+});
+
+check('32. 轮速稳态统计分别计算均值、标准差、MAE 与 PWM', () =&gt; {
+    const samples = [
+        { ms: 0, TL: 300, LV: 100, PL: 100 },
+        { ms: 1000, TL: 300, LV: 200, PL: 120 },
+        { ms: 2000, TL: 300, LV: 290, PL: 150 },
+        { ms: 3000, TL: 300, LV: 310, PL: 170 },
+        { ms: 4000, TL: 300, LV: 300, PL: 160 },
+    ];
+    const m = computeWheelSteadyStats(samples, 'TL', 'LV', 'PL', 2000);
+    eq(m.samples, 3, '最后 2 秒样本数');
+    eq(m.mean, 300, '稳态均值');
+    eq(Math.abs(m.sd - Math.sqrt(200 / 3)) &lt; 1e-9, true, '总体标准差');
+    eq(Math.abs(m.mae - 20 / 3) &lt; 1e-9, true, '平均绝对误差');
+    eq(m.meanPwm, 160, '平均 PWM');
+    eq(m.maxAbsPwm, 170, '最大绝对 PWM');
+});
+
+/* ---- 自适应频率（捕获帧解析在 test_binary_frame.mjs）---- */
+
+check('36. parseCapabilityReply 解析 Q 回应，非 Q 行返回 null', () =&gt; {
+    const full = parseCapabilityReply(
+        'OK Q MAX=57 MASK=5136 RATE=50 CAPST=1 CAPN=812 CAPMAX=1024');
+    eq(full.max, 57, 'MAX');
+    eq(full.mask, 5136, 'MASK');
+    eq(full.rate, 50, 'RATE');
+    eq(full.captureState, 1, 'CAPST');
+    eq(full.captureCount, 812, 'CAPN');
+    eq(full.capMax, 1024, 'CAPMAX');
+
+    /* 老固件可能只回前三项，不能因此整条丢弃。 */
+    const partial = parseCapabilityReply('OK Q MAX=14 MASK=1023 RATE=14');
+    eq(partial.max, 14, '简版 MAX');
+    eq(partial.capMax, null, '简版无捕获字段');
+
+    eq(parseCapabilityReply('OK G=20'), null, '非 Q 行');
+    eq(parseCapabilityReply(''), null, '空行');
+    eq(parseCapabilityReply(undefined), null, 'undefined');
+});
+
+check('37. 二进制帧字节数与固件公式一致（帧开销 + ms + 通道×4）', () =&gt; {
+    /* 固件 Telemetry.c：SAMPLE 帧 = 帧开销 7 + payload(ms:4 + 通道数×4)。 */
+    eq(estimateRowBytes(0), 11, '空掩码：7 开销 + 4 ms');
+    eq(estimateRowBytes(0x01), 15, '单通道：+4 字节');
+    eq(estimateRowBytes(0x03), 19, '双通道：+8 字节');
+    /* 全 12 通道：7 + 4 + 12×4 = 59。 */
+    eq(estimateRowBytes(0x0FFF), 7 + 4 + 12 * 4, '全 12 通道帧长');
+});
+
+check('38. DMA 二进制后单通道可达远超控制环的频率', () =&gt; {
+    /* 上限公式：(11520 × 70) / (帧长 × 100)，夹到 1..100。 */
+    const single = estimateMaxRateHz(0x01);      /* 15 字节 */
+    const all = estimateMaxRateHz(0x0FFF);       /* 59 字节 */
+    eq(single, 100, '单通道达到硬上限 100Hz（DMA 后带宽绰绰有余）');
+    eq(all &gt;= 100, true, '全 12 通道也能到 100Hz（59B×100Hz 远小于带宽）');
+    /* 通道越少帧越短、可用频率越高（未夹紧时）。 */
+    eq(estimateRowBytes(0x01) &lt; estimateRowBytes(0x0FFF), true,
+        '通道越少帧越短');
+});
+
+check('39. 通道计数覆盖全 12 位（自查是否超过固件 8 通道捕获上限）', () =&gt; {
+    eq(countCaptureChannels(0), 0, '空掩码');
+    eq(countCaptureChannels(0x0001 | 0x0002 | 0x0004), 3, '三通道');
+    eq(countCaptureChannels(0x0FFF), 12, '全 12 通道');
+    /* 捕获上限 8：9 通道以上应被固件拒绝，网页先自查。 */
+    eq(countCaptureChannels(0x01FF), 9, '9 通道（超捕获上限）');
+});
+
+check('40. AI 包在使用捕获数据时明确标注采样率与同频事实', () =&gt; {
+    const meta = {
+        loop: '轮速', structure: 's', params: 'p', excitation: 'W300',
+        rateHz: 100, columnsNote: 'TL=目标。数据来自板载 100 Hz 捕获，与 100 Hz 控制环同频',
+        expectation: 'g',</code></pre>
   <ol class="line-notes">
     <li><strong>第 194～206 行：</strong>测试 15 验证导出保留 ms/mode 并展开 k230。</li>
     <li><strong>第 208～220 行：</strong>测试 16 验证新增 TL/TR、PL/PR、navT/navE、lerr 列。</li>
@@ -1293,17 +1293,17 @@ param(
     [switch]$Erase,
     [switch]$List,
     [switch]$Reset,
-    [switch]$UnderReset,   # cheap DAPLink can&#39;t halt a running core; needs RST wired to MCU NRST
-    [string]$Freq = &quot;1M&quot;
+    [switch]$UnderReset,   # cheap DAPLink can't halt a running core; needs RST wired to MCU NRST
+    [string]$Freq = "1M"
 )
 
-$target = &quot;mspm0g3507&quot;
-$image  = Join-Path $PSScriptRoot &quot;Debug\ArcLineTest.out&quot;
+$target = "mspm0g3507"
+$image  = Join-Path $PSScriptRoot "Debug\ArcLineTest.out"
 
 # --connect under-reset holds the core in reset so the running firmware never
 # interferes with flashing (mimics what the XDS110 pre-halt does).
 $connect = @()
-if ($UnderReset) { $connect = @(&quot;--connect&quot;, &quot;under-reset&quot;) }
+if ($UnderReset) { $connect = @("--connect", "under-reset") }
 
 if ($List)  { pyocd list; return }
 if ($Reset) { pyocd reset -t $target -f $Freq; return }</code></pre>
@@ -1315,25 +1315,25 @@ if ($Reset) { pyocd reset -t $target -f $Freq; return }</code></pre>
     <li><strong>第 25～26 行：</strong>List/Reset 是提前返回的独立模式。</li>
   </ol>
   <pre class="source-code"><code data-source="flash.ps1" data-lines="28-47">if (-not (Test-Path $image)) {
-    Write-Host &quot;Image not found: $image  -- build it in CCS first&quot; -ForegroundColor Red
+    Write-Host "Image not found: $image  -- build it in CCS first" -ForegroundColor Red
     exit 1
 }
 
 if ($Erase) {
-    Write-Host &quot;Mass-erasing MAIN region (NONMAIN untouched)...&quot; -ForegroundColor Yellow
+    Write-Host "Mass-erasing MAIN region (NONMAIN untouched)..." -ForegroundColor Yellow
     pyocd erase -t $target --chip -f $Freq @connect
 }
 
-Write-Host &quot;Flashing $image  (SWD $Freq) ...&quot; -ForegroundColor Cyan
+Write-Host "Flashing $image  (SWD $Freq) ..." -ForegroundColor Cyan
 pyocd flash -t $target --format elf -f $Freq @connect $image
 if ($LASTEXITCODE -ne 0) {
-    Write-Host &quot;FLASH FAILED (exit $LASTEXITCODE).&quot; -ForegroundColor Red
-    Write-Host &quot;Tips: use the XDS110 probe (reliable), or retry with -Freq 500k / 100k.&quot; -ForegroundColor Yellow
+    Write-Host "FLASH FAILED (exit $LASTEXITCODE)." -ForegroundColor Red
+    Write-Host "Tips: use the XDS110 probe (reliable), or retry with -Freq 500k / 100k." -ForegroundColor Yellow
     exit $LASTEXITCODE
 }
 
 pyocd reset -t $target -f $Freq
-Write-Host &quot;Done. Chip reset and running new firmware.&quot; -ForegroundColor Green</code></pre>
+Write-Host "Done. Chip reset and running new firmware." -ForegroundColor Green</code></pre>
   <ol class="line-notes">
     <li><strong>第 28～31 行：</strong>ELF 不存在就提示先 build，并以 1 退出。</li>
     <li><strong>第 33～36 行：</strong>Erase 先擦主 Flash；当前未单独检查 erase 退出码，失败后仍会尝试 flash。</li>
@@ -1344,14 +1344,14 @@ Write-Host &quot;Done. Chip reset and running new firmware.&quot; -ForegroundCol
 
   <h4>4.13 <code>flash.bat</code>：双击包装器</h4>
   <pre class="source-code"><code data-source="flash.bat" data-lines="1-12">@echo off
-chcp 65001 &gt;nul
-cd /d &quot;%~dp0&quot;
+setlocal
+cd /d "%~dp0"
 echo ========================================
-echo   烧录 MSPM0G3507 (pyOCD)
+echo   Flash MSPM0G3507 via pyOCD
 echo ========================================
-powershell -NoProfile -ExecutionPolicy Bypass -File &quot;%~dp0flash.ps1&quot; %*
-set &quot;FLASH_EXIT_CODE=%ERRORLEVEL%&quot;
-echo.
+powershell -NoProfile -ExecutionPolicy Bypass -File "%~dp0flash.ps1" %*
+set "FLASH_EXIT_CODE=%ERRORLEVEL%"
+echo(
 echo ========================================
 pause
 exit /b %FLASH_EXIT_CODE%</code></pre>
@@ -1366,17 +1366,17 @@ exit /b %FLASH_EXIT_CODE%</code></pre>
   <h4>4.14 <code>README.md</code>：总参考，不是运行时真相</h4>
   <pre class="source-code"><code data-source="README.md" data-lines="1-7"># MSPM0G3507 天猛星小车工程索引
 
-&gt; **强制同步规则**
-&gt;
-&gt; 对项目进行任何修改时，只要涉及硬件连接、Pin 口、外设实例、时钟树、波特率、定时器、主循环调用关系或程序功能，就必须同时修改本文的 **Pin 口表、时钟表和对应程序说明**。禁止只修改代码而不更新本文档，否则后续检查无法判断接线、时钟和程序是否一致。
-&gt;
-&gt; `main.syscfg` 是引脚和外设配置的唯一源文件。`Debug/`、`Release/`、`ti_msp_dl_config.*`、`device.opt` 和 `device_linker.cmd` 均为生成内容，不手工维护；更改源码目录或 `main.syscfg` 后应执行 SysConfig，并在 CCS 中 Clean/Rebuild。</code></pre>
+&gt; 对项目进行任何修改时，只要涉及硬件连接、Pin 口、外设实例、时钟树、波特率、定时器、主循环调用关系或程序功能，就必须同时修改本文的 Pin 口表、时钟表和对应程序说明。禁止只修改代码而不更新本文档。
+
+本文只记录工程文件类型、文件职责、公共函数和公共参数。函数声明以当前头文件为准；`static` 函数和变量属于文件内部实现，不作为跨模块接口记录。`main.syscfg` 是 PinMux、时钟和外设实例的唯一配置源，`Debug/`、`Release/` 和 `ti_msp_dl_config.*` 均为生成内容。
+
+## 1. 时钟与外设占用</code></pre>
   <ol class="line-notes">
     <li><strong>第 1～5 行：</strong>README 是工程索引，并要求硬件/时钟/功能变化同步维护。</li>
     <li><strong>第 7 行：</strong><code>main.syscfg</code> 是外设配置源；Debug/Release、ti_msp 配置、device.opt/linker.cmd 是生成结果。</li>
   </ol>
   <p>README 第 335～361 行是工程职责总表，列出 main/syscfg、网页、测试、CCS 元数据、各源码层和生成目录；它适合找入口，但其中“当前启用 25H”的描述已滞后。</p>
-  <pre class="source-code"><code data-source="README.md" data-lines="501-526">### 4.2 `car_debug.html` 调试网页
+  <pre class="source-code"><code data-source="README.md" data-lines="509-534">### 4.2 `car_debug.html` 调试网页
 
 **打开方式。** 双击 `car_debug.html` 即可，`file://` 下 Web Serial 可用（该协议属于安全上下文），不需要架本地服务器。只支持 **Chrome / Edge** 等 Chromium 内核浏览器，Firefox 与 Safari 没有实现 Web Serial API。点「连接串口」后在弹出的设备列表里选无线 DAPLink 对应的串口，波特率固定 115200 8N1。
 
@@ -1387,9 +1387,9 @@ exit /b %FLASH_EXIT_CODE%</code></pre>
 **工作流一：调参试验。**
 
 1. 用「任务→对象→阶段」导航选定要调什么（如 轮速 → 左轮 → P），点「开始试验」；
-2. 网页自动完成：`G0` 静默 → 发本阶段的**最优掩码**（调左轮只传 TL/LV/PL）→ 用 `Q` 命令问出固件真实频率上限并自动设频 → **arm 板载捕获** → **清空终端与曲线** → 记录参数快照 → 发激励命令；
-3. 动作结束后自动 `X0` 取回 **100 Hz 无损捕获数据**，用它计算阶跃指标（上升时间、超调、稳定时间、稳态误差）；
-4. 指标卡明确标注数据来源：`板载 100 Hz 捕获` 表示与控制环同频、指标可信；`实时流 xx Hz` 表示峰值可能漏采、仅供参考；
+2. 连接和阶段切换时，网页提前准备本阶段的**最优掩码**（调左轮只传 TL/LV/PL）并按固件 `Q` 回报的真实频率上限设频；
+3. 点「开始试验」后，网页先清空本次终端与曲线、记录参数快照，然后立即发激励命令，不再等待遥测准备链；
+4. 指标卡明确标注数据来源：直启流程使用 `实时流 xx Hz`，峰值可能漏采、仅供参考；若后续流程使用板载捕获，`板载 100 Hz 捕获` 表示与控制环同频、指标可信；
 5. 每条记录可设为基准（虚线叠加对比）、导出 CSV，或一键复制 **AI 调参包**（含控制结构、参数、激励、列说明、自动指标和完整数据），直接粘给 AI 要下一组参数；
 6. 在阶段参数区就地微调（`−`/`+` 按钮或直接输入，写入立即生效），再跑下一次对比。
 
@@ -1400,7 +1400,7 @@ exit /b %FLASH_EXIT_CODE%</code></pre>
 几个实现上的取舍：
 
 - **频率上限由固件说了算，网页不各存一份阈值。** 改掩码后网页主动发 `Q` 查询，用固件回报的 `MAX` 自动设频；勾选字段的瞬间另有一份本地复算用于即时显示（公式与 `Telemetry.c` 相同），两者不一致就说明固件与网页失配。
-- **指标优先用捕获数据，且必须标注来源。** 实时流受串口带宽限制低于 100 Hz 控制环，阶跃峰值会落在采样点之间；用低采样率数据算出的超调值可能偏差数倍，因此界面上必须让用户看见这次结论是基于哪种数据得出的。
+- **指标必须标注来源。** 直启流程优先让车先动，因此默认用实时流指标；实时流受串口带宽限制低于 100 Hz 控制环，阶跃峰值会落在采样点之间，界面必须让用户看见这次结论是基于哪种数据得出的。
 - **捕获与实时流分开解析、分开存储。** 前缀 `CH,`/`C,` 与 `H,`/`D,` 互不冲突，两者列集和采样率都不同，混在一起会让指标取到错误的时间基准。</code></pre>
   <ol class="line-notes">
     <li><strong>第 446～450 行：</strong>记录 Web Serial 打开方式、115200 8N1 和网页依赖命令/CSV 契约。</li>
@@ -1408,7 +1408,7 @@ exit /b %FLASH_EXIT_CODE%</code></pre>
     <li><strong>第 462～469 行：</strong>说明动态频率、舵机节流、同量纲共享刻度、列过滤、暂停重绘和坏行丢弃。</li>
     <li><strong>第 471 行：</strong>Node 测试仍直接抽取网页真代码。</li>
   </ol>
-  <pre class="source-code"><code data-source="README.md" data-lines="796-810">### 5.6.4 `Accomplish/25H.h`
+  <pre class="source-code"><code data-source="README.md" data-lines="795-809">### 5.6.4 `Accomplish/25H.h`
 
 ```c
 const Mission_GraphDefinition_t *Accomplish25H_GetMissionGraph(void);
@@ -1427,7 +1427,7 @@ const Mission_GraphDefinition_t *AccomplishTest_GetMissionGraph(void);
     <li><strong>第 723～729 行：</strong>README 仍把 25H 写成当前 main 调用。</li>
     <li><strong>第 731～737 行：</strong>仍把 Test 写成临时任务，与当前 main.c 相反。</li>
   </ol>
-  <pre class="source-code"><code data-source="README.md" data-lines="1279-1286">### 6.7 `Accomplish/Test.h` 参数
+  <pre class="source-code"><code data-source="README.md" data-lines="1120-1127">### 6.7 `Accomplish/Test.h` 参数
 
 `Test.c/.h` 只用于上机观察短刹时的滑行量。它已包含在 CCS 工程中，但默认 `main.c` 仍加载 25H；测试时按头文件注释临时改为加载 `AccomplishTest_GetMissionGraph()`，完成后恢复 25H。
 
@@ -1442,39 +1442,39 @@ const Mission_GraphDefinition_t *AccomplishTest_GetMissionGraph(void);
   <p class="pitfall"><strong>判断顺序：</strong>实际任务看当前 <code>main.c</code>，硬件配置看 <code>main.syscfg</code>，编译产物看工程元数据；README 用于导航和审计，冲突时应更新文档。</p>
 
   <h4>4.15 目标配置</h4>
-  <pre class="source-code"><code data-source="targetConfigs/readme.txt" data-lines="1-9">The &#39;targetConfigs&#39; folder contains target-configuration (.ccxml) files, automatically generated based
+  <pre class="source-code"><code data-source="targetConfigs/readme.txt" data-lines="1-9">The 'targetConfigs' folder contains target-configuration (.ccxml) files, automatically generated based
 on the device and connection settings specified in your project on the Properties &gt; General page.
 
-Please note that in automatic target-configuration management, changes to the project&#39;s device and/or
+Please note that in automatic target-configuration management, changes to the project's device and/or
 connection settings will either modify an existing or generate a new target-configuration file. Thus,
 if you manually edit these auto-generated files, you may need to re-apply your changes. Alternatively,
 you may create your own target-configuration file for this project and manage it manually. You can
-always switch back to automatic target-configuration management by checking the &quot;Manage the project&#39;s
-target-configuration automatically&quot; checkbox on the project&#39;s Properties &gt; General page.</code></pre>
+always switch back to automatic target-configuration management by checking the "Manage the project's
+target-configuration automatically" checkbox on the project's Properties &gt; General page.</code></pre>
   <ol class="line-notes">
     <li><strong>第 1～2 行：</strong>ccxml 由项目 device/connection 属性自动生成。</li>
     <li><strong>第 4～6 行：</strong>改变芯片或连接会覆盖手改。</li>
     <li><strong>第 7～9 行：</strong>需要长期定制时可建手管配置，也可切回自动管理。</li>
   </ol>
-  <pre class="source-code"><code data-source="targetConfigs/MSPM0G3507.ccxml" data-lines="1-23">&lt;?xml version=&quot;1.0&quot; encoding=&quot;UTF-8&quot; standalone=&quot;no&quot;?&gt;
-&lt;configurations XML_version=&quot;1.2&quot; id=&quot;configurations_0&quot;&gt;
-    &lt;configuration XML_version=&quot;1.2&quot; id=&quot;configuration_0&quot;&gt;
-        &lt;instance XML_version=&quot;1.2&quot; desc=&quot;Texas Instruments XDS110 USB Debug Probe&quot; href=&quot;connections/TIXDS110_Connection.xml&quot; id=&quot;Texas Instruments XDS110 USB Debug Probe&quot; xml=&quot;TIXDS110_Connection.xml&quot; xmlpath=&quot;connections&quot;/&gt;
-        &lt;connection XML_version=&quot;1.2&quot; id=&quot;Texas Instruments XDS110 USB Debug Probe&quot;&gt;
-            &lt;instance XML_version=&quot;1.2&quot; href=&quot;drivers/tixds510cs_dap.xml&quot; id=&quot;drivers&quot; xml=&quot;tixds510cs_dap.xml&quot; xmlpath=&quot;drivers&quot;/&gt;
-            &lt;instance XML_version=&quot;1.2&quot; href=&quot;drivers/tixds510cortexM0.xml&quot; id=&quot;drivers&quot; xml=&quot;tixds510cortexM0.xml&quot; xmlpath=&quot;drivers&quot;/&gt;
-            &lt;instance XML_version=&quot;1.2&quot; href=&quot;drivers/tixds510sec_ap.xml&quot; id=&quot;drivers&quot; xml=&quot;tixds510sec_ap.xml&quot; xmlpath=&quot;drivers&quot;/&gt;
-            &lt;property Type=&quot;choicelist&quot; Value=&quot;1&quot; id=&quot;The JTAG TCLK Frequency (MHz)&quot;&gt;
-                &lt;choice Name=&quot;Fixed with user specified value&quot; value=&quot;SPECIFIC&quot;&gt;
-                    &lt;property Type=&quot;stringfield&quot; Value=&quot;1MHz&quot; id=&quot;-- Enter a value from 100.0kHz to 2.5MHz&quot;/&gt;
+  <pre class="source-code"><code data-source="targetConfigs/MSPM0G3507.ccxml" data-lines="1-23">&lt;?xml version="1.0" encoding="UTF-8" standalone="no"?&gt;
+&lt;configurations XML_version="1.2" id="configurations_0"&gt;
+    &lt;configuration XML_version="1.2" id="configuration_0"&gt;
+        &lt;instance XML_version="1.2" desc="Texas Instruments XDS110 USB Debug Probe" href="connections/TIXDS110_Connection.xml" id="Texas Instruments XDS110 USB Debug Probe" xml="TIXDS110_Connection.xml" xmlpath="connections"/&gt;
+        &lt;connection XML_version="1.2" id="Texas Instruments XDS110 USB Debug Probe"&gt;
+            &lt;instance XML_version="1.2" href="drivers/tixds510cs_dap.xml" id="drivers" xml="tixds510cs_dap.xml" xmlpath="drivers"/&gt;
+            &lt;instance XML_version="1.2" href="drivers/tixds510cortexM0.xml" id="drivers" xml="tixds510cortexM0.xml" xmlpath="drivers"/&gt;
+            &lt;instance XML_version="1.2" href="drivers/tixds510sec_ap.xml" id="drivers" xml="tixds510sec_ap.xml" xmlpath="drivers"/&gt;
+            &lt;property Type="choicelist" Value="1" id="The JTAG TCLK Frequency (MHz)"&gt;
+                &lt;choice Name="Fixed with user specified value" value="SPECIFIC"&gt;
+                    &lt;property Type="stringfield" Value="1MHz" id="-- Enter a value from 100.0kHz to 2.5MHz"/&gt;
                 &lt;/choice&gt;
             &lt;/property&gt;
-            &lt;property Type=&quot;choicelist&quot; Value=&quot;2&quot; id=&quot;SWD Mode Settings&quot;&gt;
-                &lt;choice Name=&quot;SWD Mode - Aux COM port is target TDO pin&quot; value=&quot;nothing&quot;/&gt;
+            &lt;property Type="choicelist" Value="2" id="SWD Mode Settings"&gt;
+                &lt;choice Name="SWD Mode - Aux COM port is target TDO pin" value="nothing"/&gt;
             &lt;/property&gt;
-            &lt;property id=&quot;Debug Probe Selection&quot; Type=&quot;choicelist&quot; Value=&quot;0&quot;/&gt;
-            &lt;platform XML_version=&quot;1.2&quot; id=&quot;platform_0&quot;&gt;
-                &lt;instance XML_version=&quot;1.2&quot; desc=&quot;MSPM0G3507&quot; href=&quot;devices/MSPM0G3507.xml&quot; id=&quot;MSPM0G3507&quot; xml=&quot;MSPM0G3507.xml&quot; xmlpath=&quot;devices&quot;/&gt;
+            &lt;property id="Debug Probe Selection" Type="choicelist" Value="0"/&gt;
+            &lt;platform XML_version="1.2" id="platform_0"&gt;
+                &lt;instance XML_version="1.2" desc="MSPM0G3507" href="devices/MSPM0G3507.xml" id="MSPM0G3507" xml="MSPM0G3507.xml" xmlpath="devices"/&gt;
             &lt;/platform&gt;
         &lt;/connection&gt;
     &lt;/configuration&gt;
@@ -1488,7 +1488,7 @@ target-configuration automatically&quot; checkbox on the project&#39;s Propertie
   </ol>
 
   <h4>4.16 <code>.project</code> 与 <code>.ccsproject</code></h4>
-  <pre class="source-code"><code data-source=".project" data-lines="1-20">&lt;?xml version=&quot;1.0&quot; encoding=&quot;UTF-8&quot;?&gt;
+  <pre class="source-code"><code data-source=".project" data-lines="1-20">&lt;?xml version="1.0" encoding="UTF-8"?&gt;
 &lt;projectDescription&gt;
 	&lt;name&gt;ArcLineTest&lt;/name&gt;
 	&lt;comment&gt;&lt;/comment&gt;
@@ -1514,23 +1514,23 @@ target-configuration automatically&quot; checkbox on the project&#39;s Propertie
     <li><strong>第 14～19 行：</strong>声明 CCS、C、managed build 和 C++ natures。</li>
     <li><strong>第 20 行：</strong>结束项目描述。</li>
   </ol>
-  <pre class="source-code"><code data-source=".ccsproject" data-lines="1-18">&lt;?xml version=&quot;1.0&quot; encoding=&quot;UTF-8&quot; ?&gt;
-&lt;?ccsproject version=&quot;1.0&quot;?&gt;
+  <pre class="source-code"><code data-source=".ccsproject" data-lines="1-18">&lt;?xml version="1.0" encoding="UTF-8" ?&gt;
+&lt;?ccsproject version="1.0"?&gt;
 &lt;projectOptions&gt;
-	&lt;ccsVariant value=&quot;50:Theia-based&quot;/&gt;
-	&lt;ccsVersion value=&quot;71.0.0&quot;/&gt;
-	&lt;deviceFamily value=&quot;TMS470&quot;/&gt;
-	&lt;connection value=&quot;common/targetdb/connections/TIXDS110_Connection.xml&quot;/&gt;
-	&lt;executableActions value=&quot;&quot;/&gt;
-	&lt;createSlaveProjects value=&quot;&quot;/&gt;
-	&lt;ignoreDefaultDeviceSettings value=&quot;true&quot;/&gt;
-	&lt;ignoreDefaultCCSSettings value=&quot;true&quot;/&gt;
-	&lt;templateProperties value=&quot;id=empty_LP_MSPM0G3507_nortos_ticlang.projectspec.ArcLineTest,buildProfile=release,isHybrid=true&quot;/&gt;
-	&lt;activeTargetConfiguration value=&quot;targetConfigs/MSPM0G3507.ccxml&quot;/&gt;
-	&lt;isTargetConfigurationManual value=&quot;false&quot;/&gt;
-	&lt;sourceLookupPath value=&quot;${COM_TI_MSPM0_SDK_INSTALL_DIR}/source/ti/driverlib&quot;/&gt;
-	&lt;origin value=&quot;C:\TI\mspm0_sdk_2_10_00_04\examples\nortos\LP_MSPM0G3507\driverlib\empty\ticlang\empty_LP_MSPM0G3507_nortos_ticlang.projectspec&quot;/&gt;
-	&lt;filesToOpen value=&quot;README.md,main.c,main.syscfg&quot;/&gt;
+	&lt;ccsVariant value="50:Theia-based"/&gt;
+	&lt;ccsVersion value="71.0.0"/&gt;
+	&lt;deviceFamily value="TMS470"/&gt;
+	&lt;connection value="common/targetdb/connections/TIXDS110_Connection.xml"/&gt;
+	&lt;executableActions value=""/&gt;
+	&lt;createSlaveProjects value=""/&gt;
+	&lt;ignoreDefaultDeviceSettings value="true"/&gt;
+	&lt;ignoreDefaultCCSSettings value="true"/&gt;
+	&lt;templateProperties value="id=empty_LP_MSPM0G3507_nortos_ticlang.projectspec.ArcLineTest,buildProfile=release,isHybrid=true"/&gt;
+	&lt;activeTargetConfiguration value="targetConfigs/MSPM0G3507.ccxml"/&gt;
+	&lt;isTargetConfigurationManual value="false"/&gt;
+	&lt;sourceLookupPath value="${COM_TI_MSPM0_SDK_INSTALL_DIR}/source/ti/driverlib"/&gt;
+	&lt;origin value="C:\TI\mspm0_sdk_2_10_00_04\examples\nortos\LP_MSPM0G3507\driverlib\empty\ticlang\empty_LP_MSPM0G3507_nortos_ticlang.projectspec"/&gt;
+	&lt;filesToOpen value="README.md,main.c,main.syscfg"/&gt;
 &lt;/projectOptions&gt;</code></pre>
   <ol class="line-notes">
     <li><strong>第 1～7 行：</strong>CCS Theia 项目、记录版本、TMS470 器件家族和 XDS110 连接。</li>
@@ -1541,69 +1541,69 @@ target-configuration automatically&quot; checkbox on the project&#39;s Propertie
   </ol>
 
   <h4>4.17 <code>.cproject</code>：编译与链接主配置</h4>
-  <pre class="source-code"><code data-source=".cproject" data-lines="1-18">&lt;?xml version=&quot;1.0&quot; encoding=&quot;UTF-8&quot; standalone=&quot;no&quot;?&gt;
-&lt;?fileVersion 4.0.0?&gt;&lt;cproject storage_type_id=&quot;org.eclipse.cdt.core.XmlProjectDescriptionStorage&quot;&gt;
-    &lt;storageModule moduleId=&quot;org.eclipse.cdt.core.settings&quot;&gt;
-        &lt;cconfiguration id=&quot;com.ti.ccstudio.buildDefinitions.TMS470.Debug.59478977&quot;&gt;
-            &lt;storageModule buildSystemId=&quot;org.eclipse.cdt.managedbuilder.core.configurationDataProvider&quot; id=&quot;com.ti.ccstudio.buildDefinitions.TMS470.Debug.59478977&quot; moduleId=&quot;org.eclipse.cdt.core.settings&quot; name=&quot;Debug&quot;&gt;
+  <pre class="source-code"><code data-source=".cproject" data-lines="1-18">&lt;?xml version="1.0" encoding="UTF-8" standalone="no"?&gt;
+&lt;?fileVersion 4.0.0?&gt;&lt;cproject storage_type_id="org.eclipse.cdt.core.XmlProjectDescriptionStorage"&gt;
+    &lt;storageModule moduleId="org.eclipse.cdt.core.settings"&gt;
+        &lt;cconfiguration id="com.ti.ccstudio.buildDefinitions.TMS470.Debug.59478977"&gt;
+            &lt;storageModule buildSystemId="org.eclipse.cdt.managedbuilder.core.configurationDataProvider" id="com.ti.ccstudio.buildDefinitions.TMS470.Debug.59478977" moduleId="org.eclipse.cdt.core.settings" name="Debug"&gt;
                 &lt;externalSettings/&gt;
                 &lt;extensions&gt;
-                    &lt;extension id=&quot;org.eclipse.cdt.core.GmakeErrorParser&quot; point=&quot;com.ti.ccs.project.ErrorParser&quot;/&gt;
-                    &lt;extension id=&quot;org.eclipse.cdt.core.GASErrorParser&quot; point=&quot;com.ti.ccs.project.ErrorParser&quot;/&gt;
-                    &lt;extension id=&quot;com.ti.ccs.errorparser.SysConfigErrorParser&quot; point=&quot;com.ti.ccs.project.ErrorParser&quot;/&gt;
-                    &lt;extension id=&quot;org.eclipse.cdt.core.GCCErrorParser&quot; point=&quot;com.ti.ccs.project.ErrorParser&quot;/&gt;
-                    &lt;extension id=&quot;com.ti.ccs.errorparser.CompilerErrorParser_TI&quot; point=&quot;com.ti.ccs.project.ErrorParser&quot;/&gt;
+                    &lt;extension id="org.eclipse.cdt.core.GmakeErrorParser" point="com.ti.ccs.project.ErrorParser"/&gt;
+                    &lt;extension id="org.eclipse.cdt.core.GASErrorParser" point="com.ti.ccs.project.ErrorParser"/&gt;
+                    &lt;extension id="com.ti.ccs.errorparser.SysConfigErrorParser" point="com.ti.ccs.project.ErrorParser"/&gt;
+                    &lt;extension id="org.eclipse.cdt.core.GCCErrorParser" point="com.ti.ccs.project.ErrorParser"/&gt;
+                    &lt;extension id="com.ti.ccs.errorparser.CompilerErrorParser_TI" point="com.ti.ccs.project.ErrorParser"/&gt;
                 &lt;/extensions&gt;
             &lt;/storageModule&gt;
-            &lt;storageModule moduleId=&quot;cdtBuildSystem&quot; version=&quot;4.0.0&quot;&gt;
-                &lt;configuration artifactExtension=&quot;out&quot; artifactName=&quot;${ProjName}&quot; buildProperties=&quot;&quot; cleanCommand=&quot;${CG_CLEAN_CMD}&quot; description=&quot;&quot; id=&quot;com.ti.ccstudio.buildDefinitions.TMS470.Debug.59478977&quot; name=&quot;Debug&quot; parent=&quot;com.ti.ccstudio.buildDefinitions.TMS470.Debug&quot;&gt;
-                    &lt;folderInfo id=&quot;com.ti.ccstudio.buildDefinitions.TMS470.Debug.59478977.&quot; name=&quot;/&quot; resourcePath=&quot;&quot;&gt;
-                        &lt;toolChain id=&quot;com.ti.ccstudio.buildDefinitions.TMS470_TICLANG_5.1.exe.DebugToolchain.418732242&quot; name=&quot;TI Build Tools&quot; secondaryOutputs=&quot;com.ti.ccstudio.buildDefinitions.TMS470_TICLANG_5.1.hex.outputType__BIN.1119565533&quot; superClass=&quot;com.ti.ccstudio.buildDefinitions.TMS470_TICLANG_5.1.exe.DebugToolchain&quot; targetTool=&quot;com.ti.ccstudio.buildDefinitions.TMS470_TICLANG_5.1.exe.linkerDebug.1063845466&quot;&gt;</code></pre>
+            &lt;storageModule moduleId="cdtBuildSystem" version="4.0.0"&gt;
+                &lt;configuration artifactExtension="out" artifactName="${ProjName}" buildProperties="" cleanCommand="${CG_CLEAN_CMD}" description="" id="com.ti.ccstudio.buildDefinitions.TMS470.Debug.59478977" name="Debug" parent="com.ti.ccstudio.buildDefinitions.TMS470.Debug"&gt;
+                    &lt;folderInfo id="com.ti.ccstudio.buildDefinitions.TMS470.Debug.59478977." name="/" resourcePath=""&gt;
+                        &lt;toolChain id="com.ti.ccstudio.buildDefinitions.TMS470_TICLANG_5.1.exe.DebugToolchain.418732242" name="TI Build Tools" secondaryOutputs="com.ti.ccstudio.buildDefinitions.TMS470_TICLANG_5.1.hex.outputType__BIN.1119565533" superClass="com.ti.ccstudio.buildDefinitions.TMS470_TICLANG_5.1.exe.DebugToolchain" targetTool="com.ti.ccstudio.buildDefinitions.TMS470_TICLANG_5.1.exe.linkerDebug.1063845466"&gt;</code></pre>
   <ol class="line-notes">
     <li><strong>第 1～5 行：</strong>CDT XML 建立名为 Debug 的构建配置。</li>
     <li><strong>第 6～13 行：</strong>注册 make、汇编、SysConfig、GCC 和 TI 编译错误解析器，IDE 才能定位日志。</li>
     <li><strong>第 15～18 行：</strong>产物扩展名 out、名字取 Project Name，并选择 TI Clang Debug 工具链。</li>
   </ol>
-  <pre class="source-code"><code data-source=".cproject" data-lines="19-32">                            &lt;option id=&quot;com.ti.ccstudio.buildDefinitions.core.OPT_TAGS.2053059&quot; superClass=&quot;com.ti.ccstudio.buildDefinitions.core.OPT_TAGS&quot; valueType=&quot;stringList&quot;&gt;
-                                &lt;listOptionValue value=&quot;DEVICE_CONFIGURATION_ID=Cortex M.MSPM0G3507&quot;/&gt;
-                                &lt;listOptionValue value=&quot;DEVICE_CORE_ID=&quot;/&gt;
-                                &lt;listOptionValue value=&quot;DEVICE_ENDIANNESS=little&quot;/&gt;
-                                &lt;listOptionValue value=&quot;OUTPUT_FORMAT=ELF&quot;/&gt;
-                                &lt;listOptionValue value=&quot;CCS_MBS_VERSION=70.0.0&quot;/&gt;
-                                &lt;listOptionValue value=&quot;RUNTIME_SUPPORT_LIBRARY=&quot;/&gt;
-                                &lt;listOptionValue value=&quot;OUTPUT_TYPE=executable&quot;/&gt;
-                                &lt;listOptionValue value=&quot;PRODUCTS=MSPM0-SDK:2.10.0.04;sysconfig:1.26.2;&quot;/&gt;
-                                &lt;listOptionValue value=&quot;PRODUCT_MACRO_IMPORTS={&amp;quot;MSPM0-SDK&amp;quot;:[&amp;quot;${COM_TI_MSPM0_SDK_INCLUDE_PATH}&amp;quot;,&amp;quot;${COM_TI_MSPM0_SDK_LIBRARY_PATH}&amp;quot;,&amp;quot;${COM_TI_MSPM0_SDK_LIBRARIES}&amp;quot;,&amp;quot;${COM_TI_MSPM0_SDK_SYMBOLS}&amp;quot;,&amp;quot;${COM_TI_MSPM0_SDK_SYSCONFIG_MANIFEST}&amp;quot;],&amp;quot;sysconfig&amp;quot;:[&amp;quot;${SYSCONFIG_TOOL_INCLUDE_PATH}&amp;quot;,&amp;quot;${SYSCONFIG_TOOL_LIBRARY_PATH}&amp;quot;,&amp;quot;${SYSCONFIG_TOOL_LIBRARIES}&amp;quot;,&amp;quot;${SYSCONFIG_TOOL_SYMBOLS}&amp;quot;,&amp;quot;${SYSCONFIG_TOOL_SYSCONFIG_MANIFEST}&amp;quot;]}&quot;/&gt;
+  <pre class="source-code"><code data-source=".cproject" data-lines="19-32">                            &lt;option id="com.ti.ccstudio.buildDefinitions.core.OPT_TAGS.2053059" superClass="com.ti.ccstudio.buildDefinitions.core.OPT_TAGS" valueType="stringList"&gt;
+                                &lt;listOptionValue value="DEVICE_CONFIGURATION_ID=Cortex M.MSPM0G3507"/&gt;
+                                &lt;listOptionValue value="DEVICE_CORE_ID="/&gt;
+                                &lt;listOptionValue value="DEVICE_ENDIANNESS=little"/&gt;
+                                &lt;listOptionValue value="OUTPUT_FORMAT=ELF"/&gt;
+                                &lt;listOptionValue value="CCS_MBS_VERSION=70.0.0"/&gt;
+                                &lt;listOptionValue value="RUNTIME_SUPPORT_LIBRARY="/&gt;
+                                &lt;listOptionValue value="OUTPUT_TYPE=executable"/&gt;
+                                &lt;listOptionValue value="PRODUCTS=MSPM0-SDK:2.10.0.04;sysconfig:1.26.2;"/&gt;
+                                &lt;listOptionValue value="PRODUCT_MACRO_IMPORTS={&amp;quot;MSPM0-SDK&amp;quot;:[&amp;quot;${COM_TI_MSPM0_SDK_INCLUDE_PATH}&amp;quot;,&amp;quot;${COM_TI_MSPM0_SDK_LIBRARY_PATH}&amp;quot;,&amp;quot;${COM_TI_MSPM0_SDK_LIBRARIES}&amp;quot;,&amp;quot;${COM_TI_MSPM0_SDK_SYMBOLS}&amp;quot;,&amp;quot;${COM_TI_MSPM0_SDK_SYSCONFIG_MANIFEST}&amp;quot;],&amp;quot;sysconfig&amp;quot;:[&amp;quot;${SYSCONFIG_TOOL_INCLUDE_PATH}&amp;quot;,&amp;quot;${SYSCONFIG_TOOL_LIBRARY_PATH}&amp;quot;,&amp;quot;${SYSCONFIG_TOOL_LIBRARIES}&amp;quot;,&amp;quot;${SYSCONFIG_TOOL_SYMBOLS}&amp;quot;,&amp;quot;${SYSCONFIG_TOOL_SYSCONFIG_MANIFEST}&amp;quot;]}"/&gt;
                             &lt;/option&gt;
-                            &lt;option id=&quot;com.ti.ccstudio.buildDefinitions.core.OPT_CODEGEN_VERSION.1309111822&quot; superClass=&quot;com.ti.ccstudio.buildDefinitions.core.OPT_CODEGEN_VERSION&quot; value=&quot;TICLANG_5.1.1.LTS&quot; valueType=&quot;string&quot;/&gt;
-                            &lt;targetPlatform id=&quot;com.ti.ccstudio.buildDefinitions.TMS470_TICLANG_5.1.exe.targetPlatformDebug.688364896&quot; name=&quot;Platform&quot; superClass=&quot;com.ti.ccstudio.buildDefinitions.TMS470_TICLANG_5.1.exe.targetPlatformDebug&quot;/&gt;
-                            &lt;builder buildPath=&quot;${BuildDirectory}&quot; id=&quot;com.ti.ccstudio.buildDefinitions.TMS470_TICLANG_5.1.exe.builderDebug.988053860&quot; keepEnvironmentInBuildfile=&quot;false&quot; name=&quot;GNU Make&quot; parallelBuildOn=&quot;true&quot; parallelizationNumber=&quot;optimal&quot; superClass=&quot;com.ti.ccstudio.buildDefinitions.TMS470_TICLANG_5.1.exe.builderDebug&quot;/&gt;</code></pre>
+                            &lt;option id="com.ti.ccstudio.buildDefinitions.core.OPT_CODEGEN_VERSION.1309111822" superClass="com.ti.ccstudio.buildDefinitions.core.OPT_CODEGEN_VERSION" value="TICLANG_5.1.1.LTS" valueType="string"/&gt;
+                            &lt;targetPlatform id="com.ti.ccstudio.buildDefinitions.TMS470_TICLANG_5.1.exe.targetPlatformDebug.688364896" name="Platform" superClass="com.ti.ccstudio.buildDefinitions.TMS470_TICLANG_5.1.exe.targetPlatformDebug"/&gt;
+                            &lt;builder buildPath="${BuildDirectory}" id="com.ti.ccstudio.buildDefinitions.TMS470_TICLANG_5.1.exe.builderDebug.988053860" keepEnvironmentInBuildfile="false" name="GNU Make" parallelBuildOn="true" parallelizationNumber="optimal" superClass="com.ti.ccstudio.buildDefinitions.TMS470_TICLANG_5.1.exe.builderDebug"/&gt;</code></pre>
   <ol class="line-notes">
     <li><strong>第 19～28 行：</strong>记录 MSPM0G3507、小端 ELF 可执行文件、MSPM0 SDK 2.10.0.04 与 SysConfig 1.26.2 产品宏。</li>
     <li><strong>第 30 行：</strong>TI Clang 版本为 5.1.1 LTS。</li>
     <li><strong>第 31～32 行：</strong>目标平台节点，并启用 GNU Make 最优并行构建。</li>
   </ol>
-  <pre class="source-code"><code data-source=".cproject" data-lines="36-57">                                &lt;option id=&quot;com.ti.ccstudio.buildDefinitions.TMS470_TICLANG_5.1.compilerID.INCLUDE_PATH.1815472694&quot; superClass=&quot;com.ti.ccstudio.buildDefinitions.TMS470_TICLANG_5.1.compilerID.INCLUDE_PATH&quot; valueType=&quot;includePath&quot;&gt;
-                                    &lt;listOptionValue value=&quot;${COM_TI_MSPM0_SDK_INCLUDE_PATH}&quot;/&gt;
-                                    &lt;listOptionValue value=&quot;${SYSCONFIG_TOOL_INCLUDE_PATH}&quot;/&gt;
-                                    &lt;listOptionValue value=&quot;${PROJECT_ROOT}&quot;/&gt;
-                                    &lt;listOptionValue value=&quot;${PROJECT_ROOT}/${ConfigName}&quot;/&gt;
-                                    &lt;listOptionValue value=&quot;${COM_TI_MSPM0_SDK_INSTALL_DIR}/source/third_party/CMSIS/Core/Include&quot;/&gt;
-                                    &lt;listOptionValue value=&quot;${COM_TI_MSPM0_SDK_INSTALL_DIR}/source&quot;/&gt;
+  <pre class="source-code"><code data-source=".cproject" data-lines="36-57">                                &lt;option id="com.ti.ccstudio.buildDefinitions.TMS470_TICLANG_5.1.compilerID.INCLUDE_PATH.1815472694" superClass="com.ti.ccstudio.buildDefinitions.TMS470_TICLANG_5.1.compilerID.INCLUDE_PATH" valueType="includePath"&gt;
+                                    &lt;listOptionValue value="${COM_TI_MSPM0_SDK_INCLUDE_PATH}"/&gt;
+                                    &lt;listOptionValue value="${SYSCONFIG_TOOL_INCLUDE_PATH}"/&gt;
+                                    &lt;listOptionValue value="${PROJECT_ROOT}"/&gt;
+                                    &lt;listOptionValue value="${PROJECT_ROOT}/${ConfigName}"/&gt;
+                                    &lt;listOptionValue value="${COM_TI_MSPM0_SDK_INSTALL_DIR}/source/third_party/CMSIS/Core/Include"/&gt;
+                                    &lt;listOptionValue value="${COM_TI_MSPM0_SDK_INSTALL_DIR}/source"/&gt;
                                 &lt;/option&gt;
-                                &lt;option id=&quot;com.ti.ccstudio.buildDefinitions.TMS470_TICLANG_5.1.compilerID.DEFINE.574932702&quot; superClass=&quot;com.ti.ccstudio.buildDefinitions.TMS470_TICLANG_5.1.compilerID.DEFINE&quot; valueType=&quot;definedSymbols&quot;&gt;
-                                    &lt;listOptionValue value=&quot;${COM_TI_MSPM0_SDK_SYMBOLS}&quot;/&gt;
-                                    &lt;listOptionValue value=&quot;${SYSCONFIG_TOOL_SYMBOLS}&quot;/&gt;
+                                &lt;option id="com.ti.ccstudio.buildDefinitions.TMS470_TICLANG_5.1.compilerID.DEFINE.574932702" superClass="com.ti.ccstudio.buildDefinitions.TMS470_TICLANG_5.1.compilerID.DEFINE" valueType="definedSymbols"&gt;
+                                    &lt;listOptionValue value="${COM_TI_MSPM0_SDK_SYMBOLS}"/&gt;
+                                    &lt;listOptionValue value="${SYSCONFIG_TOOL_SYMBOLS}"/&gt;
                                 &lt;/option&gt;
-                                &lt;option id=&quot;com.ti.ccstudio.buildDefinitions.TMS470_TICLANG_5.1.compilerID.OPT_LEVEL.733761462&quot; superClass=&quot;com.ti.ccstudio.buildDefinitions.TMS470_TICLANG_5.1.compilerID.OPT_LEVEL&quot; value=&quot;com.ti.ccstudio.buildDefinitions.TMS470_TICLANG_5.1.compilerID.OPT_LEVEL.2&quot; valueType=&quot;enumerated&quot;/&gt;
-                                &lt;option id=&quot;com.ti.ccstudio.buildDefinitions.TMS470_TICLANG_5.1.compilerID.CMD_FILE.622059810&quot; superClass=&quot;com.ti.ccstudio.buildDefinitions.TMS470_TICLANG_5.1.compilerID.CMD_FILE&quot; valueType=&quot;stringList&quot;&gt;
-                                    &lt;listOptionValue value=&quot;device.opt&quot;/&gt;
+                                &lt;option id="com.ti.ccstudio.buildDefinitions.TMS470_TICLANG_5.1.compilerID.OPT_LEVEL.733761462" superClass="com.ti.ccstudio.buildDefinitions.TMS470_TICLANG_5.1.compilerID.OPT_LEVEL" value="com.ti.ccstudio.buildDefinitions.TMS470_TICLANG_5.1.compilerID.OPT_LEVEL.2" valueType="enumerated"/&gt;
+                                &lt;option id="com.ti.ccstudio.buildDefinitions.TMS470_TICLANG_5.1.compilerID.CMD_FILE.622059810" superClass="com.ti.ccstudio.buildDefinitions.TMS470_TICLANG_5.1.compilerID.CMD_FILE" valueType="stringList"&gt;
+                                    &lt;listOptionValue value="device.opt"/&gt;
                                 &lt;/option&gt;
-                                &lt;option id=&quot;com.ti.ccstudio.buildDefinitions.TMS470_TICLANG_5.1.compilerID.MCPU.1663993575&quot; superClass=&quot;com.ti.ccstudio.buildDefinitions.TMS470_TICLANG_5.1.compilerID.MCPU&quot; value=&quot;com.ti.ccstudio.buildDefinitions.TMS470_TICLANG_5.1.compilerID.MCPU.cortex-m0plus&quot; valueType=&quot;enumerated&quot;/&gt;
-                                &lt;option id=&quot;com.ti.ccstudio.buildDefinitions.TMS470_TICLANG_5.1.compilerID.MARCH.2024528124&quot; superClass=&quot;com.ti.ccstudio.buildDefinitions.TMS470_TICLANG_5.1.compilerID.MARCH&quot; value=&quot;com.ti.ccstudio.buildDefinitions.TMS470_TICLANG_5.1.compilerID.MARCH.thumbv6m&quot; valueType=&quot;enumerated&quot;/&gt;
-                                &lt;option id=&quot;com.ti.ccstudio.buildDefinitions.TMS470_TICLANG_5.1.compilerID.MFLOAT_ABI.1096955702&quot; superClass=&quot;com.ti.ccstudio.buildDefinitions.TMS470_TICLANG_5.1.compilerID.MFLOAT_ABI&quot; value=&quot;com.ti.ccstudio.buildDefinitions.TMS470_TICLANG_5.1.compilerID.MFLOAT_ABI.soft&quot; valueType=&quot;enumerated&quot;/&gt;
-                                &lt;option id=&quot;com.ti.ccstudio.buildDefinitions.TMS470_TICLANG_5.1.compilerID.SELECT_PROCESSOR_MODE__ARM_THUMB.1613813744&quot; superClass=&quot;com.ti.ccstudio.buildDefinitions.TMS470_TICLANG_5.1.compilerID.SELECT_PROCESSOR_MODE__ARM_THUMB&quot; value=&quot;com.ti.ccstudio.buildDefinitions.TMS470_TICLANG_5.1.compilerID.SELECT_PROCESSOR_MODE__ARM_THUMB.MTHUMB&quot; valueType=&quot;enumerated&quot;/&gt;
-                                &lt;option id=&quot;com.ti.ccstudio.buildDefinitions.TMS470_TICLANG_5.1.compilerID.WALL.1603881543&quot; superClass=&quot;com.ti.ccstudio.buildDefinitions.TMS470_TICLANG_5.1.compilerID.WALL&quot; value=&quot;true&quot; valueType=&quot;boolean&quot;/&gt;
+                                &lt;option id="com.ti.ccstudio.buildDefinitions.TMS470_TICLANG_5.1.compilerID.MCPU.1663993575" superClass="com.ti.ccstudio.buildDefinitions.TMS470_TICLANG_5.1.compilerID.MCPU" value="com.ti.ccstudio.buildDefinitions.TMS470_TICLANG_5.1.compilerID.MCPU.cortex-m0plus" valueType="enumerated"/&gt;
+                                &lt;option id="com.ti.ccstudio.buildDefinitions.TMS470_TICLANG_5.1.compilerID.MARCH.2024528124" superClass="com.ti.ccstudio.buildDefinitions.TMS470_TICLANG_5.1.compilerID.MARCH" value="com.ti.ccstudio.buildDefinitions.TMS470_TICLANG_5.1.compilerID.MARCH.thumbv6m" valueType="enumerated"/&gt;
+                                &lt;option id="com.ti.ccstudio.buildDefinitions.TMS470_TICLANG_5.1.compilerID.MFLOAT_ABI.1096955702" superClass="com.ti.ccstudio.buildDefinitions.TMS470_TICLANG_5.1.compilerID.MFLOAT_ABI" value="com.ti.ccstudio.buildDefinitions.TMS470_TICLANG_5.1.compilerID.MFLOAT_ABI.soft" valueType="enumerated"/&gt;
+                                &lt;option id="com.ti.ccstudio.buildDefinitions.TMS470_TICLANG_5.1.compilerID.SELECT_PROCESSOR_MODE__ARM_THUMB.1613813744" superClass="com.ti.ccstudio.buildDefinitions.TMS470_TICLANG_5.1.compilerID.SELECT_PROCESSOR_MODE__ARM_THUMB" value="com.ti.ccstudio.buildDefinitions.TMS470_TICLANG_5.1.compilerID.SELECT_PROCESSOR_MODE__ARM_THUMB.MTHUMB" valueType="enumerated"/&gt;
+                                &lt;option id="com.ti.ccstudio.buildDefinitions.TMS470_TICLANG_5.1.compilerID.WALL.1603881543" superClass="com.ti.ccstudio.buildDefinitions.TMS470_TICLANG_5.1.compilerID.WALL" value="true" valueType="boolean"/&gt;
                             &lt;/tool&gt;</code></pre>
   <ol class="line-notes">
     <li><strong>第 36～43 行：</strong>include 路径包含 SDK、SysConfig、项目根、当前 ConfigName 目录和 CMSIS；Debug 生成头文件因此可被找到。</li>
@@ -1612,49 +1612,49 @@ target-configuration automatically&quot; checkbox on the project&#39;s Propertie
     <li><strong>第 49～51 行：</strong>编译器读取生成的 device.opt。</li>
     <li><strong>第 52～56 行：</strong>Cortex-M0+、thumbv6m、软浮点、Thumb 和 Wall 警告。</li>
   </ol>
-  <pre class="source-code"><code data-source=".cproject" data-lines="58-78">                            &lt;tool id=&quot;com.ti.ccstudio.buildDefinitions.TMS470_TICLANG_5.1.exe.linkerDebug.1063845466&quot; name=&quot;Arm Linker&quot; superClass=&quot;com.ti.ccstudio.buildDefinitions.TMS470_TICLANG_5.1.exe.linkerDebug&quot;&gt;
-                                &lt;option id=&quot;com.ti.ccstudio.buildDefinitions.TMS470_TICLANG_5.1.linkerID.OUTPUT_FILE.1146604956&quot; superClass=&quot;com.ti.ccstudio.buildDefinitions.TMS470_TICLANG_5.1.linkerID.OUTPUT_FILE&quot; value=&quot;${ProjName}.out&quot; valueType=&quot;string&quot;/&gt;
-                                &lt;option id=&quot;com.ti.ccstudio.buildDefinitions.TMS470_TICLANG_5.1.linkerID.MAP_FILE.2134834185&quot; superClass=&quot;com.ti.ccstudio.buildDefinitions.TMS470_TICLANG_5.1.linkerID.MAP_FILE&quot; value=&quot;${ProjName}.map&quot; valueType=&quot;string&quot;/&gt;
-                                &lt;option id=&quot;com.ti.ccstudio.buildDefinitions.TMS470_TICLANG_5.1.linkerID.XML_LINK_INFO.2139711168&quot; superClass=&quot;com.ti.ccstudio.buildDefinitions.TMS470_TICLANG_5.1.linkerID.XML_LINK_INFO&quot; value=&quot;${ProjName}_linkInfo.xml&quot; valueType=&quot;string&quot;/&gt;
-                                &lt;option id=&quot;com.ti.ccstudio.buildDefinitions.TMS470_TICLANG_5.1.linkerID.DISPLAY_ERROR_NUMBER.1618637266&quot; superClass=&quot;com.ti.ccstudio.buildDefinitions.TMS470_TICLANG_5.1.linkerID.DISPLAY_ERROR_NUMBER&quot; value=&quot;true&quot; valueType=&quot;boolean&quot;/&gt;
-                                &lt;option id=&quot;com.ti.ccstudio.buildDefinitions.TMS470_TICLANG_5.1.linkerID.DIAG_WRAP.923801805&quot; superClass=&quot;com.ti.ccstudio.buildDefinitions.TMS470_TICLANG_5.1.linkerID.DIAG_WRAP&quot; value=&quot;com.ti.ccstudio.buildDefinitions.TMS470_TICLANG_5.1.linkerID.DIAG_WRAP.off&quot; valueType=&quot;enumerated&quot;/&gt;
-                                &lt;option id=&quot;com.ti.ccstudio.buildDefinitions.TMS470_TICLANG_5.1.linkerID.REREAD_LIBS.548814650&quot; superClass=&quot;com.ti.ccstudio.buildDefinitions.TMS470_TICLANG_5.1.linkerID.REREAD_LIBS&quot; value=&quot;false&quot; valueType=&quot;boolean&quot;/&gt;
-                                &lt;option id=&quot;com.ti.ccstudio.buildDefinitions.TMS470_TICLANG_5.1.linkerID.SEARCH_PATH.368816072&quot; superClass=&quot;com.ti.ccstudio.buildDefinitions.TMS470_TICLANG_5.1.linkerID.SEARCH_PATH&quot; valueType=&quot;libPaths&quot;&gt;
-                                    &lt;listOptionValue value=&quot;${COM_TI_MSPM0_SDK_LIBRARY_PATH}&quot;/&gt;
-                                    &lt;listOptionValue value=&quot;${SYSCONFIG_TOOL_LIBRARY_PATH}&quot;/&gt;
-                                    &lt;listOptionValue value=&quot;${COM_TI_MSPM0_SDK_INSTALL_DIR}/source&quot;/&gt;
-                                    &lt;listOptionValue value=&quot;${PROJECT_ROOT}&quot;/&gt;
-                                    &lt;listOptionValue value=&quot;${PROJECT_BUILD_DIR}/syscfg&quot;/&gt;
-                                    &lt;listOptionValue value=&quot;${CG_TOOL_ROOT}/lib&quot;/&gt;
+  <pre class="source-code"><code data-source=".cproject" data-lines="58-78">                            &lt;tool id="com.ti.ccstudio.buildDefinitions.TMS470_TICLANG_5.1.exe.linkerDebug.1063845466" name="Arm Linker" superClass="com.ti.ccstudio.buildDefinitions.TMS470_TICLANG_5.1.exe.linkerDebug"&gt;
+                                &lt;option id="com.ti.ccstudio.buildDefinitions.TMS470_TICLANG_5.1.linkerID.OUTPUT_FILE.1146604956" superClass="com.ti.ccstudio.buildDefinitions.TMS470_TICLANG_5.1.linkerID.OUTPUT_FILE" value="${ProjName}.out" valueType="string"/&gt;
+                                &lt;option id="com.ti.ccstudio.buildDefinitions.TMS470_TICLANG_5.1.linkerID.MAP_FILE.2134834185" superClass="com.ti.ccstudio.buildDefinitions.TMS470_TICLANG_5.1.linkerID.MAP_FILE" value="${ProjName}.map" valueType="string"/&gt;
+                                &lt;option id="com.ti.ccstudio.buildDefinitions.TMS470_TICLANG_5.1.linkerID.XML_LINK_INFO.2139711168" superClass="com.ti.ccstudio.buildDefinitions.TMS470_TICLANG_5.1.linkerID.XML_LINK_INFO" value="${ProjName}_linkInfo.xml" valueType="string"/&gt;
+                                &lt;option id="com.ti.ccstudio.buildDefinitions.TMS470_TICLANG_5.1.linkerID.DISPLAY_ERROR_NUMBER.1618637266" superClass="com.ti.ccstudio.buildDefinitions.TMS470_TICLANG_5.1.linkerID.DISPLAY_ERROR_NUMBER" value="true" valueType="boolean"/&gt;
+                                &lt;option id="com.ti.ccstudio.buildDefinitions.TMS470_TICLANG_5.1.linkerID.DIAG_WRAP.923801805" superClass="com.ti.ccstudio.buildDefinitions.TMS470_TICLANG_5.1.linkerID.DIAG_WRAP" value="com.ti.ccstudio.buildDefinitions.TMS470_TICLANG_5.1.linkerID.DIAG_WRAP.off" valueType="enumerated"/&gt;
+                                &lt;option id="com.ti.ccstudio.buildDefinitions.TMS470_TICLANG_5.1.linkerID.REREAD_LIBS.548814650" superClass="com.ti.ccstudio.buildDefinitions.TMS470_TICLANG_5.1.linkerID.REREAD_LIBS" value="false" valueType="boolean"/&gt;
+                                &lt;option id="com.ti.ccstudio.buildDefinitions.TMS470_TICLANG_5.1.linkerID.SEARCH_PATH.368816072" superClass="com.ti.ccstudio.buildDefinitions.TMS470_TICLANG_5.1.linkerID.SEARCH_PATH" valueType="libPaths"&gt;
+                                    &lt;listOptionValue value="${COM_TI_MSPM0_SDK_LIBRARY_PATH}"/&gt;
+                                    &lt;listOptionValue value="${SYSCONFIG_TOOL_LIBRARY_PATH}"/&gt;
+                                    &lt;listOptionValue value="${COM_TI_MSPM0_SDK_INSTALL_DIR}/source"/&gt;
+                                    &lt;listOptionValue value="${PROJECT_ROOT}"/&gt;
+                                    &lt;listOptionValue value="${PROJECT_BUILD_DIR}/syscfg"/&gt;
+                                    &lt;listOptionValue value="${CG_TOOL_ROOT}/lib"/&gt;
                                 &lt;/option&gt;
-                                &lt;option id=&quot;com.ti.ccstudio.buildDefinitions.TMS470_TICLANG_5.1.linkerID.LIBRARY.399171058&quot; superClass=&quot;com.ti.ccstudio.buildDefinitions.TMS470_TICLANG_5.1.linkerID.LIBRARY&quot; valueType=&quot;libs&quot;&gt;
-                                    &lt;listOptionValue value=&quot;${COM_TI_MSPM0_SDK_LIBRARIES}&quot;/&gt;
-                                    &lt;listOptionValue value=&quot;${SYSCONFIG_TOOL_LIBRARIES}&quot;/&gt;
-                                    &lt;listOptionValue value=&quot;device.cmd.genlibs&quot;/&gt;
-                                    &lt;listOptionValue value=&quot;libc.a&quot;/&gt;
+                                &lt;option id="com.ti.ccstudio.buildDefinitions.TMS470_TICLANG_5.1.linkerID.LIBRARY.399171058" superClass="com.ti.ccstudio.buildDefinitions.TMS470_TICLANG_5.1.linkerID.LIBRARY" valueType="libs"&gt;
+                                    &lt;listOptionValue value="${COM_TI_MSPM0_SDK_LIBRARIES}"/&gt;
+                                    &lt;listOptionValue value="${SYSCONFIG_TOOL_LIBRARIES}"/&gt;
+                                    &lt;listOptionValue value="device.cmd.genlibs"/&gt;
+                                    &lt;listOptionValue value="libc.a"/&gt;
                                 &lt;/option&gt;</code></pre>
   <ol class="line-notes">
     <li><strong>第 58～64 行：</strong>链接器生成 ProjName.out、map 和 linkInfo XML。</li>
     <li><strong>第 65～72 行：</strong>库路径包含 SDK、SysConfig、项目、生成 syscfg 和编译器库。</li>
     <li><strong>第 73～78 行：</strong>链接 SDK/SysConfig、device.cmd.genlibs 与 libc。</li>
   </ol>
-  <pre class="source-code"><code data-source=".cproject" data-lines="86-104">                            &lt;tool id=&quot;com.ti.ccstudio.buildDefinitions.sysConfig.5099498&quot; name=&quot;SysConfig&quot; superClass=&quot;com.ti.ccstudio.buildDefinitions.sysConfig&quot;&gt;
-                                &lt;option id=&quot;com.ti.ccstudio.buildDefinitions.sysConfig.PRODUCTS.307460793&quot; superClass=&quot;com.ti.ccstudio.buildDefinitions.sysConfig.PRODUCTS&quot; valueType=&quot;stringList&quot;&gt;
-                                    &lt;listOptionValue value=&quot;${COM_TI_MSPM0_SDK_SYSCONFIG_MANIFEST}&quot;/&gt;
-                                    &lt;listOptionValue value=&quot;${SYSCONFIG_TOOL_SYSCONFIG_MANIFEST}&quot;/&gt;
+  <pre class="source-code"><code data-source=".cproject" data-lines="86-104">                            &lt;tool id="com.ti.ccstudio.buildDefinitions.sysConfig.5099498" name="SysConfig" superClass="com.ti.ccstudio.buildDefinitions.sysConfig"&gt;
+                                &lt;option id="com.ti.ccstudio.buildDefinitions.sysConfig.PRODUCTS.307460793" superClass="com.ti.ccstudio.buildDefinitions.sysConfig.PRODUCTS" valueType="stringList"&gt;
+                                    &lt;listOptionValue value="${COM_TI_MSPM0_SDK_SYSCONFIG_MANIFEST}"/&gt;
+                                    &lt;listOptionValue value="${SYSCONFIG_TOOL_SYSCONFIG_MANIFEST}"/&gt;
                                 &lt;/option&gt;
-                                &lt;option id=&quot;com.ti.ccstudio.buildDefinitions.sysConfig.OUTPUT_DIR__MANUAL.625468941&quot; superClass=&quot;com.ti.ccstudio.buildDefinitions.sysConfig.OUTPUT_DIR__MANUAL&quot; value=&quot;.&quot; valueType=&quot;string&quot;/&gt;
-                                &lt;option id=&quot;com.ti.ccstudio.buildDefinitions.sysConfig.DIRECTORY_MODE.1923218292&quot; superClass=&quot;com.ti.ccstudio.buildDefinitions.sysConfig.DIRECTORY_MODE&quot; value=&quot;com.ti.ccstudio.buildDefinitions.sysConfig.DIRECTORY_MODE.manual&quot; valueType=&quot;enumerated&quot;/&gt;
+                                &lt;option id="com.ti.ccstudio.buildDefinitions.sysConfig.OUTPUT_DIR__MANUAL.625468941" superClass="com.ti.ccstudio.buildDefinitions.sysConfig.OUTPUT_DIR__MANUAL" value="." valueType="string"/&gt;
+                                &lt;option id="com.ti.ccstudio.buildDefinitions.sysConfig.DIRECTORY_MODE.1923218292" superClass="com.ti.ccstudio.buildDefinitions.sysConfig.DIRECTORY_MODE" value="com.ti.ccstudio.buildDefinitions.sysConfig.DIRECTORY_MODE.manual" valueType="enumerated"/&gt;
                             &lt;/tool&gt;
                         &lt;/toolChain&gt;
                     &lt;/folderInfo&gt;
                 &lt;/configuration&gt;
             &lt;/storageModule&gt;
-            &lt;storageModule moduleId=&quot;org.eclipse.cdt.core.externalSettings&quot;/&gt;
+            &lt;storageModule moduleId="org.eclipse.cdt.core.externalSettings"/&gt;
         &lt;/cconfiguration&gt;
     &lt;/storageModule&gt;
-    &lt;storageModule moduleId=&quot;cdtBuildSystem&quot; version=&quot;4.0.0&quot;&gt;
-        &lt;project id=&quot;ArcLineTest.com.ti.ccstudio.buildDefinitions.TMS470.ProjectType.2011465861&quot; name=&quot;TMS470&quot; projectType=&quot;com.ti.ccstudio.buildDefinitions.TMS470.ProjectType&quot;/&gt;
+    &lt;storageModule moduleId="cdtBuildSystem" version="4.0.0"&gt;
+        &lt;project id="ArcLineTest.com.ti.ccstudio.buildDefinitions.TMS470.ProjectType.2011465861" name="TMS470" projectType="com.ti.ccstudio.buildDefinitions.TMS470.ProjectType"/&gt;
     &lt;/storageModule&gt;
 &lt;/cproject&gt;</code></pre>
   <ol class="line-notes">
@@ -1671,20 +1671,19 @@ CompileFlags:
    CompilationDatabase: Debug/.clangd
 
 Diagnostics:
-   Suppress: &#39;*&#39;
-</code></pre>
+   Suppress: '*'</code></pre>
   <ol class="line-notes">
     <li><strong>第 1 行：</strong>文件自称自动生成，不适合作为长期手调入口。</li>
     <li><strong>第 3～5 行：</strong>clangd 从 <code>Debug/.clangd</code> 取得编译数据库，知道真实 include/define。</li>
     <li><strong>第 6～8 行：</strong>Suppress <code>*</code> 关闭编辑器 clangd 诊断，不等于 CCS 编译器不报错。</li>
   </ol>
   <pre class="source-code"><code data-source="25.theia-workspace" data-lines="1-8">{
-  &quot;folders&quot;: [
+  "folders": [
     {
-      &quot;path&quot;: &quot;&quot;
+      "path": ""
     }
   ],
-  &quot;settings&quot;: {}
+  "settings": {}
 }</code></pre>
   <ol class="line-notes">
     <li><strong>第 1～6 行：</strong>Theia 工作区只打开 path 为空的当前项目根。</li>
@@ -1730,15 +1729,15 @@ Diagnostics:
   <pre class="source-code"><code data-source=".theia/launch.json" data-lines="1-16">{
   // 使用 IntelliSense 了解相关属性。
   // 悬停以查看现有属性的描述。
-  &quot;version&quot;: &quot;0.2.0&quot;,
-  &quot;configurations&quot;: [
+  "version": "0.2.0",
+  "configurations": [
     {
-      &quot;name&quot;: &quot;ArcLineTest&quot;,
-      &quot;type&quot;: &quot;ccs-debug&quot;,
-      &quot;request&quot;: &quot;launch&quot;,
-      &quot;projectInfo&quot;: {
-        &quot;name&quot;: &quot;ArcLineTest&quot;,
-        &quot;resourceId&quot;: &quot;/ArcLineTest&quot;
+      "name": "ArcLineTest",
+      "type": "ccs-debug",
+      "request": "launch",
+      "projectInfo": {
+        "name": "ArcLineTest",
+        "resourceId": "/ArcLineTest"
       }
     }
   ]
@@ -1768,6 +1767,8 @@ encoding//Debug/Application/Core/subdir_rules.mk=UTF-8
 encoding//Debug/Application/Core/subdir_vars.mk=UTF-8
 encoding//Debug/Application/Debug/subdir_rules.mk=UTF-8
 encoding//Debug/Application/Debug/subdir_vars.mk=UTF-8
+encoding//Debug/Application/Gimbal/subdir_rules.mk=UTF-8
+encoding//Debug/Application/Gimbal/subdir_vars.mk=UTF-8
 encoding//Debug/Application/Mission/subdir_rules.mk=UTF-8
 encoding//Debug/Application/Mission/subdir_vars.mk=UTF-8
 encoding//Debug/Application/Servo/subdir_rules.mk=UTF-8
@@ -1790,9 +1791,7 @@ encoding//Debug/System/subdir_rules.mk=UTF-8
 encoding//Debug/System/subdir_vars.mk=UTF-8
 encoding//Debug/makefile=UTF-8
 encoding//Debug/objects.mk=UTF-8
-encoding//Debug/sources.mk=UTF-8
-encoding//Debug/subdir_rules.mk=UTF-8
-encoding//Debug/subdir_vars.mk=UTF-8</code></pre>
+encoding//Debug/sources.mk=UTF-8</code></pre>
   <ol class="line-notes">
     <li><strong>第 1 行：</strong>Eclipse 资源偏好格式版本。</li>
     <li><strong>第 2～38 行：</strong>把 Debug 下自动生成的 makefile 片段统一标成 UTF-8，避免中文路径/注释显示异常。列表中的 <code>Application/Aim</code> 和 <code>Hardware/Actuators</code> 已不在当前源码树中，说明这份 IDE 元数据保留了旧目录痕迹；它不等于当前仍有这些模块，判断项目结构应以实际目录为准。</li>

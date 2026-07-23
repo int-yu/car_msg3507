@@ -252,7 +252,7 @@ static const Mission_Transition_t s_turnTransitions[] = {
  * - onEnter 只负责启动一次动作；
  * - onUpdate 只返回动作状态；
  * - onExit 为空，因为 Mission 转换时会统一调用 MotionManager_Stop()；
- * - interruptible 只控制状态图中的普通打断转换；蓝牙命令只在起始等待状态执行。
+ * - interruptible 只控制普通打断转换，任何状态都无法屏蔽 C0 全局停车。
  */
 static const Mission_StateDefinition_t s_stateDefinitions[
     ACCOMPLISH_25E_STATE_COUNT] = {
@@ -297,7 +297,7 @@ static const Mission_StateDefinition_t s_stateDefinitions[
         .interruptible = 0U,
     },
     [ACCOMPLISH_25E_STATE_ERROR] = {
-        /* 错误状态不启动运动；可通过 Mission_Stop() 复位到 WAITING。 */
+        /* 错误状态不启动运动；只能通过 C0 复位到 WAITING。 */
         .onEnter = NULL,
         .onUpdate = NULL,
         .onExit = NULL,
