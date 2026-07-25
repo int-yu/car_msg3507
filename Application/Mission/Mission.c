@@ -214,6 +214,12 @@ void Mission_Update(const App_UpdateContext_t *updateContext)
         return;
     }
 
+    if (Mission_ContextHasBluetoothSignal(updateContext, 0U) != 0U)
+    {
+        Mission_ResetToStart();
+        return;
+    }
+
     if (s_status == MISSION_STATUS_ERROR)
     {
         return;
@@ -292,14 +298,14 @@ Mission_ActionStatus_t Mission_GetMotionActionStatus(void)
     return MISSION_ACTION_FINISHED;
 }
 
-uint8_t Mission_IsAtStartState(void)
+uint8_t Mission_ContextHasBluetoothSignal(
+    const App_UpdateContext_t *updateContext, uint8_t signal)
 {
-    if ((s_graphValid == 0U) || (s_graph == NULL) ||
-        (s_status == MISSION_STATUS_UNINITIALIZED) ||
-        (s_status == MISSION_STATUS_ERROR))
+    if ((updateContext == NULL) ||
+        (updateContext->hasBluetoothSignal == 0U))
     {
         return 0U;
     }
 
-    return (s_runtime.currentState == s_graph->startState) ? 1U : 0U;
+    return (updateContext->bluetoothSignal == signal) ? 1U : 0U;
 }

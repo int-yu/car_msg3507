@@ -46,7 +46,7 @@
   <pre class="source-code"><code data-source="Hardware/Display/OLED.h" data-lines="1-45">#ifndef OLED_H
 #define OLED_H
 
-#include &quot;Hardware/Display/OLED_Data.h&quot;
+#include "Hardware/Display/OLED_Data.h"
 #include &lt;stdint.h&gt;
 
 #define OLED_8X16     8U
@@ -102,9 +102,9 @@ void OLED_DrawArc(int16_t x, int16_t y, uint8_t radius,
   </ol>
 
   <h4>4.2 <code>OLED.c</code> 开头：I2C 参数与显存</h4>
-  <pre class="source-code"><code data-source="Hardware/Display/OLED.c" data-lines="1-16">#include &quot;Hardware/Display/OLED.h&quot;
-#include &quot;System/Delay.h&quot;
-#include &quot;ti_msp_dl_config.h&quot;
+  <pre class="source-code"><code data-source="Hardware/Display/OLED.c" data-lines="1-16">#include "Hardware/Display/OLED.h"
+#include "System/Delay.h"
+#include "ti_msp_dl_config.h"
 #include &lt;math.h&gt;
 #include &lt;stdarg.h&gt;
 #include &lt;stdio.h&gt;
@@ -352,9 +352,9 @@ void OLED_ShowImage(int16_t x, int16_t y, uint8_t width, uint8_t height, const u
   <h4>4.6 ASCII 字符、UTF-8 处理与十次幂</h4>
   <pre class="source-code"><code data-source="Hardware/Display/OLED.c" data-lines="173-204">void OLED_ShowChar(int16_t x, int16_t y, char value, uint8_t fontSize)
 {
-    uint8_t index = ((value &gt;= &#39; &#39;) &amp;&amp; (value &lt;= &#39;~&#39;)) ?
-                        (uint8_t)(value - &#39; &#39;) :
-                        (uint8_t)(&#39;?&#39; - &#39; &#39;);
+    uint8_t index = ((value &gt;= ' ') &amp;&amp; (value &lt;= '~')) ?
+                        (uint8_t)(value - ' ') :
+                        (uint8_t)('?' - ' ');
     if (fontSize == OLED_8X16) OLED_ShowImage(x, y, 8U, 16U, OLED_F8x16[index]);
     else OLED_ShowImage(x, y, 6U, 8U, OLED_F6x8[index]);
 }
@@ -363,11 +363,11 @@ void OLED_ShowString(int16_t x, int16_t y, const char *string, uint8_t fontSize)
 {
     int16_t offset = 0;
     if (string == NULL) return;
-    while (*string != &#39;\0&#39;)
+    while (*string != '\0')
     {
         if (((uint8_t)*string &amp; 0x80U) != 0U)
         {
-            OLED_ShowChar((int16_t)(x + offset), y, &#39;?&#39;, fontSize);
+            OLED_ShowChar((int16_t)(x + offset), y, '?', fontSize);
             while ((((uint8_t)string[1] &amp; 0xC0U) == 0x80U)) string++;
         }
         else OLED_ShowChar((int16_t)(x + offset), y, *string, fontSize);
@@ -401,7 +401,7 @@ static uint32_t OLED_Pow10(uint8_t power)
     for (i = 0U; i &lt; length; i++)
         OLED_ShowChar(
             (int16_t)(x + i * fontSize), y,
-            (char)(&#39;0&#39; +
+            (char)('0' +
                    (number / OLED_Pow10((uint8_t)(length - i - 1U))) % 10U),
             fontSize);
 }
@@ -411,7 +411,7 @@ void OLED_ShowSignedNum(int16_t x, int16_t y, int32_t number, uint8_t length, ui
     uint32_t magnitude = (number &lt; 0) ?
                              (uint32_t)(-(number + 1)) + 1U :
                              (uint32_t)number;
-    OLED_ShowChar(x, y, (number &lt; 0) ? &#39;-&#39; : &#39;+&#39;, fontSize);
+    OLED_ShowChar(x, y, (number &lt; 0) ? '-' : '+', fontSize);
     OLED_ShowNum((int16_t)(x + fontSize), y, magnitude, length, fontSize);
 }
 
@@ -422,7 +422,7 @@ void OLED_ShowHexNum(int16_t x, int16_t y, uint32_t number, uint8_t length, uint
     {
         uint8_t digit = (uint8_t)((number &gt;&gt; (4U * i)) &amp; 0x0FU);
         OLED_ShowChar((int16_t)(x + ((int8_t)length - 1 - i) * fontSize), y,
-                      (char)((digit &lt; 10U) ? (&#39;0&#39; + digit) : (&#39;A&#39; + digit - 10U)), fontSize);
+                      (char)((digit &lt; 10U) ? ('0' + digit) : ('A' + digit - 10U)), fontSize);
     }
 }
 
@@ -431,7 +431,7 @@ void OLED_ShowBinNum(int16_t x, int16_t y, uint32_t number, uint8_t length, uint
     uint8_t i;
     for (i = 0U; i &lt; length; i++)
         OLED_ShowChar((int16_t)(x + i * fontSize), y,
-                      (char)(&#39;0&#39; + ((number &gt;&gt; (length - i - 1U)) &amp; 1U)), fontSize);
+                      (char)('0' + ((number &gt;&gt; (length - i - 1U)) &amp; 1U)), fontSize);
 }
 
 void OLED_ShowFloatNum(int16_t x, int16_t y, double number,
@@ -440,7 +440,7 @@ void OLED_ShowFloatNum(int16_t x, int16_t y, double number,
 {
     char format[12];
     char value[32];
-    (void)snprintf(format, sizeof(format), &quot;%%+%u.%uf&quot;,
+    (void)snprintf(format, sizeof(format), "%%+%u.%uf",
                    (unsigned)(intLength + fraLength + 2U),
                    (unsigned)fraLength);
     (void)snprintf(value, sizeof(value), format, number);
@@ -688,11 +688,11 @@ extern const uint8_t Diode[];
   </ol>
 
   <h4>4.11 <code>OLED_Data.c</code>：怎样读字模，而不是背十六进制</h4>
-  <pre class="source-code"><code data-source="Hardware/Display/OLED_Data.c" data-lines="1-37">#include &quot;OLED_Data.h&quot;
+  <pre class="source-code"><code data-source="Hardware/Display/OLED_Data.c" data-lines="1-37">#include "OLED_Data.h"
 
 #if defined(__clang__)
 #pragma clang diagnostic push
-#pragma clang diagnostic ignored &quot;-Wmissing-braces&quot;
+#pragma clang diagnostic ignored "-Wmissing-braces"
 #endif
 
 /**
@@ -740,7 +740,7 @@ extern const uint8_t Diode[];
 	0x00,0x00,0x00,0xF8,0x00,0x00,0x00,0x00,
 	0x00,0x00,0x00,0x33,0x30,0x00,0x00,0x00,// ! 1
 	0x00,0x16,0x0E,0x00,0x16,0x0E,0x00,0x00,
-	0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,// &quot; 2
+	0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,// " 2
 	0x40,0xC0,0x78,0x40,0xC0,0x78,0x40,0x00,
 	0x04,0x3F,0x04,0x04,0x3F,0x04,0x04,0x00,// # 3</code></pre>
   <ol class="line-notes">
@@ -756,12 +756,12 @@ const uint8_t OLED_F6x8[][6] =
 {
 	0x00,0x00,0x00,0x00,0x00,0x00,//   0
 	0x00,0x00,0x00,0x2F,0x00,0x00,// ! 1
-	0x00,0x00,0x07,0x00,0x07,0x00,// &quot; 2
+	0x00,0x00,0x07,0x00,0x07,0x00,// " 2
 	0x00,0x14,0x7F,0x14,0x7F,0x14,// # 3
 	0x00,0x24,0x2A,0x7F,0x2A,0x12,// $ 4
 	0x00,0x23,0x13,0x08,0x64,0x62,// % 5
 	0x00,0x36,0x49,0x55,0x22,0x50,// &amp; 6
-	0x00,0x00,0x00,0x07,0x00,0x00,// &#39; 7
+	0x00,0x00,0x00,0x07,0x00,0x00,// ' 7
 	0x00,0x00,0x1C,0x22,0x41,0x00,// ( 8
 	0x00,0x00,0x41,0x22,0x1C,0x00,// ) 9
 	0x00,0x14,0x08,0x3E,0x08,0x14,// * 10
@@ -791,27 +791,27 @@ const uint8_t OLED_F6x8[][6] =
 /*宽16像素，高16像素*/
 const ChineseCell_t OLED_CF16x16[] = {
 
-	&quot;，&quot;,
+	"，",
 	0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,
 	0x00,0x00,0x58,0x38,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,
 
-	&quot;。&quot;,
+	"。",
 	0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,
 	0x00,0x00,0x18,0x24,0x24,0x18,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,
 
-	&quot;你&quot;,
+	"你",
 	0x00,0x80,0x60,0xF8,0x07,0x40,0x20,0x18,0x0F,0x08,0xC8,0x08,0x08,0x28,0x18,0x00,
 	0x01,0x00,0x00,0xFF,0x00,0x10,0x0C,0x03,0x40,0x80,0x7F,0x00,0x01,0x06,0x18,0x00,
 
-	&quot;好&quot;,
+	"好",
 	0x10,0x10,0xF0,0x1F,0x10,0xF0,0x00,0x80,0x82,0x82,0xE2,0x92,0x8A,0x86,0x80,0x00,
 	0x40,0x22,0x15,0x08,0x16,0x61,0x00,0x00,0x40,0x80,0x7F,0x00,0x00,0x00,0x00,0x00,
 
-	&quot;世&quot;,
+	"世",
 	0x20,0x20,0x20,0xFE,0x20,0x20,0xFF,0x20,0x20,0x20,0xFF,0x20,0x20,0x20,0x20,0x00,
 	0x00,0x00,0x00,0x7F,0x40,0x40,0x47,0x44,0x44,0x44,0x47,0x40,0x40,0x40,0x00,0x00,
 
-	&quot;界&quot;,
+	"界",
 	0x00,0x00,0x00,0xFE,0x92,0x92,0x92,0xFE,0x92,0x92,0x92,0xFE,0x00,0x00,0x00,0x00,
 	0x08,0x08,0x04,0x84,0x62,0x1E,0x01,0x00,0x01,0xFE,0x02,0x04,0x04,0x08,0x08,0x00,
 
@@ -820,7 +820,7 @@ const ChineseCell_t OLED_CF16x16[] = {
 
 
 	/*未找到指定汉字时显示的默认图形（一个方框，内部一个问号），请确保其位于数组最末尾*/
-	&quot;&quot;,
+	"",
 	0xFF,0x01,0x01,0x01,0x31,0x09,0x09,0x09,0x09,0x89,0x71,0x01,0x01,0x01,0x01,0xFF,
 	0xFF,0x80,0x80,0x80,0x80,0x80,0x80,0x96,0x81,0x80,0x80,0x80,0x80,0x80,0x80,0xFF,
 
@@ -882,14 +882,15 @@ void DebugDisplay_Update(uint8_t elapsedTicks);
   </ol>
 
   <h4>4.13 灰度位图、按键位图和数值行</h4>
-  <pre class="source-code"><code data-source="Application/Debug/DebugDisplay.c" data-lines="1-23">#include &quot;Application/Debug/DebugDisplay.h&quot;
-#include &quot;Application/Control/MotionManager.h&quot;
-#include &quot;Application/Mission/Mission.h&quot;
-#include &quot;Application/State/Heading.h&quot;
-#include &quot;Application/State/Odometry.h&quot;
-#include &quot;Hardware/Board/Key.h&quot;
-#include &quot;Hardware/Display/OLED.h&quot;
-#include &quot;Hardware/Sensors/Graydetect.h&quot;
+  <pre class="source-code"><code data-source="Application/Debug/DebugDisplay.c" data-lines="1-23">#include "Application/Debug/DebugDisplay.h"
+#include "Application/Control/MotionManager.h"
+#include "Application/Gimbal/Gimbal.h"
+#include "Application/Mission/Mission.h"
+#include "Application/State/Heading.h"
+#include "Application/State/Odometry.h"
+#include "Hardware/Board/Key.h"
+#include "Hardware/Display/OLED.h"
+#include "Hardware/Sensors/Graydetect.h"
 
 static uint8_t s_refreshTicks;
 
@@ -897,14 +898,13 @@ static void DebugDisplay_ShowGrayState(uint8_t state)
 {
     uint8_t index;
 
-    OLED_ShowString(0, 8, &quot;GRAY:&quot;, OLED_6X8);
+    OLED_ShowString(0, 8, "GRAY:", OLED_6X8);
     for (index = 0U; index &lt; 5U; index++)
     {
         OLED_ShowChar((int16_t)(30 + index * OLED_6X8), 8,
-                      ((state &gt;&gt; index) &amp; 1U) != 0U ? &#39;1&#39; : &#39;0&#39;,
+                      ((state &gt;&gt; index) &amp; 1U) != 0U ? '1' : '0',
                       OLED_6X8);
-    }
-}</code></pre>
+    }</code></pre>
   <ol class="line-notes">
     <li><strong>第 1～8 行：</strong>综合页只依赖各模块公开查询接口：运动/Mission、航向/里程、按键、OLED 和灰度。</li>
     <li><strong>第 10 行：</strong>文件私有 <code>s_refreshTicks</code> 累计距离上次刷屏经过几拍。</li>
@@ -916,15 +916,15 @@ static void DebugDisplay_ShowGrayState(uint8_t state)
     <li><strong>第 22～23 行：</strong>完成五路显示。</li>
   </ol>
 
-  <pre class="source-code"><code data-source="Application/Debug/DebugDisplay.c" data-lines="25-46">static void DebugDisplay_ShowKeyState(uint8_t pressedMask)
+  <pre class="source-code"><code data-source="Application/Debug/DebugDisplay.c" data-lines="26-47">static void DebugDisplay_ShowKeyState(uint8_t pressedMask)
 {
     uint8_t index;
 
-    OLED_ShowString(0, 16, &quot;KEY:&quot;, OLED_6X8);
+    OLED_ShowString(0, 16, "KEY:", OLED_6X8);
     for (index = 0U; index &lt; 4U; index++)
     {
         OLED_ShowChar((int16_t)(24 + index * OLED_6X8), 16,
-                      ((pressedMask &gt;&gt; index) &amp; 1U) != 0U ? &#39;1&#39; : &#39;0&#39;,
+                      ((pressedMask &gt;&gt; index) &amp; 1U) != 0U ? '1' : '0',
                       OLED_6X8);
     }
 }
@@ -949,30 +949,30 @@ static void DebugDisplay_ShowMotionValue(int16_t y,
   </ol>
 
   <h4>4.14 运动状态汇总</h4>
-  <pre class="source-code"><code data-source="Application/Debug/DebugDisplay.c" data-lines="48-73">static void DebugDisplay_ShowMotionState(void)
+  <pre class="source-code"><code data-source="Application/Debug/DebugDisplay.c" data-lines="49-74">static void DebugDisplay_ShowMotionState(void)
 {
     MotionManager_Mode_t mode = MotionManager_GetMode();
 
     if ((MotionManager_GetError() != MOTION_MANAGER_ERROR_NONE) ||
         (Mission_GetStatus() == MISSION_STATUS_ERROR))
     {
-        OLED_ShowString(0, 56, &quot;M:ERROR&quot;, OLED_6X8);
+        OLED_ShowString(0, 56, "M:ERROR", OLED_6X8);
     }
     else if (mode == MOTION_MANAGER_MODE_STRAIGHT)
     {
-        OLED_ShowString(0, 56, &quot;M:STRAIGHT&quot;, OLED_6X8);
+        OLED_ShowString(0, 56, "M:STRAIGHT", OLED_6X8);
     }
     else if (mode == MOTION_MANAGER_MODE_LINE)
     {
-        OLED_ShowString(0, 56, &quot;M:LINE&quot;, OLED_6X8);
+        OLED_ShowString(0, 56, "M:LINE", OLED_6X8);
     }
     else if (mode == MOTION_MANAGER_MODE_TURN)
     {
-        OLED_ShowString(0, 56, &quot;M:TURN&quot;, OLED_6X8);
+        OLED_ShowString(0, 56, "M:TURN", OLED_6X8);
     }
     else
     {
-        OLED_ShowString(0, 56, &quot;M:IDLE&quot;, OLED_6X8);
+        OLED_ShowString(0, 56, "M:IDLE", OLED_6X8);
     }
 }</code></pre>
   <ol class="line-notes">
@@ -986,7 +986,7 @@ static void DebugDisplay_ShowMotionValue(int16_t y,
   </ol>
 
   <h4>4.15 初始化与陀螺仪标定提示页</h4>
-  <pre class="source-code"><code data-source="Application/Debug/DebugDisplay.c" data-lines="75-98">void DebugDisplay_Init(void)
+  <pre class="source-code"><code data-source="Application/Debug/DebugDisplay.c" data-lines="111-134">void DebugDisplay_Init(void)
 {
     s_refreshTicks = DEBUG_DISPLAY_REFRESH_TICKS;
     OLED_Init();
@@ -995,17 +995,17 @@ static void DebugDisplay_ShowMotionValue(int16_t y,
 void DebugDisplay_ShowHeadingCalibration(uint8_t mpuReady)
 {
     OLED_Clear();
-    OLED_ShowString(0, 0, &quot;MPU6050 Z ANGLE&quot;, OLED_6X8);
+    OLED_ShowString(0, 0, "MPU6050 Z ANGLE", OLED_6X8);
 
     if (mpuReady != 0U)
     {
-        OLED_ShowString(0, 16, &quot;ZERO CALIBRATING...&quot;, OLED_6X8);
-        OLED_ShowString(0, 32, &quot;KEEP CAR STILL&quot;, OLED_6X8);
+        OLED_ShowString(0, 16, "ZERO CALIBRATING...", OLED_6X8);
+        OLED_ShowString(0, 32, "KEEP CAR STILL", OLED_6X8);
     }
     else
     {
-        OLED_ShowString(0, 16, &quot;MPU6050 OFFLINE&quot;, OLED_6X8);
-        OLED_ShowString(0, 32, &quot;CHECK PA10/PA11&quot;, OLED_6X8);
+        OLED_ShowString(0, 16, "MPU6050 OFFLINE", OLED_6X8);
+        OLED_ShowString(0, 32, "CHECK PA10/PA11", OLED_6X8);
     }
 
     OLED_Update();
@@ -1019,7 +1019,7 @@ void DebugDisplay_ShowHeadingCalibration(uint8_t mpuReady)
   </ol>
 
   <h4>4.16 10Hz 综合页面刷新</h4>
-  <pre class="source-code"><code data-source="Application/Debug/DebugDisplay.c" data-lines="100-137">void DebugDisplay_Update(uint8_t elapsedTicks)
+  <pre class="source-code"><code data-source="Application/Debug/DebugDisplay.c" data-lines="136-173">void DebugDisplay_Update(uint8_t elapsedTicks)
 {
     uint8_t grayState;
     uint8_t keyMask;
@@ -1036,27 +1036,27 @@ void DebugDisplay_ShowHeadingCalibration(uint8_t mpuReady)
     keyMask = Key_GetPressedMask();
 
     OLED_Clear();
-    OLED_ShowString(0, 0, &quot;Z:&quot;, OLED_6X8);
+    if (DebugDisplay_ShowGimbalPage() != 0U)
+    {
+        OLED_Update();
+        return;
+    }
+
+    OLED_ShowString(0, 0, "Z:", OLED_6X8);
     if (Heading_IsReady() != 0U)
     {
         OLED_ShowFloatNum(12, 0, Heading_GetYaw(), 6U, 1U, OLED_6X8);
-        OLED_ShowString(72, 0, &quot;deg&quot;, OLED_6X8);
+        OLED_ShowString(72, 0, "deg", OLED_6X8);
     }
     else
     {
-        OLED_ShowString(12, 0, &quot;OFFLINE&quot;, OLED_6X8);
+        OLED_ShowString(12, 0, "OFFLINE", OLED_6X8);
     }
 
     DebugDisplay_ShowGrayState(grayState);
     DebugDisplay_ShowKeyState(keyMask);
-    DebugDisplay_ShowMotionValue(24, &quot;LD:&quot;, Odometry_GetDistanceLMM(), &quot;mm&quot;);
-    DebugDisplay_ShowMotionValue(32, &quot;LV:&quot;, Odometry_GetSpeedL(), &quot;mm/s&quot;);
-    DebugDisplay_ShowMotionValue(40, &quot;RD:&quot;, Odometry_GetDistanceRMM(), &quot;mm&quot;);
-    DebugDisplay_ShowMotionValue(48, &quot;RV:&quot;, Odometry_GetSpeedR(), &quot;mm/s&quot;);
-
-    DebugDisplay_ShowMotionState();
-    OLED_Update();
-}</code></pre>
+    DebugDisplay_ShowMotionValue(24, "LD:", Odometry_GetDistanceLMM(), "mm");
+    DebugDisplay_ShowMotionValue(32, "LV:", Odometry_GetSpeedL(), "mm/s");</code></pre>
   <ol class="line-notes">
     <li><strong>第 100～103 行：</strong>接收实际 elapsedTicks，并准备灰度与按键快照。</li>
     <li><strong>第 105～106 行：</strong>先转成 uint16_t 再相加，避免 8 位加法先溢出；累计值仍小于 10 时不刷新。</li>
@@ -1077,35 +1077,35 @@ void DebugDisplay_ShowHeadingCalibration(uint8_t mpuReady)
 
 #include &lt;stdint.h&gt;
 
-/* CSV 遥测输出。数据全部通过各模块公共接口读取，本模块不采集也不缓存历史。 */
+/*
+ * 二进制遥测输出。数据全部通过各模块公共接口读取，本模块不采集也不缓存历史。
+ * 协议见 docs/superpowers/specs/2026-07-21-二进制DMA架构-design.md 与 TelemFrame.h。
+ *
+ * 掩码变化（含上电）时先发一帧 SCHEMA（列名 + 单位），随后每个输出周期发一帧
+ * SAMPLE（ms + 各选中通道 float32）。所有通道都是 float，网页按 schema 列序解析。
+ */
 
-#define TELEMETRY_DEFAULT_RATE_HZ        20U  /* 默认频率；115200 下约占 13% 带宽。 */
+#define TELEMETRY_DEFAULT_RATE_HZ    50U   /* 默认频率；DMA 后可显著高于旧 20Hz。 */
+#define TELEMETRY_RATE_HARD_LIMIT_HZ 100U  /* 上限等于主循环频率。 */
 
-/* 频率硬上限，等于主循环频率。实际可用上限还要按字段掩码算，见 Telemetry_GetMaxRateHz()。 */
-#define TELEMETRY_RATE_HARD_LIMIT_HZ       100U
+/* 通道位定义（12 位）。位序即 SCHEMA/SAMPLE 的列序，一经发布不得重排。 */
+#define TELEMETRY_CH_TL     0x0001U /* 左轮目标速度 mm/s */
+#define TELEMETRY_CH_LV     0x0002U /* 左轮实测速度 mm/s */
+#define TELEMETRY_CH_PL     0x0004U /* 左轮输出 PWM */
+#define TELEMETRY_CH_TR     0x0008U /* 右轮目标速度 mm/s */
+#define TELEMETRY_CH_RV     0x0010U /* 右轮实测速度 mm/s */
+#define TELEMETRY_CH_PR     0x0020U /* 右轮输出 PWM */
+#define TELEMETRY_CH_YAW    0x0040U /* 连续累计航向角 度 */
+#define TELEMETRY_CH_NAVE   0x0080U /* 转向角误差 度 */
+#define TELEMETRY_CH_LERR   0x0100U /* 巡线权重误差 */
+#define TELEMETRY_CH_GRAY   0x0200U /* 五路灰度位图（转 float） */
+#define TELEMETRY_CH_LD     0x0400U /* 左轮累计路程 mm */
+#define TELEMETRY_CH_RD     0x0800U /* 右轮累计路程 mm */
+#define TELEMETRY_CH_ALL    0x0FFFU
 
-/* 字段掩码位定义（16 位）。改变掩码会立即重发一行表头。 */
-#define TELEMETRY_FIELD_YAW      0x01U   /* 连续累计航向角。 */
-#define TELEMETRY_FIELD_SENSOR   0x02U   /* 五路灰度位图与按键位图。 */
-#define TELEMETRY_FIELD_DISTANCE 0x04U   /* 左右轮累计路程 mm。 */
-#define TELEMETRY_FIELD_SPEED    0x08U   /* 左右轮实测速度 mm/s。 */
-#define TELEMETRY_FIELD_MODE     0x10U   /* 运动模式文本。 */
-#define TELEMETRY_FIELD_K230     0x20U   /* 最近一次 K230 TARGET。 */
-#define TELEMETRY_FIELD_TARGET   0x40U   /* TL,TR 本拍目标轮速 mm/s。 */
-#define TELEMETRY_FIELD_PWM      0x80U   /* PL,PR 双轮最终输出 PWM。 */
-#define TELEMETRY_FIELD_NAV      0x100U  /* navT,navE 转向目标角与角误差。 */
-#define TELEMETRY_FIELD_LINE     0x200U  /* lerr 巡线离散权重误差。 */
-
-/* 单侧字段：调单个轮子时只传该侧，行长减半、可用频率翻倍。
- * 与上方成对字段并存——成对位保持原语义不变，避免既有掩码失效；
- * 同时置位成对与单侧时，同一列会输出两次，由上位机自行避免。 */
-#define TELEMETRY_FIELD_SPEED_L  0x400U  /* 只输出 LV。 */
-#define TELEMETRY_FIELD_SPEED_R  0x800U  /* 只输出 RV。 */
-#define TELEMETRY_FIELD_TARGET_L 0x1000U /* 只输出 TL。 */
-#define TELEMETRY_FIELD_TARGET_R 0x2000U /* 只输出 TR。 */
-#define TELEMETRY_FIELD_PWM_L    0x4000U /* 只输出 PL。 */
-#define TELEMETRY_FIELD_PWM_R    0x8000U /* 只输出 PR。 */
-#define TELEMETRY_FIELD_ALL      0xFFFFU</code></pre>
+void Telemetry_Init(void);
+void Telemetry_Update(uint8_t elapsedTicks, uint8_t pressedKeys);
+uint8_t Telemetry_SetRateHz(uint8_t rateHz);</code></pre>
   <ol class="line-notes">
     <li><strong>第 1～4、30 行：</strong>头文件保护和 uint8_t。</li>
     <li><strong>第 6 行：</strong>Telemetry 不采集、不保存传感器历史；每次发数据时通过公共接口读取当前状态。</li>
@@ -1118,35 +1118,35 @@ void DebugDisplay_ShowHeadingCalibration(uint8_t mpuReady)
   </ol>
 
   <h4>4.18 遥测时间、带宽常量与私有状态</h4>
-  <pre class="source-code"><code data-source="Application/Debug/Telemetry.c" data-lines="1-30">#include "Application/Debug/Telemetry.h"
-#include "Application/Comms/K230Link.h"
+  <pre class="source-code"><code data-source="Application/Debug/Telemetry.c" data-lines="1-29">#include "Application/Debug/Telemetry.h"
 #include "Application/Control/MotionLine.h"
 #include "Application/Control/MotionManager.h"
 #include "Application/Control/MotionWheel.h"
 #include "Application/Control/Nav.h"
+#include "Application/Debug/TelemFrame.h"
 #include "Application/State/Heading.h"
 #include "Application/State/Odometry.h"
 #include "Hardware/Comms/Serial.h"
 #include "Hardware/Sensors/Graydetect.h"
 #include "ti_msp_dl_config.h"
+#include &lt;math.h&gt;
+#include &lt;stddef.h&gt;
 
-/* 100 Hz 主循环下，每 (100 / rateHz) 拍输出一行。 */
 #define TELEMETRY_TICK_HZ 100U
 
-/* 每秒可发送的字节数。8N1 每字节含起始位和停止位共 10 个位时，故除以 10。
- * 直接取 SysConfig 生成的波特率，不写死数值——否则改了 UART1 波特率而漏改
- * 这里，限流就会按错误的带宽计算：波特率调低时会严重超发，阻塞发送会把
- * 100 Hz 主循环连同运动控制一起拖垮，且这种失配没有任何编译期提示。 */
-#define TELEMETRY_UART_BYTES_PER_SECOND  ((uint32_t)BLUETOOTH_UART_BAUD_RATE / 10U)
+/* 每秒可发送字节数。8N1 每字节 10 位时，取 SysConfig 波特率不写死。 */
+#define TELEMETRY_UART_BYTES_PER_SECOND ((uint32_t)BLUETOOTH_UART_BAUD_RATE / 10U)
 
-/* 允许遥测阻塞占用的主循环时间上限百分比。 */
-#define TELEMETRY_MAX_BLOCKING_PERCENT   20U
+/*
+ * DMA 后发送不再阻塞主循环，带宽预算从旧的 20% 放宽。留 30% 余量给命令回应、
+ * K230 帧和 TX 缓冲波动，其余用于遥测——上限因此远高于阻塞版。
+ */
+#define TELEMETRY_BANDWIDTH_PERCENT 70U
 
-static uint8_t s_rateHz;
-static uint16_t s_fieldMask;
-static uint8_t s_tickAccumulator;
-static uint8_t s_headerPending;
-static uint32_t s_elapsedMs;</code></pre>
+/* 一个通道的定义：名字、单位码、取值函数。表序即列序，与位定义一一对应。 */
+typedef struct
+{
+    uint16_t bit;</code></pre>
   <ol class="line-notes">
     <li><strong>第 1～8 行：</strong>引入遥测接口、K230、运动模式、航向/里程、UART1、灰度和 SysConfig 波特率宏。</li>
     <li><strong>第 10～11 行：</strong>调度公式明确假设系统 Tick 为 100Hz。</li>
@@ -1160,55 +1160,55 @@ static uint32_t s_elapsedMs;</code></pre>
   </ol>
 
   <h4>4.19 估算一行最坏长度</h4>
-  <pre class="source-code"><code data-source="Application/Debug/Telemetry.c" data-lines="31-79">/* 估算当前掩码下数据行的最坏情况字节数（含行尾 \r\n）。
- * 各字段宽度为 115200 8N1 格式下实际可能输出的最大字符数，含前导逗号。
- * 全字段约 160 字节，必须用 uint16_t 累加。 */
-static uint16_t Telemetry_EstimateRowBytes(void)
-{
-    uint16_t bytes = 14U;  /* 行基座：'D,' + 最长 10 位 ms + '\r\n' */
+  <pre class="source-code"><code data-source="Application/Debug/Telemetry.c" data-lines="32-80">    float (*read)(void);
+} Telemetry_Channel_t;
 
-    if ((s_fieldMask &amp; TELEMETRY_FIELD_YAW) != 0U)
-    {
-        bytes = (uint16_t)(bytes + 11U);  /* ',-999999.99' */
-    }
-    if ((s_fieldMask &amp; TELEMETRY_FIELD_SENSOR) != 0U)
-    {
-        bytes = (uint16_t)(bytes + 8U);   /* ',FF,255' 实为 7 字节，多留 1 字节余量 */
-    }
-    if ((s_fieldMask &amp; TELEMETRY_FIELD_DISTANCE) != 0U)
-    {
-        bytes = (uint16_t)(bytes + 20U);  /* ',-999999.9,-999999.9' */
-    }
-    if ((s_fieldMask &amp; TELEMETRY_FIELD_SPEED) != 0U)
-    {
-        bytes = (uint16_t)(bytes + 20U);  /* ',-999999.9,-999999.9' */
-    }
-    if ((s_fieldMask &amp; TELEMETRY_FIELD_MODE) != 0U)
-    {
-        bytes = (uint16_t)(bytes + 9U);   /* ',STRAIGHT' */
-    }
-    if ((s_fieldMask &amp; TELEMETRY_FIELD_K230) != 0U)
-    {
-        bytes = (uint16_t)(bytes + 16U);  /* ',1:-32768:-32768' */
-    }
-    if ((s_fieldMask &amp; TELEMETRY_FIELD_TARGET) != 0U)
-    {
-        bytes = (uint16_t)(bytes + 20U);  /* ',-999999.9,-999999.9' */
-    }
-    if ((s_fieldMask &amp; TELEMETRY_FIELD_PWM) != 0U)
-    {
-        bytes = (uint16_t)(bytes + 12U);  /* ',-1000,-1000' */
-    }
-    if ((s_fieldMask &amp; TELEMETRY_FIELD_NAV) != 0U)
-    {
-        bytes = (uint16_t)(bytes + 22U);  /* ',-999999.99,-999999.99' */
-    }
-    if ((s_fieldMask &amp; TELEMETRY_FIELD_LINE) != 0U)
-    {
-        bytes = (uint16_t)(bytes + 6U);   /* ',-6.0' 加 1 字节余量 */
-    }
-    /* 单侧字段各占一列，宽度与成对字段的一半相同。 */
-    if ((s_fieldMask &amp; TELEMETRY_FIELD_SPEED_L) != 0U)</code></pre>
+/* 模式当前值转成 float：整数编码，网页可映射回文本。见下方 Telemetry_ModeCode。 */
+static float Telemetry_ReadTL(void)   { return MotionWheel_GetTargetSpeedL(); }
+static float Telemetry_ReadLV(void)   { return Odometry_GetSpeedL(); }
+static float Telemetry_ReadPL(void)   { return MotionWheel_GetLeftCommandPWM(); }
+static float Telemetry_ReadTR(void)   { return MotionWheel_GetTargetSpeedR(); }
+static float Telemetry_ReadRV(void)   { return Odometry_GetSpeedR(); }
+static float Telemetry_ReadPR(void)   { return MotionWheel_GetRightCommandPWM(); }
+static float Telemetry_ReadYaw(void)
+{
+    return (Heading_IsReady() != 0U) ? Heading_GetYaw() : NAN;
+}
+
+static float Telemetry_ReadNavE(void)
+{
+    return (Heading_IsReady() != 0U) ? Nav_GetAngleErrorDeg() : NAN;
+}
+static float Telemetry_ReadLerr(void) { return MotionLine_GetLineError(); }
+static float Telemetry_ReadGray(void) { return (float)Graydetect_GetState(); }
+static float Telemetry_ReadLD(void)   { return Odometry_GetDistanceLMM(); }
+static float Telemetry_ReadRD(void)   { return Odometry_GetDistanceRMM(); }
+
+/* 顺序必须与 TELEMETRY_CH_* 的位序一致：schema、sample、行长估算都遍历它。 */
+static const Telemetry_Channel_t s_channels[] = {
+    { TELEMETRY_CH_TL,   "TL",   TELEM_UNIT_MMPS, Telemetry_ReadTL   },
+    { TELEMETRY_CH_LV,   "LV",   TELEM_UNIT_MMPS, Telemetry_ReadLV   },
+    { TELEMETRY_CH_PL,   "PL",   TELEM_UNIT_PWM,  Telemetry_ReadPL   },
+    { TELEMETRY_CH_TR,   "TR",   TELEM_UNIT_MMPS, Telemetry_ReadTR   },
+    { TELEMETRY_CH_RV,   "RV",   TELEM_UNIT_MMPS, Telemetry_ReadRV   },
+    { TELEMETRY_CH_PR,   "PR",   TELEM_UNIT_PWM,  Telemetry_ReadPR   },
+    { TELEMETRY_CH_YAW,  "yaw",  TELEM_UNIT_DEG,  Telemetry_ReadYaw  },
+    { TELEMETRY_CH_NAVE, "navE", TELEM_UNIT_DEG,  Telemetry_ReadNavE },
+    { TELEMETRY_CH_LERR, "lerr", TELEM_UNIT_RAW,  Telemetry_ReadLerr },
+    { TELEMETRY_CH_GRAY, "gray", TELEM_UNIT_BITS, Telemetry_ReadGray },
+    { TELEMETRY_CH_LD,   "LD",   TELEM_UNIT_MM,   Telemetry_ReadLD   },
+    { TELEMETRY_CH_RD,   "RD",   TELEM_UNIT_MM,   Telemetry_ReadRD   },
+};
+
+#define TELEMETRY_CHANNEL_COUNT \
+    (sizeof(s_channels) / sizeof(s_channels[0]))
+
+static uint8_t s_rateHz;
+static uint16_t s_fieldMask;
+static uint8_t s_tickAccumulator;
+static uint8_t s_schemaPending;
+static uint32_t s_elapsedMs;
+static uint8_t s_sequence;</code></pre>
   <ol class="line-notes">
     <li><strong>第 28～30 行：</strong>估算包含换行的最坏数据行长度；最大 98，可安全装入 uint8_t。</li>
     <li><strong>第 31～33 行：</strong>基础 14 字节包含 <code>D,</code>、最长 10 位毫秒和 <code>\r\n</code>。</li>
@@ -1221,17 +1221,8 @@ static uint16_t Telemetry_EstimateRowBytes(void)
     <li><strong>第 59～60 行：</strong>返回当前掩码合计后的估算长度。</li>
   </ol>
   <h4>4.20 动态安全频率与模式文本</h4>
-  <pre class="source-code"><code data-source="Application/Debug/Telemetry.c" data-lines="106-151">/* 根据当前字段掩码计算安全频率上限。
- * 纯整数运算，避免在 MCU 上引入浮点。
- * 公式：maxRate = (BYTES_PER_SEC * MAX_PERCENT) / (rowBytes * 100)
- * 结果夹紧到 1..TELEMETRY_RATE_HARD_LIMIT_HZ。 */
-uint8_t Telemetry_GetMaxRateHz(void)
-{
-    uint32_t rowBytes = (uint32_t)Telemetry_EstimateRowBytes();
-    uint32_t maxRate;
-
-    maxRate = (TELEMETRY_UART_BYTES_PER_SECOND * TELEMETRY_MAX_BLOCKING_PERCENT)
-              / (rowBytes * 100U);
+  <pre class="source-code"><code data-source="Application/Debug/Telemetry.c" data-lines="114-159">    maxRate = (TELEMETRY_UART_BYTES_PER_SECOND * TELEMETRY_BANDWIDTH_PERCENT)
+              / (frameBytes * 100U);
 
     if (maxRate &lt; 1U)
     {
@@ -1244,29 +1235,38 @@ uint8_t Telemetry_GetMaxRateHz(void)
     return (uint8_t)maxRate;
 }
 
-static const char *Telemetry_ModeText(void)
+uint8_t Telemetry_SampleChannels(uint16_t mask, float *out)
 {
-    MotionManager_Mode_t mode = MotionManager_GetMode();
+    uint8_t count = 0U;
+    uint32_t index;
 
-    /* 模式在动作完成后仍保留（例如 F 走完 mode 停在 STRAIGHT），
-     * 上位机需要一个明确的"动作已结束"信号来自动收尾一次调参试验。 */
-    if ((mode != MOTION_MANAGER_MODE_IDLE) &amp;&amp;
-        (MotionManager_IsBusy() == 0U))
+    if (out == NULL)
     {
-        return "DONE";
+        return 0U;
     }
+    for (index = 0U; index &lt; TELEMETRY_CHANNEL_COUNT; index++)
+    {
+        if ((mask &amp; s_channels[index].bit) != 0U)
+        {
+            out[count] = s_channels[index].read();
+            count++;
+        }
+    }
+    return count;
+}
 
-    switch (mode)
-    {
-        case MOTION_MANAGER_MODE_STRAIGHT: return "STRAIGHT";
-        case MOTION_MANAGER_MODE_LINE:     return "LINE";
-        case MOTION_MANAGER_MODE_TURN:     return "TURN";
-        case MOTION_MANAGER_MODE_BRAKE:    return "BRAKE";
-        case MOTION_MANAGER_MODE_SPEED:    return "SPEED";
-        case MOTION_MANAGER_MODE_IDLE:     return "IDLE";
-        default:                           return "ERROR";
-    }
-}</code></pre>
+void Telemetry_SendSchema(uint16_t mask, uint8_t frameType)
+{
+    uint8_t payload[TELEM_FRAME_MAX_PAYLOAD];
+    uint8_t frame[TELEM_FRAME_MAX_BYTES];
+    uint16_t offset = 0U;
+    uint16_t frameLength;
+    uint32_t index;
+
+    /* payload: channelMask(u16) + 每通道 { nameLen(u8), name[], unit(u8) }。 */
+    offset += TelemFrame_PackU16(&amp;payload[offset], mask);
+    for (index = 0U; index &lt; TELEMETRY_CHANNEL_COUNT; index++)
+    {</code></pre>
   <ol class="line-notes">
     <li><strong>第 62～65 行：</strong>动态上限公式是“可用于遥测的字节/秒 ÷ 每行字节”，全部使用整数运算。</li>
     <li><strong>第 66～69 行：</strong>取得当前行长并准备 32 位 maxRate，避免乘法中间值溢出。</li>
@@ -1289,52 +1289,51 @@ static const char *Telemetry_ModeText(void)
   </div>
 
   <h4>4.21 表头：字段顺序的唯一说明书</h4>
-  <pre class="source-code"><code data-source="Application/Debug/Telemetry.c" data-lines="153-198">/* 表头与数据行的字段顺序必须完全一致，网页据表头解析后续数据行。 */
-static void Telemetry_SendHeader(void)
+  <pre class="source-code"><code data-source="Application/Debug/Telemetry.c" data-lines="161-205">        uint8_t nameLen = 0U;
+
+        if ((mask &amp; channel-&gt;bit) == 0U)
+        {
+            continue;
+        }
+        while (channel-&gt;name[nameLen] != '\0')
+        {
+            nameLen++;
+        }
+        /* 通道名很短（&lt;=4），payload 上限 255，不会溢出；仍保守判一次。 */
+        if ((offset + 2U + nameLen) &gt; TELEM_FRAME_MAX_PAYLOAD)
+        {
+            break;
+        }
+        payload[offset++] = nameLen;
+        for (uint8_t i = 0U; i &lt; nameLen; i++)
+        {
+            payload[offset++] = (uint8_t)channel-&gt;name[i];
+        }
+        payload[offset++] = channel-&gt;unit;
+    }
+
+    frameLength = TelemFrame_Build(frame, frameType, s_sequence++,
+                                   payload, (uint8_t)offset);
+    Serial1_SendArray(frame, frameLength);
+}
+
+static void Telemetry_SendSample(void)
 {
-    Serial1_SendString("H,ms");
-    if ((s_fieldMask &amp; TELEMETRY_FIELD_YAW) != 0U)
-    {
-        Serial1_SendString(",yaw");
-    }
-    if ((s_fieldMask &amp; TELEMETRY_FIELD_SENSOR) != 0U)
-    {
-        Serial1_SendString(",gray,keys");
-    }
-    if ((s_fieldMask &amp; TELEMETRY_FIELD_DISTANCE) != 0U)
-    {
-        Serial1_SendString(",LD,RD");
-    }
-    if ((s_fieldMask &amp; TELEMETRY_FIELD_SPEED) != 0U)
-    {
-        Serial1_SendString(",LV,RV");
-    }
-    if ((s_fieldMask &amp; TELEMETRY_FIELD_MODE) != 0U)
-    {
-        Serial1_SendString(",mode");
-    }
-    if ((s_fieldMask &amp; TELEMETRY_FIELD_K230) != 0U)
-    {
-        Serial1_SendString(",k230");
-    }
-    if ((s_fieldMask &amp; TELEMETRY_FIELD_TARGET) != 0U)
-    {
-        Serial1_SendString(",TL,TR");
-    }
-    if ((s_fieldMask &amp; TELEMETRY_FIELD_PWM) != 0U)
-    {
-        Serial1_SendString(",PL,PR");
-    }
-    if ((s_fieldMask &amp; TELEMETRY_FIELD_NAV) != 0U)
-    {
-        Serial1_SendString(",navT,navE");
-    }
-    if ((s_fieldMask &amp; TELEMETRY_FIELD_LINE) != 0U)
-    {
-        Serial1_SendString(",lerr");
-    }
-    if ((s_fieldMask &amp; TELEMETRY_FIELD_SPEED_L) != 0U)
-    {</code></pre>
+    uint8_t payload[TELEM_FRAME_MAX_PAYLOAD];
+    uint8_t frame[TELEM_FRAME_MAX_BYTES];
+    float values[TELEMETRY_CHANNEL_COUNT];
+    uint16_t offset = 0U;
+    uint8_t count;
+    uint16_t frameLength;
+
+    offset += TelemFrame_PackU32(&amp;payload[offset], s_elapsedMs);
+    count = Telemetry_SampleChannels(s_fieldMask, values);
+    offset += TelemFrame_PackFloats(&amp;payload[offset], values, count);
+
+    frameLength = TelemFrame_Build(frame, TELEM_FRAME_TYPE_SAMPLE,
+                                   s_sequence++, payload, (uint8_t)offset);
+    Serial1_SendArray(frame, frameLength);
+}</code></pre>
   <ol class="line-notes">
     <li><strong>第 98～101 行：</strong>表头以 <code>H,ms</code> 开始；网页见 H 便把后续名称当成当前列定义。</li>
     <li><strong>第 102～105 行：</strong>YAW 位开启才追加 yaw。</li>
@@ -1347,76 +1346,69 @@ static void Telemetry_SendHeader(void)
   </ol>
 
   <h4>4.22 数据行：读取当前状态并保持列一致</h4>
-  <pre class="source-code"><code data-source="Application/Debug/Telemetry.c" data-lines="224-293">static void Telemetry_SendRow(uint8_t pressedKeys)
+  <pre class="source-code"><code data-source="Application/Debug/Telemetry.c" data-lines="232-294">    (void)pressedKeys;   /* 按键改由独立通道方案处理，暂不进遥测帧。 */
+    s_elapsedMs += (uint32_t)elapsedTicks * 10U;
+
+    if (s_rateHz == 0U)
+    {
+        return;
+    }
+
+    interval = (uint8_t)(TELEMETRY_TICK_HZ / s_rateHz);
+    s_tickAccumulator = (uint8_t)(s_tickAccumulator + elapsedTicks);
+    if (s_tickAccumulator &lt; interval)
+    {
+        return;
+    }
+    s_tickAccumulator = 0U;
+
+    if (s_schemaPending != 0U)
+    {
+        Telemetry_SendSchema(s_fieldMask, TELEM_FRAME_TYPE_SCHEMA);
+        s_schemaPending = 0U;
+    }
+    Telemetry_SendSample();
+}
+
+uint8_t Telemetry_SetRateHz(uint8_t rateHz)
 {
-    Serial1_Printf("D,%lu", (unsigned long)s_elapsedMs);
+    if ((rateHz != 0U) &amp;&amp; (rateHz &gt; Telemetry_GetMaxRateHz()))
+    {
+        return 0U;
+    }
+    s_rateHz = rateHz;
+    s_tickAccumulator = 0U;
+    return 1U;
+}
 
-    if ((s_fieldMask &amp; TELEMETRY_FIELD_YAW) != 0U)
-    {
-        Serial1_Printf(",%.2f", (double)Heading_GetYaw());
-    }
-    if ((s_fieldMask &amp; TELEMETRY_FIELD_SENSOR) != 0U)
-    {
-        Serial1_Printf(",%02X,%u",
-                       (unsigned)Graydetect_GetState(),
-                       (unsigned)pressedKeys);
-    }
-    if ((s_fieldMask &amp; TELEMETRY_FIELD_DISTANCE) != 0U)
-    {
-        Serial1_Printf(",%.1f,%.1f",
-                       (double)Odometry_GetDistanceLMM(),
-                       (double)Odometry_GetDistanceRMM());
-    }
-    if ((s_fieldMask &amp; TELEMETRY_FIELD_SPEED) != 0U)
-    {
-        Serial1_Printf(",%.1f,%.1f",
-                       (double)Odometry_GetSpeedL(),
-                       (double)Odometry_GetSpeedR());
-    }
-    if ((s_fieldMask &amp; TELEMETRY_FIELD_MODE) != 0U)
-    {
-        Serial1_Printf(",%s", Telemetry_ModeText());
-    }
-    if ((s_fieldMask &amp; TELEMETRY_FIELD_K230) != 0U)
-    {
-        K230Link_Target_t target;
+uint8_t Telemetry_SetFieldMask(uint16_t mask)
+{
+    uint8_t maxRate;
 
-        if (K230Link_GetTarget(&amp;target) != 0U)
-        {
-            Serial1_Printf(",%u:%d:%d",
-                           (unsigned)target.valid,
-                           (int)target.offsetX,
-                           (int)target.offsetY);
-        }
-        else
-        {
-            Serial1_SendString(",0:0:0");
-        }
-    }
-    if ((s_fieldMask &amp; TELEMETRY_FIELD_TARGET) != 0U)
+    if ((mask == 0U) || (mask &gt; TELEMETRY_CH_ALL))
     {
-        Serial1_Printf(",%.1f,%.1f",
-                       (double)MotionWheel_GetTargetSpeedL(),
-                       (double)MotionWheel_GetTargetSpeedR());
+        return 0U;
     }
-    if ((s_fieldMask &amp; TELEMETRY_FIELD_PWM) != 0U)
+    s_fieldMask = mask;
+    s_schemaPending = 1U;   /* 掩码变化后必须重发 schema。 */
+
+    maxRate = Telemetry_GetMaxRateHz();
+    if (s_rateHz &gt; maxRate)
     {
-        Serial1_Printf(",%.0f,%.0f",
-                       (double)MotionWheel_GetLeftCommandPWM(),
-                       (double)MotionWheel_GetRightCommandPWM());
+        s_rateHz = maxRate;
     }
-    if ((s_fieldMask &amp; TELEMETRY_FIELD_NAV) != 0U)
-    {
-        Serial1_Printf(",%.2f,%.2f",
-                       (double)Nav_GetTargetYawDeg(),
-                       (double)Nav_GetAngleErrorDeg());
-    }
-    if ((s_fieldMask &amp; TELEMETRY_FIELD_LINE) != 0U)
-    {
-        Serial1_Printf(",%.1f", (double)MotionLine_GetLineError());
-    }
-    if ((s_fieldMask &amp; TELEMETRY_FIELD_SPEED_L) != 0U)
-    {</code></pre>
+    return 1U;
+}
+
+uint8_t Telemetry_GetRateHz(void)
+{
+    return s_rateHz;
+}
+
+uint16_t Telemetry_GetFieldMask(void)
+{
+    return s_fieldMask;
+}</code></pre>
   <ol class="line-notes">
     <li><strong>第 129～131 行：</strong>数据行固定以 <code>D,</code> 开始，再输出累计毫秒；<code>%lu</code> 配合显式 unsigned long 转换。</li>
     <li><strong>第 133～136 行：</strong>YAW 开启时输出两位小数。可变参数中 float 会提升为 double，显式转换使意图清楚。</li>
@@ -1432,16 +1424,15 @@ static void Telemetry_SendHeader(void)
   <p><code>car_debug.html</code> 不猜掩码，而是按最近一行 H 的列名逐列解析；gray 按十六进制转换，mode 保留文本，k230 再按冒号展开成 <code>k230_valid/k230_x/k230_y</code>。若表头和数据条件顺序不一致，网页会把数值放到错误曲线甚至因列数不符丢掉整行。</p>
 
   <h4>4.23 初始化：默认全字段 20Hz</h4>
-  <pre class="source-code"><code data-source="Application/Debug/Telemetry.c" data-lines="319-338">void Telemetry_Init(void)
+  <pre class="source-code"><code data-source="Application/Debug/Telemetry.c" data-lines="207-226">void Telemetry_Init(void)
 {
     uint8_t maxRate;
 
-    s_fieldMask = TELEMETRY_FIELD_ALL;
+    /* 默认掩码取轮速调参子集（TL/LV/PL/TR/RV/PR），比全字段更常用且更快。 */
+    s_fieldMask = TELEMETRY_CH_TL | TELEMETRY_CH_LV | TELEMETRY_CH_PL |
+                  TELEMETRY_CH_TR | TELEMETRY_CH_RV | TELEMETRY_CH_PR;
     s_rateHz = TELEMETRY_DEFAULT_RATE_HZ;
 
-    /* 默认频率也要服从当前掩码的安全上限。默认值现在合规（全字段 23 Hz &gt; 20 Hz），
-     * 但默认频率、默认掩码和波特率三者中任意一个被改动都可能让它越界，而 Init
-     * 不经 SetRateHz()，越界不会有任何提示。这里显式夹一次，让上限只有一处定义。 */
     maxRate = Telemetry_GetMaxRateHz();
     if (s_rateHz &gt; maxRate)
     {
@@ -1449,8 +1440,9 @@ static void Telemetry_SendHeader(void)
     }
 
     s_tickAccumulator = 0U;
-    s_headerPending = 1U;
+    s_schemaPending = 1U;
     s_elapsedMs = 0U;
+    s_sequence = 0U;
 }</code></pre>
   <ol class="line-notes">
     <li><strong>第 178～180 行：</strong>初始化准备保存动态上限。</li>
@@ -1464,10 +1456,11 @@ static void Telemetry_SendHeader(void)
   </ol>
 
   <h4>4.24 更新：累计毫秒、间隔和表头门控</h4>
-  <pre class="source-code"><code data-source="Application/Debug/Telemetry.c" data-lines="340-368">void Telemetry_Update(uint8_t elapsedTicks, uint8_t pressedKeys)
+  <pre class="source-code"><code data-source="Application/Debug/Telemetry.c" data-lines="228-256">void Telemetry_Update(uint8_t elapsedTicks, uint8_t pressedKeys)
 {
     uint8_t interval;
 
+    (void)pressedKeys;   /* 按键改由独立通道方案处理，暂不进遥测帧。 */
     s_elapsedMs += (uint32_t)elapsedTicks * 10U;
 
     if (s_rateHz == 0U)
@@ -1475,10 +1468,7 @@ static void Telemetry_SendHeader(void)
         return;
     }
 
-    /* s_rateHz 由 SetRateHz 限制在 1..TELEMETRY_RATE_HARD_LIMIT_HZ（== TICK_HZ），
-     * TICK_HZ / s_rateHz 最小为 1，interval == 0 分支不可能触发，已删除。 */
     interval = (uint8_t)(TELEMETRY_TICK_HZ / s_rateHz);
-
     s_tickAccumulator = (uint8_t)(s_tickAccumulator + elapsedTicks);
     if (s_tickAccumulator &lt; interval)
     {
@@ -1486,13 +1476,15 @@ static void Telemetry_SendHeader(void)
     }
     s_tickAccumulator = 0U;
 
-    if (s_headerPending != 0U)
+    if (s_schemaPending != 0U)
     {
-        Telemetry_SendHeader();
-        s_headerPending = 0U;
+        Telemetry_SendSchema(s_fieldMask, TELEM_FRAME_TYPE_SCHEMA);
+        s_schemaPending = 0U;
     }
-    Telemetry_SendRow(pressedKeys);
-}</code></pre>
+    Telemetry_SendSample();
+}
+
+uint8_t Telemetry_SetRateHz(uint8_t rateHz)</code></pre>
   <ol class="line-notes">
     <li><strong>第 199～201 行：</strong>每次 App 有效更新都传入实际累计拍数和当前按键。</li>
     <li><strong>第 203 行：</strong>100Hz 下每拍 10ms，所以 elapsedTicks×10 加到 32 位时间戳；即使遥测关闭也先累计。uint32 最终约 49.7 天回绕。</li>
@@ -1506,9 +1498,8 @@ static void Telemetry_SendHeader(void)
   </ol>
 
   <h4>4.25 运行时设置与查询</h4>
-  <pre class="source-code"><code data-source="Application/Debug/Telemetry.c" data-lines="370-412">uint8_t Telemetry_SetRateHz(uint8_t rateHz)
+  <pre class="source-code"><code data-source="Application/Debug/Telemetry.c" data-lines="256-294">uint8_t Telemetry_SetRateHz(uint8_t rateHz)
 {
-    /* 0 表示关闭遥测，合法；非零时不得超过当前掩码对应的安全上限。 */
     if ((rateHz != 0U) &amp;&amp; (rateHz &gt; Telemetry_GetMaxRateHz()))
     {
         return 0U;
@@ -1522,16 +1513,13 @@ uint8_t Telemetry_SetFieldMask(uint16_t mask)
 {
     uint8_t maxRate;
 
-    if ((mask == 0U) || (mask &gt; TELEMETRY_FIELD_ALL))
+    if ((mask == 0U) || (mask &gt; TELEMETRY_CH_ALL))
     {
         return 0U;
     }
     s_fieldMask = mask;
-    s_headerPending = 1U;  /* 掩码变化后必须重发表头。 */
+    s_schemaPending = 1U;   /* 掩码变化后必须重发 schema。 */
 
-    /* 掩码变化后行长可能增加，安全上限随之降低。若当前频率已超过新上限，
-     * 自动降频而非报错——否则用户先设高频率再新增字段时会静默超限。
-     * 先更新 s_fieldMask 再调用 GetMaxRateHz，确保上限基于新掩码计算。 */
     maxRate = Telemetry_GetMaxRateHz();
     if (s_rateHz &gt; maxRate)
     {

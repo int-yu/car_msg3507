@@ -40,12 +40,16 @@
   <pre class="source-code"><code data-source="Hardware/Comms/Serial.h" data-lines="1-27">#ifndef SERIAL_H
 #define SERIAL_H
 
-/* UART1 连接蓝牙，UART2 连接 K230；协议解析放在 Application 层。 */
+/* UART1 连接蓝牙，UART2 连接 F32C 云台；协议解析放在专用硬件层。 */
 
 #include &lt;stdint.h&gt;
 
 #define SERIAL1_RX_BUFFER_SIZE 1024U
 #define SERIAL2_RX_BUFFER_SIZE 256U
+
+/* TX 环形缓冲：DMA 从这里搬到 UART，主循环只写不等。二进制遥测一帧可达
+ * 数百字节且高频，缓冲要够大以吸收突发；2048 可容纳一帧 schema + 多帧样本。 */
+#define SERIAL1_TX_BUFFER_SIZE 2048U
 
 extern volatile uint8_t Serial1_RxFlag;
 
@@ -56,14 +60,10 @@ void Serial1_SendByte(uint8_t byte);
 void Serial1_SendArray(const uint8_t *array, uint16_t length);
 void Serial1_SendString(const char *string);
 void Serial1_Printf(const char *format, ...);
-
-void Serial2_Init(void);
-uint32_t Serial2_Available(void);
-uint8_t Serial2_ReadByte(uint8_t *byte);
-void Serial2_SendByte(uint8_t byte);
-void Serial2_SendArray(const uint8_t *array, uint16_t length);
-
-#endif</code></pre>
+/* DMA 发送完成中断调用，推进环形缓冲的下一段搬运。 */
+void Serial1_OnDmaTxComplete(void);
+/* TX 缓冲满时丢弃的字节数，用于诊断带宽是否超限。 */
+uint32_t Serial1_GetTxDropCount(void);</code></pre>
   <ol class="line-notes">
     <li><strong>第 1～2 行：</strong>头文件保护，避免声明被重复展开。</li>
     <li><strong>第 4 行：</strong>明确分层边界：Serial 不解析协议，Application 才决定字节含义。</li>
@@ -88,6 +88,22 @@ static volatile uint32_t s_writeIndex;
 static volatile uint32_t s_readIndex;
 static uint8_t s_rxBuffer[SERIAL1_RX_BUFFER_SIZE];
 
+/*
+ * TX 环形缓冲 + DMA 非阻塞发送。
+ *
+ * 单生产者（主循环，通过 Serial1_SendArray 等）单消费者（DMA 完成中断）模型：
+ *   - s_txHead 只被主循环推进，s_txTail 只被 DMA 中断推进，各自天然无锁。
+ *   - DMA 一次只能搬一段连续内存，所以环绕时分两次：先搬到缓冲尾，
+ *     完成中断里再搬环绕后的头部。s_txDmaActive 标记 DMA 正忙。
+ *   - 缓冲满时丢弃并计数，绝不阻塞等待——否则就退化回原来的阻塞发送。
+ */
+static uint8_t s_txBuffer[SERIAL1_TX_BUFFER_SIZE];
+static volatile uint32_t s_txHead;      /* 主循环写入位置 */
+static volatile uint32_t s_txTail;      /* DMA 已发送到的位置 */
+static volatile uint8_t s_txDmaActive;  /* DMA 是否正在搬运 */
+static volatile uint32_t s_txDmaLength; /* 当前 DMA 段长度 */
+static volatile uint32_t s_txDropCount;
+
 static volatile uint32_t s_serial2WriteIndex;
 static volatile uint32_t s_serial2ReadIndex;
 static uint8_t s_serial2RxBuffer[SERIAL2_RX_BUFFER_SIZE];
@@ -97,31 +113,15 @@ void Serial1_Init(void)
     s_writeIndex = 0U;
     s_readIndex = 0U;
     Serial1_RxFlag = 0U;
+    s_txHead = 0U;
+    s_txTail = 0U;
+    s_txDmaActive = 0U;
+    s_txDmaLength = 0U;
+    s_txDropCount = 0U;
     /*
      * PB7 使用上拉，避免蓝牙模块断开或未供电时 RX 悬空并产生伪数据。
      * 本配置必须在 SYSCFG_DL_init() 之后执行，以重新应用带上拉的外设输入功能。
-     */
-    DL_GPIO_initPeripheralInputFunctionFeatures(
-        GPIO_BLUETOOTH_UART_IOMUX_RX, GPIO_BLUETOOTH_UART_IOMUX_RX_FUNC,
-        DL_GPIO_INVERSION_DISABLE, DL_GPIO_RESISTOR_PULL_UP,
-        DL_GPIO_HYSTERESIS_DISABLE, DL_GPIO_WAKEUP_DISABLE);
-    NVIC_ClearPendingIRQ(BLUETOOTH_UART_INST_INT_IRQN);
-    NVIC_EnableIRQ(BLUETOOTH_UART_INST_INT_IRQN);
-}
-
-uint32_t Serial1_Available(void)
-{
-    return s_writeIndex - s_readIndex;
-}
-
-uint8_t Serial1_ReadByte(uint8_t *byte)
-{
-    if ((byte == NULL) || (s_readIndex == s_writeIndex)) return 0U;
-    *byte = s_rxBuffer[s_readIndex % SERIAL1_RX_BUFFER_SIZE];
-    s_readIndex++;
-    if (s_readIndex == s_writeIndex) Serial1_RxFlag = 0U;
-    return 1U;
-}</code></pre>
+     */</code></pre>
   <ol class="line-notes">
     <li><strong>第 1～4 行：</strong>引入 Serial 声明、SysConfig UART 宏、可变参数工具和 vsnprintf。</li>
     <li><strong>第 6 行：</strong>定义公开的 UART1 接收标志；未显式初始化的静态存储对象上电默认为 0，Init 仍再次清零以表达意图。</li>
@@ -136,33 +136,33 @@ uint8_t Serial1_ReadByte(uint8_t *byte)
     <li><strong>第 43～44 行：</strong>读完最后一个字节时清提示标志并返回成功。若此刻 ISR 又写入新字节，下一次轮询仍会从索引差发现数据，因此标志不是唯一依据。</li>
   </ol>
 
-  <pre class="source-code"><code data-source="Hardware/Comms/Serial.c" data-lines="47-73">void Serial1_SendByte(uint8_t byte)
+  <pre class="source-code"><code data-source="Hardware/Comms/Serial.c" data-lines="142-168">void Serial1_SendByte(uint8_t byte)
 {
-    DL_UART_Main_transmitDataBlocking(BLUETOOTH_UART_INST, byte);
-}
-
-void Serial1_SendArray(const uint8_t *array, uint16_t length)
-{
-    uint16_t i;
-    if (array == NULL) return;
-    for (i = 0U; i &lt; length; i++) Serial1_SendByte(array[i]);
+    Serial1_SendArray(&amp;byte, 1U);
 }
 
 void Serial1_SendString(const char *string)
 {
-    if (string == NULL) return;
-    while (*string != '\0') Serial1_SendByte((uint8_t)*string++);
+    uint16_t length = 0U;
+
+    if (string == NULL)
+    {
+        return;
+    }
+    while (string[length] != '\0')
+    {
+        length++;
+    }
+    Serial1_SendArray((const uint8_t *)string, length);
+}
+
+uint32_t Serial1_GetTxDropCount(void)
+{
+    return s_txDropCount;
 }
 
 void Serial1_Printf(const char *format, ...)
-{
-    char string[192];
-    va_list args;
-    va_start(args, format);
-    (void)vsnprintf(string, sizeof(string), format, args);
-    va_end(args);
-    Serial1_SendString(string);
-}</code></pre>
+{</code></pre>
   <ol class="line-notes">
     <li><strong>第 47～50 行：</strong>发送一个字节使用阻塞 DriverLib：函数等到硬件能接受数据才返回。简单可靠，但长输出会占用主循环时间。</li>
     <li><strong>第 52～56 行：</strong>数组指针有效后按索引逐字节发送；length=0 时循环自然不执行。</li>
@@ -173,17 +173,18 @@ void Serial1_Printf(const char *format, ...)
     <li><strong>第 71～72 行：</strong>va_end 完成清理，再把生成的普通 C 字符串发送出去。</li>
   </ol>
 
-  <pre class="source-code"><code data-source="Hardware/Comms/Serial.c" data-lines="75-123">void Serial2_Init(void)
+  <pre class="source-code"><code data-source="Hardware/Comms/Serial.c" data-lines="177-225">void Serial2_Init(void)
 {
     s_serial2WriteIndex = 0U;
     s_serial2ReadIndex = 0U;
-    /* K230 未上电时保持 RX 为确定的高电平，避免悬空产生伪字节。 */
+    /* F32C 未上电时保持 RX 为确定的高电平，避免悬空产生伪字节。 */
     DL_GPIO_initPeripheralInputFunctionFeatures(
-        GPIO_K230_IOMUX_RX, GPIO_K230_IOMUX_RX_FUNC,
+        GPIO_BRUSHLESS_UART_IOMUX_RX,
+        GPIO_BRUSHLESS_UART_IOMUX_RX_FUNC,
         DL_GPIO_INVERSION_DISABLE, DL_GPIO_RESISTOR_PULL_UP,
         DL_GPIO_HYSTERESIS_DISABLE, DL_GPIO_WAKEUP_DISABLE);
-    NVIC_ClearPendingIRQ(K230_INST_INT_IRQN);
-    NVIC_EnableIRQ(K230_INST_INT_IRQN);
+    NVIC_ClearPendingIRQ(BRUSHLESS_UART_INST_INT_IRQN);
+    NVIC_EnableIRQ(BRUSHLESS_UART_INST_INT_IRQN);
 }
 
 uint32_t Serial2_Available(void)
@@ -206,7 +207,7 @@ uint8_t Serial2_ReadByte(uint8_t *byte)
 
 void Serial2_SendByte(uint8_t byte)
 {
-    DL_UART_Main_transmitDataBlocking(K230_INST, byte);
+    DL_UART_Main_transmitDataBlocking(BRUSHLESS_UART_INST, byte);
 }
 
 void Serial2_SendArray(const uint8_t *array, uint16_t length)
@@ -220,8 +221,7 @@ void Serial2_SendArray(const uint8_t *array, uint16_t length)
     for (index = 0U; index &lt; length; index++)
     {
         Serial2_SendByte(array[index]);
-    }
-}</code></pre>
+    }</code></pre>
   <ol class="line-notes">
     <li><strong>第 75～83 行：</strong>UART2 初始化清索引，并给 K230 RX 上拉，理由与蓝牙相同：UART 空闲应为高。</li>
     <li><strong>第 84～85 行：</strong>清除并开启 UART2 的 NVIC 中断。</li>
@@ -233,37 +233,37 @@ void Serial2_SendArray(const uint8_t *array, uint16_t length)
     <li><strong>第 119～123 行：</strong>逐字节发送整个二进制帧，数组可包含 0x00，因此不能使用字符串函数。</li>
   </ol>
 
-  <pre class="source-code"><code data-source="Hardware/Comms/Serial.c" data-lines="125-155">void UART1_IRQHandler(void)
+  <pre class="source-code"><code data-source="Hardware/Comms/Serial.c" data-lines="228-258">void UART1_IRQHandler(void)
 {
-    while (!DL_UART_Main_isRXFIFOEmpty(BLUETOOTH_UART_INST))
+    /* 一次中断可能同时挂起 RX 与 DMA_DONE_TX；用 getPendingInterrupt 逐个取出，
+     * 直到没有待处理中断为止，避免漏掉同时到达的事件。 */
+    for (;;)
     {
-        uint8_t data = DL_UART_Main_receiveData(BLUETOOTH_UART_INST);
-        s_rxBuffer[s_writeIndex % SERIAL1_RX_BUFFER_SIZE] = data;
-        s_writeIndex++;
-        if ((s_writeIndex - s_readIndex) &gt; SERIAL1_RX_BUFFER_SIZE)
+        switch (DL_UART_Main_getPendingInterrupt(BLUETOOTH_UART_INST))
         {
-            s_readIndex = s_writeIndex - SERIAL1_RX_BUFFER_SIZE;
-        }
-        Serial1_RxFlag = 1U;
-    }
-}
+            case DL_UART_MAIN_IIDX_DMA_DONE_TX:
+                Serial1_OnDmaTxComplete();
+                break;
 
-void UART2_IRQHandler(void)
-{
-    while (!DL_UART_Main_isRXFIFOEmpty(K230_INST))
-    {
-        uint8_t data = DL_UART_Main_receiveData(K230_INST);
-        s_serial2RxBuffer[
-            s_serial2WriteIndex % SERIAL2_RX_BUFFER_SIZE] = data;
-        s_serial2WriteIndex++;
-        if ((s_serial2WriteIndex - s_serial2ReadIndex) &gt;
-            SERIAL2_RX_BUFFER_SIZE)
-        {
-            s_serial2ReadIndex =
-                s_serial2WriteIndex - SERIAL2_RX_BUFFER_SIZE;
-        }
-    }
-}</code></pre>
+            case DL_UART_MAIN_IIDX_RX:
+                while (!DL_UART_Main_isRXFIFOEmpty(BLUETOOTH_UART_INST))
+                {
+                    uint8_t data =
+                        DL_UART_Main_receiveData(BLUETOOTH_UART_INST);
+                    s_rxBuffer[s_writeIndex % SERIAL1_RX_BUFFER_SIZE] = data;
+                    s_writeIndex++;
+                    if ((s_writeIndex - s_readIndex) &gt; SERIAL1_RX_BUFFER_SIZE)
+                    {
+                        s_readIndex = s_writeIndex - SERIAL1_RX_BUFFER_SIZE;
+                    }
+                    Serial1_RxFlag = 1U;
+                }
+                break;
+
+            case DL_UART_MAIN_IIDX_NO_INTERRUPT:
+            default:
+                return;
+        }</code></pre>
   <ol class="line-notes">
     <li><strong>第 125～129 行：</strong>UART1 ISR 用 while 一次排空硬件 RX FIFO；若一次中断已经积累多个字节，不只取第一个。</li>
     <li><strong>第 130～131 行：</strong>写索引对容量取模决定数组槽位，然后累计写索引加 1。</li>
@@ -618,10 +618,10 @@ static void BluetoothDebug_ReportMotionResult(MotionManager_Result_t result)
             break;
 
         case 'M':
-            /* 改掩码可能触发自动降频（字段增多行变长，安全上限下降），
-               因此成功时同时回报新频率，用户能立即看到是否被限速。 */
+            /* M 现在设置二进制遥测的通道掩码（见 Telemetry.h TELEMETRY_CH_*）。
+               改掩码可能触发自动降频（帧变长，上限下降），成功时同时回报新频率。 */
             if ((s_parser.isNegative != 0U) ||
-                (value &gt; (int32_t)TELEMETRY_FIELD_ALL) ||
+                (value &gt; (int32_t)TELEMETRY_CH_ALL) ||
                 (Telemetry_SetFieldMask((uint16_t)value) == 0U))
             {
                 Serial1_SendString("ERR RANGE\r\n");
@@ -923,7 +923,7 @@ static void BluetoothDebug_ReportMotionResult(MotionManager_Result_t result)
                 Serial1_Printf("OK X DUMP=%u\r\n", (unsigned)count);
                 break;
             }
-            if ((value &gt; (int32_t)CAPTURE_CH_ALL) ||
+            if ((value &gt; (int32_t)TELEMETRY_CH_ALL) ||
                 (Capture_Arm((uint16_t)value) == 0U))
             {
                 /* 通道数超限和掩码非法都归到这里，附带上限便于自查。 */</code></pre>

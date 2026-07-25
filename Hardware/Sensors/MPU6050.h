@@ -1,7 +1,7 @@
 #ifndef MPU6050_H
 #define MPU6050_H
 
-/* MPU6050 软件 I2C 驱动：PA10 为 SCL，PA11 为 SDA。 */
+/* MPU6050 软件 I2C 驱动：PB2 为 SCL，PB3 为 SDA。 */
 
 #include <stdint.h>
 

@@ -65,29 +65,30 @@ static void MotionLine_SetError(MotionLine_Error_t error)
     s_context.state = MOTION_LINE_STATE_ERROR;
 }
 
-/*
- * 位图从左到右为 bit0~bit4，灰度返回 1 表示检测到黑线。
- * 最外侧权重为正负 6，内侧权重为正负 3，中心权重为 0。
- */
+/* 位图从左到右为 bit0~bit(N-1)，灰度返回 1 表示检测到黑线。 */
+#if CAR_IS_MASTER
+static const int8_t s_grayWeight[GRAY_CHANNEL_COUNT] = {
+    -MOTION_LINE_OUTER_WEIGHT, -4, -MOTION_LINE_INNER_WEIGHT, -1,
+     1, MOTION_LINE_INNER_WEIGHT, 4, MOTION_LINE_OUTER_WEIGHT
+};
+#else
+static const int8_t s_grayWeight[GRAY_CHANNEL_COUNT] = {
+    -MOTION_LINE_OUTER_WEIGHT, -MOTION_LINE_INNER_WEIGHT, 0,
+     MOTION_LINE_INNER_WEIGHT, MOTION_LINE_OUTER_WEIGHT
+};
+#endif
+
 static int8_t MotionLine_GetWeight(uint8_t grayState)
 {
     int16_t weight = 0;
+    uint8_t index;
 
-    if ((grayState & 0x01U) != 0U)
+    for (index = 0U; index < GRAY_CHANNEL_COUNT; index++)
     {
-        weight -= MOTION_LINE_OUTER_WEIGHT;
-    }
-    if ((grayState & 0x02U) != 0U)
-    {
-        weight -= MOTION_LINE_INNER_WEIGHT;
-    }
-    if ((grayState & 0x08U) != 0U)
-    {
-        weight += MOTION_LINE_INNER_WEIGHT;
-    }
-    if ((grayState & 0x10U) != 0U)
-    {
-        weight += MOTION_LINE_OUTER_WEIGHT;
+        if ((grayState & (uint8_t)(1U << index)) != 0U)
+        {
+            weight += s_grayWeight[index];
+        }
     }
 
     /* 多个同侧探头同时压线时，不允许超过最外侧的修正力度。 */

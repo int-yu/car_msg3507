@@ -15,7 +15,7 @@ static void DebugDisplay_ShowGrayState(uint8_t state)
     uint8_t index;
 
     OLED_ShowString(0, 8, "GRAY:", OLED_6X8);
-    for (index = 0U; index < 5U; index++)
+    for (index = 0U; index < GRAY_CHANNEL_COUNT; index++)
     {
         OLED_ShowChar((int16_t)(30 + index * OLED_6X8), 8,
                       ((state >> index) & 1U) != 0U ? '1' : '0',
@@ -59,10 +59,6 @@ static void DebugDisplay_ShowMotionState(void)
     {
         OLED_ShowString(0, 56, "M:STRAIGHT", OLED_6X8);
     }
-    else if (mode == MOTION_MANAGER_MODE_MANUAL)
-    {
-        OLED_ShowString(0, 56, "M:MANUAL", OLED_6X8);
-    }
     else if (mode == MOTION_MANAGER_MODE_LINE)
     {
         OLED_ShowString(0, 56, "M:LINE", OLED_6X8);
@@ -70,6 +66,10 @@ static void DebugDisplay_ShowMotionState(void)
     else if (mode == MOTION_MANAGER_MODE_TURN)
     {
         OLED_ShowString(0, 56, "M:TURN", OLED_6X8);
+    }
+    else if (mode == MOTION_MANAGER_MODE_DRIVE)
+    {
+        OLED_ShowString(0, 56, "M:DRIVE", OLED_6X8);
     }
     else
     {
