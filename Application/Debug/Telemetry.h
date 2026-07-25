@@ -36,9 +36,5 @@ uint8_t Telemetry_SetFieldMask(uint16_t mask);
 uint8_t Telemetry_GetRateHz(void);
 uint16_t Telemetry_GetFieldMask(void);
 uint8_t Telemetry_GetMaxRateHz(void);
-/* 供捕获模块复用同一张通道表：按掩码把选中通道当前值写进 out，返回通道数。 */
-uint8_t Telemetry_SampleChannels(uint16_t mask, float *out);
-/* 供捕获 dump 复用：发一帧 SCHEMA（type 由调用方给，实时流与捕获类型不同）。 */
-void Telemetry_SendSchema(uint16_t mask, uint8_t frameType);
 
 #endif

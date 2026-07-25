@@ -3,7 +3,6 @@
 #include "Application/Comms/K230Link.h"
 #include "Application/Core/CarRole.h"
 #include "Application/Control/MotionManager.h"
-#include "Application/Debug/Capture.h"
 #include "Application/Debug/Param.h"
 #include "Application/Debug/Telemetry.h"
 #include "Application/Servo/Servo.h"
@@ -178,12 +177,6 @@ static uint8_t BluetoothDebug_RejectIfBusy(void)
 
 static void BluetoothDebug_ReportMotionResult(MotionManager_Result_t result)
 {
-    if (result == MOTION_MANAGER_RESULT_OK)
-    {
-        /* 捕获在动作真正开始的这一刻起算，样本第一拍即阶跃起点。
-         * 未 arm 时该调用无副作用。 */
-        Capture_Trigger();
-    }
     if (result == MOTION_MANAGER_RESULT_OK)
     {
         Serial1_SendString("OK\r\n");
@@ -589,7 +582,6 @@ static void BluetoothDebug_ExecuteCommand(void)
             result = MotionManager_StartSpeed((float)value);
             if (result == MOTION_MANAGER_RESULT_OK)
             {
-                Capture_Trigger();
                 Serial1_Printf("OK W=%d\r\n", (int)value);
             }
             else
@@ -634,7 +626,6 @@ static void BluetoothDebug_ExecuteCommand(void)
             result = MotionManager_StartLine((float)value);
             if (result == MOTION_MANAGER_RESULT_OK)
             {
-                Capture_Trigger();
                 Serial1_Printf("OK N=%d\r\n", (int)value);
             }
             else
@@ -699,51 +690,17 @@ static void BluetoothDebug_ExecuteCommand(void)
             }
             break;
 
-        case 'X':
-            /* X0 停止并整体输出；X<mask> 选通道并等待下一条运动命令触发。 */
-            if (s_parser.isNegative != 0U)
-            {
-                Serial1_SendString("ERR RANGE\r\n");
-                break;
-            }
-            if (value == 0)
-            {
-                uint16_t count;
-
-                Capture_Stop();
-                count = Capture_StartDump();
-                if (count == 0U)
-                {
-                    Serial1_SendString("ERR X EMPTY\r\n");
-                    break;
-                }
-                Serial1_Printf("OK X DUMP=%u\r\n", (unsigned)count);
-                break;
-            }
-            if ((value > (int32_t)TELEMETRY_CH_ALL) ||
-                (Capture_Arm((uint16_t)value) == 0U))
-            {
-                /* 通道数超限和掩码非法都归到这里，附带上限便于自查。 */
-                Serial1_Printf("ERR X MASK MAXCH=%u\r\n",
-                               (unsigned)CAPTURE_MAX_CHANNELS);
-                break;
-            }
-            Serial1_Printf("OK X ARM=%u CAP=%u\r\n",
-                           (unsigned)Capture_GetChannelMask(),
-                           (unsigned)Capture_GetCapacity());
-            break;
-
         case 'Q':
             /* 上位机据此自适应频率，不再各存一份阈值。数值本身与 M/G 无关，
-             * 任何参数都接受，一律回报当前状态。 */
+             * 任何参数都接受，一律回报当前状态。
+             * 板载捕获（原 X 命令）已移除：二进制 + DMA 后实时流本身就是
+             * 100 Hz 无损，24 KB 捕获缓冲只剩下挤爆 RAM 这一个作用。
+             * CAPST/CAPN/CAPMAX 三个字段一并撤掉，网页按缺省处理即可。 */
             Serial1_Printf(
-                "OK Q MAX=%u MASK=%u RATE=%u CAPST=%u CAPN=%u CAPMAX=%u\r\n",
+                "OK Q MAX=%u MASK=%u RATE=%u\r\n",
                 (unsigned)Telemetry_GetMaxRateHz(),
                 (unsigned)Telemetry_GetFieldMask(),
-                (unsigned)Telemetry_GetRateHz(),
-                (unsigned)Capture_GetState(),
-                (unsigned)Capture_GetSampleCount(),
-                (unsigned)Capture_GetCapacity());
+                (unsigned)Telemetry_GetRateHz());
             break;
 
         case 'P':
