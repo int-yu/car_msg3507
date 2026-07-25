@@ -432,8 +432,14 @@ void BRUSHLESS_UART_INST_IRQHandler(void)
 
 /* ---- Serial3：K230 视觉链路 ---- */
 
+/* 排空 RX FIFO 的次数上限。FIFO 深度为 4，正常情况下一轮就空；给一个上限
+ * 只是不让初始化有任何一条无界循环，避免 UART3 时钟/电源异常时卡在这里。 */
+#define SERIAL3_RX_FLUSH_LIMIT 8U
+
 void Serial3_Init(void)
 {
+    uint8_t flushGuard;
+
     s_serial3WriteIndex = 0U;
     s_serial3ReadIndex = 0U;
     s_serial3TxHead = 0U;
@@ -453,8 +459,12 @@ void Serial3_Init(void)
         GPIO_K230_UART_IOMUX_RX_FUNC,
         DL_GPIO_INVERSION_DISABLE, DL_GPIO_RESISTOR_PULL_UP,
         DL_GPIO_HYSTERESIS_DISABLE, DL_GPIO_WAKEUP_DISABLE);
-    while (!DL_UART_Main_isRXFIFOEmpty(K230_UART_INST))
+    for (flushGuard = 0U; flushGuard < SERIAL3_RX_FLUSH_LIMIT; flushGuard++)
     {
+        if (DL_UART_Main_isRXFIFOEmpty(K230_UART_INST))
+        {
+            break;
+        }
         (void)DL_UART_Main_receiveData(K230_UART_INST);
     }
     DL_UART_Main_clearInterruptStatus(
