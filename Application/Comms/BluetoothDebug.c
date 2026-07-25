@@ -51,7 +51,7 @@ static uint8_t BluetoothDebug_IsCommand(char value)
             (value == 'P') ||
             (value == 'K') || (value == 'W') || (value == 'N') ||
             (value == 'E') || (value == 'Y') ||
-            (value == 'X') || (value == 'Q') || (value == 'J')) ? 1U : 0U;
+            (value == 'Q') || (value == 'J')) ? 1U : 0U;
 }
 
 static uint8_t BluetoothDebug_IsTerminator(char value)
