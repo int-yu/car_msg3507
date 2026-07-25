@@ -11,10 +11,10 @@
 | CPUCLK / SYSCLK | 32 MHz | 全工程 | SysConfig 默认时钟源；延时、总线外设和 SysTick 的基准时钟 |
 | SysTick | 32 MHz / 320000 = 100 Hz | `System/Tick`、`Application/Core/App`、`MotionManager`、`Mission`、`Accomplish/25H` | 10 ms 系统节拍；`App_Update()` 传递实际累计 Tick 和 dt；当前巡线连续全白 50 拍（约 500 ms）后安全返回等待 |
 | TIMG8 | 32 MHz，周期 1600 = 20 kHz | `Hardware/Motor/PWM`、`MotionWheel`、`MotionManager`、`Accomplish/25H` | 25H 通过 MotionManager 依次选择巡线、定距直线和绝对角转向，再由 MotionWheel 输出双轮 PWM |
-| TIMA0 | BUSCLK / 32 = 1 MHz，周期 20000 = 50 Hz | `Application/Servo` | 双路舵机 PWM；1 个计数等于 1 us |
 | I2C0 | BUSCLK 32 MHz，SCL 400 kHz | `Hardware/Display/OLED` | OLED 控制器通信 |
-| UART1 | BUSCLK 32 MHz，115200 baud，8N1，RX 中断 | `Hardware/Comms/Serial`、`Application/Comms/BluetoothDebug`、`App`、`Mission` | 无线 DAPLink 串口，接电脑调试网页；`C0` 全局停车；保留其他任务事件和手动调试命令，当前 25H 使用 KEY1 启动 |
-| UART2 | BUSCLK 32 MHz，115200 baud，8N1，当前不启用 RX NVIC | `Hardware/Comms/Serial`、`Application/Comms/K230Link` | K230 硬件配置保留；`App_Init()` 调用 `K230Link_Init()`，`App_Update()` 调用 `K230Link_Update()`，握手帧正常收发 |
+| UART1 | BUSCLK 32 MHz，115200 baud，8N1，RX + DMA TX 中断 | `Hardware/Comms/Serial`、`Application/Comms/CarLink` | PB6/PB7 接 HC05，作为车对车 CarLink；逻辑接口为 `Serial2`，TX 使用 DMA CH1 |
+| UART2 | BUSCLK 32 MHz，115200 baud，8N1，RX + DMA TX 中断 | `Hardware/Comms/Serial`、`Application/Comms/BluetoothDebug`、`App`、`Mission` | PA21/PA22 接 DAPLink，作为 PC/网页链路；逻辑接口为 `Serial1`，TX 使用 DMA CH0 |
+| UART3 | BUSCLK 32 MHz，115200 baud，8N1，RX + DMA TX 中断，IRQ 优先级 3 | `Hardware/Comms/Serial`、`Application/Comms/K230Link` | PA14/PA25 接 K230；逻辑接口为 `Serial3`，TX 使用 DMA CH2；RX 异常积压时熔断以保护行车实时性 |
 | GPIO 软件 I2C | CPU 延时产生时序 | `Hardware/Sensors/MPU6050`、`Application/State/Heading`、`Accomplish/25H` | 提供连续多圈航向；25H 保存 KEY1 启动基准，左转绝对目标依次为基准减 90°、180°、270°……；不占用 I2C 外设实例 |
 | GPIOA GROUP1 IRQ | A/B 相双边沿 | `Hardware/Motor/Encoder`、`MotionWheel` | 左右编码器软件正交解码，为公共双轮速度 PI 提供速度反馈 |
 
@@ -22,51 +22,56 @@
 
 | Pin | 方向 / 复用 | 占用对象 | 程序说明 |
 |---|---|---|---|
-| PA10 | 开漏式 GPIO | MPU6050 SCL | 软件 I2C 时钟 |
-| PA11 | 开漏式 GPIO | MPU6050 SDA | 软件 I2C 数据 |
 | PA12 | GPIO 输出 | 右电机 AIN2 | TB6612 A 通道方向 |
-| PA13 | GPIO 输出 | 右电机 AIN1 | TB6612 A 通道方向 |
-| PA14 | GPIO 输入、上拉 | 灰度 CH3 | 灰度位图 bit3；黑线为 1 |
+| PA13 | GPIO 输入、上拉 | 灰度 CH2 | 灰度位图 bit2；黑线为 1 |
+| PA14 | UART3 TX | K230 RX | MCU 向 K230 发送握手与拍照请求；逻辑接口 `Serial3`，115200 |
 | PA15 | GPIO 输入、上拉、双边沿中断 | 右编码器 A | 右轮正交反馈 |
 | PA16 | GPIO 输入、上拉、双边沿中断 | 右编码器 B | 右轮正交反馈 |
 | PA17 | GPIO 输入、上拉、双边沿中断 | 左编码器 A | 左轮正交反馈 |
 | PA19 | SWDIO | 下载调试 | 不作为普通 GPIO 使用 |
 | PA20 | SWCLK | 下载调试 | 不作为普通 GPIO 使用 |
-| PA21 | UART2 TX | K230 RX | K230Link 握手已启用；连接 K230 GPIO4（RX） |
-| PA22 | UART2 RX | K230 TX | K230Link 握手已启用；连接 K230 GPIO3（TX） |
+| PA21 | UART2 TX | DAPLink RX | MCU 向 PC/网页发送回应和遥测；逻辑接口 `Serial1`，115200 |
+| PA22 | UART2 RX、上拉 | DAPLink TX | 接收 PC/网页命令；逻辑接口 `Serial1`，115200 |
 | PA24 | GPIO 输入、上拉、双边沿中断 | 左编码器 B | GPIOA GROUP1 IRQ；`MotionWheel` 左轮反馈 |
+| PA25 | UART3 RX、上拉 | K230 TX | 接收 K230 帧；未连接时保持 UART 空闲高电平，逻辑接口 `Serial3`，115200 |
 | PA28 | I2C0 SDA | OLED | 400 kHz |
+| PA29 | GPIO 输入、上拉 | 灰度 CH0 | 灰度位图 bit0；最左侧，黑线为 1 |
 | PA30 | GPIO 输入、上拉 | KEY1 | 低电平按下，按键位图 bit0；App 生成按下沿事件，当前用于启动 25H |
 | PA31 | I2C0 SCL | OLED | 400 kHz |
 | PB0 | GPIO 输出 | 左电机 BIN1 | TB6612 B 通道方向；由 MotionManager 当前模式经 MotionWheel 输出 |
 | PB1 | GPIO 输出 | 左电机 BIN2 | TB6612 B 通道方向；由 MotionManager 当前模式经 MotionWheel 输出 |
-| PB6 | UART1 TX | 无线 DAPLink 串口 | MCU 发送到 DAPLink RX；115200 |
-| PB7 | UART1 RX、上拉 | 无线 DAPLink 串口 | DAPLink TX 发送到 MCU，RX 中断接收；115200；`C0` 全局停车，`C1` 当前未绑定 25H |
-| PB8 | TIMA0 CCP0 | 横向舵机 | `D` 命令，`Servo_SetHorizontalAngle()` |
-| PB9 | TIMA0 CCP1 | 纵向舵机 | `O` 命令，`Servo_SetVerticalAngle()` |
+| PB2 | 开漏式 GPIO | MPU6050 SCL | 软件 I2C 时钟 |
+| PB3 | 开漏式 GPIO | MPU6050 SDA | 软件 I2C 数据 |
+| PB5 | GPIO 输入、上拉 | 灰度 CH7 | 主车灰度位图 bit7；最右侧，黑线为 1 |
+| PB6 | UART1 TX | HC05 RX | MCU 向另一辆车发送 CarLink 帧；逻辑接口 `Serial2`，115200 |
+| PB7 | UART1 RX、上拉 | HC05 TX | 接收另一辆车的 CarLink 帧；逻辑接口 `Serial2`，115200 |
+| PB8 | GPIO 输入、上拉 | 灰度 CH4 | 灰度位图 bit4；从车最右侧，黑线为 1 |
+| PB9 | GPIO 输入、上拉 | 灰度 CH3 | 灰度位图 bit3；黑线为 1 |
 | PB10 | GPIO 输入、上拉 | KEY4 | 低电平按下，按键位图 bit3；App 生成按下沿事件，具体含义由 Mission 决定 |
 | PB11 | GPIO 输入、上拉 | KEY2 | 低电平按下，按键位图 bit1；App 生成按下沿事件，具体含义由 Mission 决定 |
+| PB12 | GPIO 输入、上拉 | 灰度 CH6 | 主车灰度位图 bit6；黑线为 1 |
+| PB13 | GPIO 输入、上拉 | 灰度 CH5 | 主车灰度位图 bit5；黑线为 1 |
 | PB14 | GPIO 输入、上拉 | KEY3 | 低电平按下，按键位图 bit2；App 生成按下沿事件，具体含义由 Mission 决定 |
 | PB15 | TIMG8 CCP0 | 右电机 PWM | TB6612 A 通道，20 kHz；由 MotionManager 当前模式经 MotionWheel 输出 |
 | PB16 | TIMG8 CCP1 | 左电机 PWM | TB6612 B 通道，20 kHz；由 MotionManager 当前模式经 MotionWheel 输出 |
 | PB17 | GPIO 输出 | 蜂鸣器 | 低电平有效 |
-| PB18 | GPIO 输入、上拉 | 灰度 CH4 | 灰度位图 bit4；黑线为 1 |
-| PB20 | GPIO 输入、上拉 | 灰度 CH2 | 灰度位图 bit2；黑线为 1 |
 | PB23 | GPIO 输出 | LED1 | 高电平点亮 |
-| PB24 | GPIO 输入、上拉 | 灰度 CH1 | 灰度位图 bit1；黑线为 1 |
-| PB25 | GPIO 输入、上拉 | 灰度 CH0 | 灰度位图 bit0；黑线为 1 |
+| PB25 | GPIO 输出 | 右电机 AIN1 | TB6612 A 通道方向 |
+| PB26 | GPIO 输入、上拉 | 灰度 CH1 | 灰度位图 bit1；黑线为 1 |
 | PB27 | GPIO 输出 | LED2 | 高电平点亮 |
 
 ### 2.1 硬件连接检查
 
-- `main.syscfg` 中没有重复分配的 Pin；UART1、UART2、I2C0、TIMG8、TIMA0、软件 I2C 和 SWD 互不冲突。
-- F32C 使用独立 8–15 V 电源和 3.3 V TTL 通信。控制器与电机电源必须共地，PA21 接电机 RX，PA22 接电机 TX；禁止反接和带电插拔。
-- 二自由度云台的 X/Y 电机使用厂家级联线束。滑环通道手册标注最大 1 A，禁止过流使用。
-- UART2 当前专用于 F32C，K230Link 保留但未运行；K230 与 F32C 不能同时占用 PA21/PA22。
+- `main.syscfg` 中没有重复分配的 Pin；UART1、UART2、UART3、I2C0、TIMG8、软件 I2C 和 SWD 互不冲突。
+- 主车读取 U5 的 8 路灰度，CH0~CH7 为 PA29、PB26、PA13、PB9、PB8、PB13、PB12、PB5；从车读取同一序列的 CH0~CH4。
+- PB8/PB9 已让给灰度输入；`SERVO_ENABLED=0`，TIMA0 舵机 PWM 不配置，`O`/`D` 接口只保留角度记录。
+- DAPLink 接 PA21/PA22（UART2），承载 PC/网页命令、回应和遥测；HC05 接 PB6/PB7（UART1），仅承载双车 CarLink。
+- K230 使用独立 UART3：PA14 为 MCU TX、PA25 为 MCU RX，TX DMA 为 CH2。PA25 从 PinMux 初始化起即内部上拉；K230 未连接时只保持 10 Hz READY 重试并处于离线，不阻塞主循环。
+- F32C/Gimbal 仍停用，不与当前三路串口共用。
 
 ## 3. 当前程序说明
 
-K230 握手已启用：`App_Init()` 调用 `K230Link_Init()`，`App_Update()` 每拍调用 `K230Link_Update()`，握手帧正常收发。K230Link 源码和 UART2 SysConfig 配置均保留并生效。
+当前同时启用 PC/网页链路、双车 CarLink 和独立 K230Link；F32C/Gimbal 仍停用。K230 未连接时 `K230Link_IsReady()` 保持 0，`P` 命令返回 `ERR CAP NOLINK`，不影响另外两路通信和运动控制。
 
 ### 3.2 100 Hz 主循环与 Mission
 
@@ -89,11 +94,11 @@ int main(void)
 }
 ```
 
-`App_Init()` 在全局中断关闭状态下初始化整车、OLED、MPU6050、编码器、蓝牙和 F32C 通信。`Gimbal_Init()` 只把 UART2/F32C 初始化为禁用状态，不使能或驱动无刷电机。MPU6050 零漂完成后，`Interrupt_Enable()` 才开启全局中断。
+`App_Init()` 在全局中断关闭状态下初始化整车、OLED、MPU6050、编码器、`Serial1` 网页链路、`Serial2` CarLink 和 `Serial3` K230Link。UART3 初始化会先上拉 PA25、排空 RX FIFO 并清除 pending；MPU6050 零漂完成后，`Interrupt_Enable()` 才开启全局中断。Gimbal/F32C 保持停用。
 
 ```text
-Heading -> Odometry -> 按键边沿 -> BluetoothDebug
-        -> C0 全局停车 -> MotionManager -> Beep -> OLED
+Heading -> Odometry -> 按键边沿 -> CarLink -> K230Link -> BluetoothDebug
+        -> C0 全局停车 -> MotionManager -> K230 ACK -> Beep -> OLED
         -> Mission_Update
 ```
 
@@ -106,7 +111,7 @@ OLED 每 10 个系统节拍刷新一次，即 10 Hz。页面内容为：
 | 行 | 显示内容 |
 |---|---|
 | 0 | MPU6050 解算的 Z 轴连续累计角度，不做 ±180° 归一化，可显示多圈转角 |
-| 1 | 五路灰度 `CH0 CH1 CH2 CH3 CH4`，用 `0/1` 显示 ，1代表检测到黑色，0代表检测到白色|
+| 1 | 灰度位图：主车显示 `CH0~CH7`，从车显示 `CH0~CH4`；`1` 代表检测到黑色，`0` 代表检测到白色 |
 | 2 | 四个按键 `KEY1 KEY2 KEY3 KEY4`，`1` 表示按下 |
 | 3 | 左轮累计路程 `LD`，单位 mm |
 | 4 | 左轮编码器实测速度 `LV`，单位 mm/s |
@@ -114,7 +119,7 @@ OLED 每 10 个系统节拍刷新一次，即 10 Hz。页面内容为：
 | 6 | 右轮编码器实测速度 `RV`，单位 mm/s |
 | 7 | 统一运动状态：`M:IDLE`、`M:LINE`、`M:STRAIGHT`、`M:TURN` 或 `M:ERROR` |
 
-K230Link 统一帧格式：
+K230Link 当前通过独立 UART3 运行；未接模块时维持离线，以下为实际使用的帧格式：
 
 ```text
 Heading -> Odometry -> Gimbal -> Key -> BluetoothDebug
@@ -131,7 +136,7 @@ Heading -> Odometry -> Gimbal -> Key -> BluetoothDebug
 
 ### 3.3 调试串口任务与命令协议
 
-本节的命令走 UART1，物理链路是**无线 DAPLink 串口**（115200 8N1），不是蓝牙。源码模块名 `BluetoothDebug` 与本文其余处的「蓝牙」措辞是早期接蓝牙模块时留下的历史名称，为避免大范围改名引入风险而保留；凡提到「蓝牙命令」处，均指本节这套 UART1 命令协议。
+本节的命令走逻辑接口 `Serial1`，物理链路是 **UART2 的 PA21/PA22 DAPLink 串口**（115200 8N1），不是 PB6/PB7 上的 HC05。源码模块名 `BluetoothDebug` 是历史名称；凡提到「蓝牙命令」处，均指本节这套 PC/网页命令协议。
 
 命令不区分大小写。推荐以 `\r` 或 `\n` 结束；也支持空格、逗号、分号作为分隔符。没有结束符时，接收空闲 3 个系统节拍（30 ms）后执行。每条命令都会返回 `OK ...` 或 `ERR ...`。
 
@@ -163,7 +168,7 @@ Heading -> Odometry -> Gimbal -> Key -> BluetoothDebug
 | `X0` | 停止捕获并分批 dump 全部数据 | 无数据返回 `ERR X EMPTY`；成功先回 `OK X DUMP=<n>`，随后输出 `CH,` 表头与 `C,` 数据行，末尾 `OK X END=<n>` | `X0` |
 | `Q` | 查询遥测能力与捕获状态；**上位机据此自适应频率，不再各存一份阈值** | 无参数（裸 `Q` 即可）；回 `OK Q MAX=<上限Hz> MASK=<掩码> RATE=<当前Hz> CAPST=<捕获状态> CAPN=<已采样本> CAPMAX=<容量>` | `Q` |
 
-**`ERR MOTION 3` 的含义。** MotionManager 错误码 `3` 是 `SENSOR_NOT_READY`。若 `B/F/T/A` 都返回 `ERR MOTION 3`，同时 `Z2` 返回 `ERR Z OFFLINE`，说明动作命令没有真正启动，根因是 Heading 层未就绪，通常是 MPU6050 离线或初始化失败。此时 `yaw/navE` 遥测会作为无效字段发送，网页显示为空值，不再把默认 `0°` 当成有效航向；优先检查 MPU6050 供电、GND、PA10/PA11 软件 I2C 线序、上拉/开漏连接和地址 `0x68`。
+**`ERR MOTION 3` 的含义。** MotionManager 错误码 `3` 是 `SENSOR_NOT_READY`。若 `B/F/T/A` 都返回 `ERR MOTION 3`，同时 `Z2` 返回 `ERR Z OFFLINE`，说明动作命令没有真正启动，根因是 Heading 层未就绪，通常是 MPU6050 离线或初始化失败。此时 `yaw/navE` 遥测会作为无效字段发送，网页显示为空值，不再把默认 `0°` 当成有效航向；优先检查 MPU6050 供电、GND、PB2/PB3 软件 I2C 线序、上拉/开漏连接和地址 `0x68`。
 
 **`T` 与 `A` 的参考系差异。** `T` 是相对转角，从当前航向再偏转指定度数，支持带符号输入（`T-90` 反转 90°）。`A` 是绝对连续航向角，目标为 `Heading_GetYaw()` 的累计值空间中的绝对角度。两者底层均使用 `Nav`，**`Nav` 不做 ±180° 最短路径优化**：当前连续航向为 370° 时，`A90` 会计算误差 `90 - 370 = -280°`，选择倒转 280° 而不是顺转 80° 走最短路径。若想总是最短路径到达某个方向，应在上位机计算出当前航向与目标方向之间的最短差值后，改用 `T` 命令发送相对角。`Z1` 只把当前朝向重置为 0°，不会更新零漂；车辆静止时可用 `Z2` 重新采样零漂并归零，再用 `A` 命令指向绝对角度。
 
@@ -177,7 +182,7 @@ Heading -> Odometry -> Gimbal -> Key -> BluetoothDebug
 > 设计动机与协议规范见 `docs/superpowers/specs/2026-07-21-二进制DMA架构-design.md`；
 > 下文 3.3.2 及"遥测 CSV 格式"等 ASCII 描述是**历史架构**，已被本节取代。
 
-**核心变化。** UART1 的发送从逐字节阻塞（`transmitDataBlocking`）改为 **DMA 搬运 + 环形缓冲**：主循环只往缓冲写、从不等硬件，DMA 完成中断推进下一段。发送不再占用主循环，遥测带宽预算从 20% 放宽到 70%。数据从 ASCII CSV（一个 float 占 11 字节）改为**二进制帧**（float32 只占 4 字节，压缩 2.5×）。两者叠加，单侧实时流上限从阻塞 ASCII 的 57 Hz 提到约 **450 Hz** 理论值，实际夹在 100 Hz 硬上限——**远超 100 Hz 控制环，实时流本身即无损**。
+**核心变化。** `Serial1`（当前落在物理 UART2）的发送从逐字节阻塞（`transmitDataBlocking`）改为 **DMA 搬运 + 环形缓冲**：主循环只往缓冲写、从不等硬件，DMA 完成中断推进下一段。发送不再占用主循环，遥测带宽预算从 20% 放宽到 70%。数据从 ASCII CSV（一个 float 占 11 字节）改为**二进制帧**（float32 只占 4 字节，压缩 2.5×）。两者叠加，单侧实时流上限从阻塞 ASCII 的 57 Hz 提到约 **450 Hz** 理论值，实际夹在 100 Hz 硬上限——**远超 100 Hz 控制环，实时流本身即无损**。
 
 **帧格式**（与 K230Link 同范式，`0xAA` 起头与 ASCII 命令回应可靠共存于同一串口）：
 
@@ -219,7 +224,7 @@ Heading -> Odometry -> Gimbal -> Key -> BluetoothDebug
 | `0x040` | `yaw` | 度 | 连续累计航向角；Heading 离线时该字段无效/空值 |
 | `0x080` | `navE` | 度 | 转向角误差；Heading 离线时该字段无效/空值 |
 | `0x100` | `lerr` | — | 巡线权重误差 |
-| `0x200` | `gray` | 位图 | 五路灰度 |
+| `0x200` | `gray` | 位图 | 主车八路、从车五路灰度 |
 | `0x400` | `LD` | mm | 左轮累计路程 |
 | `0x800` | `RD` | mm | 右轮累计路程 |
 
@@ -282,7 +287,7 @@ id 一经发布不得重排，新增参数只能在尾部追加。K1~K5 为旧�
 |---|---|---|---|
 | `ms` | 固定输出 | 1 | 自上电以来的系统节拍累计毫秒数 |
 | `yaw` | `TELEMETRY_FIELD_YAW` = `0x01` | 1 | Z 轴连续累计航向角（度，`%.2f`），不做 ±180° 归一化 |
-| `gray`,`keys` | `TELEMETRY_FIELD_SENSOR` = `0x02` | 2 | `gray` 是五路灰度位图，**十六进制两位**（如 `1F`）；`keys` 是按键位图，十进制 |
+| `gray`,`keys` | `TELEMETRY_FIELD_SENSOR` = `0x02` | 2 | `gray` 是灰度位图（主车八路、从车五路），**十六进制两位**；`keys` 是按键位图，十进制 |
 | `LD`,`RD` | `TELEMETRY_FIELD_DISTANCE` = `0x04` | 2 | 左右轮累计路程 mm（`%.1f`） |
 | `LV`,`RV` | `TELEMETRY_FIELD_SPEED` = `0x08` | 2 | 左右轮实测速度 mm/s（`%.1f`） |
 | `mode` | `TELEMETRY_FIELD_MODE` = `0x10` | 1 | 运动模式文本：`IDLE`/`LINE`/`STRAIGHT`/`TURN`/`BRAKE`/`SPEED`/`ERROR`；模式保留但动作已完成时输出 `DONE`（供上位机自动判定一次调参试验结束） |
@@ -347,7 +352,7 @@ id 一经发布不得重排，新增参数只能在尾部追加。K1~K5 为旧�
 3. 低速测试航向 `kp`；若偏差被放大，将 `correctionSign` 从 `1` 改为 `-1` 或反向。随后少量增加 `kd` 抑制摆动。
 4. 最后调整加速度、最大减速度、减速起点比例、每次任务的终点速度和距离允许误差。
 
-OLED 默认显示 Z 轴连续角度、五路灰度、四个按键、左右轮路程/速度和当前运动状态。Gimbal 显式使能后切换为 F32C 双轴角度页。
+OLED 默认显示 Z 轴连续角度、主车八路/从车五路灰度、四个按键、左右轮路程/速度和当前运动状态。Gimbal 显式使能后切换为 F32C 双轴角度页。
 
 | 蓝牙命令 | 作用 | 当前限制 |
 |---|---|---|
@@ -356,8 +361,8 @@ OLED 默认显示 Z 轴连续角度、五路灰度、四个按键、左右轮路
 | `L<number>` | 设置左轮开环 PWM | MotionManager 空闲时有效，范围 `-1000~1000` |
 | `R<number>` | 设置右轮开环 PWM | MotionManager 空闲时有效，范围 `-1000~1000` |
 | `U<number>` | 设置双轮相同开环 PWM | MotionManager 空闲时有效，范围 `-1000~1000` |
-| `O<number>` | 设置纵向舵机角度 | 当前限位 `0°~270°` |
-| `D<number>` | 设置横向舵机角度 | 当前限位 `0°~270°` |
+| `O<number>` | 记录纵向舵机角度 | 舵机 PWM 当前停用；只更新 `0°~270°` 的记录值 |
+| `D<number>` | 记录横向舵机角度 | 舵机 PWM 当前停用；只更新 `0°~270°` 的记录值 |
 
 ## 4. 工程文件类型与职责
 
@@ -368,16 +373,16 @@ OLED 默认显示 Z 轴连续角度、五路灰度、四个按键、左右轮路
 | `Application/Core/App.c/.h` | 应用运行层 | 完整整车初始化、固定更新链和 Mission 上下文 |
 | `Application/Core/TestApp.c/.h` | 可选测试运行层 | 跳过 OLED、MPU6050、灰度和里程的快速测试入口；当前未使用 |
 | `Application/Comms/BluetoothDebug.c/.h` | 应用通信层 | 解析 `C/L/R/U/O/D` 命令并提供任务事件 |
-| `Application/Comms/K230Link.c/.h` | 应用通信层 | K230 帧、CRC8、握手和目标解析；当前未运行 |
+| `Application/Comms/K230Link.c/.h` | 应用通信层 | 通过独立 UART3 运行 K230 帧、CRC8、握手、拍照 ACK 和目标解析；每拍 RX 解析有固定预算 |
 | `Application/Control/MotionManager.c/.h` | 统一运动调度 | 保证同一时刻只有直线、巡线、转向或刹车之一控制双轮 |
 | `Application/Control/MotionStraight.c/.h` | 直线控制 | 定距速度规划、连续航向保持和可选终点速度 |
-| `Application/Control/MotionLine.c/.h` | 巡线控制 | 五路灰度离散权重差速和连续丢线确认 |
+| `Application/Control/MotionLine.c/.h` | 巡线控制 | 主车八路/从车五路灰度离散权重差速和连续丢线确认 |
 | `Application/Control/MotionWheel.c/.h` | 公共轮速控制 | 双轮 PI、前馈、差速修正和 PWM 限幅 |
 | `Application/Control/Nav.c/.h` | 转向控制 | 双轮反向旋转到连续绝对角或相对角 |
 | `Application/Control/PID.c/.h` | 通用控制器 | 位置式 PID 计算、复位和调参 |
 | `Application/Debug/DebugDisplay.c/.h` | 显示编排 | OLED 零漂页、整车页和 Gimbal 页 |
 | `Application/Gimbal/Gimbal.c/.h` | 云台应用层 | 管理 X/Y 地址、T 型多圈位置目标、反馈和到位状态 |
-| `Application/Servo/Servo.c/.h` | 舵机控制 | 双路角度限位与 TIMA0 脉宽换算 |
+| `Application/Servo/Servo.c/.h` | 舵机控制 | 当前停用硬件 PWM；保留双路角度限位和记录接口 |
 | `Application/State/Heading.c/.h` | 航向状态 | MPU6050 零漂、连续偏航积分和尺度标定 |
 | `Application/State/Odometry.c/.h` | 里程状态 | 编码器增量到双轮路程与速度的换算 |
 
@@ -386,14 +391,14 @@ OLED 默认显示 Z 轴连续角度、五路灰度、四个按键、左右轮路
 | 文件 / 目录 | 类型 | 职责 |
 |---|---|---|
 | `Hardware/Board/` | 板级驱动 | 按键、LED 和蜂鸣器 |
-| `Hardware/Comms/Serial.c/.h` | UART 驱动 | UART1/UART2 中断接收环形缓冲区和发送接口 |
+| `Hardware/Comms/Serial.c/.h` | UART 驱动 | UART1/UART2/UART3 中断接收环形缓冲区和 DMA 非阻塞发送；UART3 带异常 RX 熔断 |
 | `Hardware/Display/OLED.c/.h` | OLED 驱动 | I2C0 显存、文本、数字、图像和图形绘制 |
 | `Hardware/Display/OLED_Data.c/.h` | 字模数据 | ASCII、中文字模和图像数据 |
 | `Hardware/Motor/Motor.c/.h` | 有刷电机驱动 | TB6612 方向、PWM、释放和主动刹车 |
 | `Hardware/Motor/PWM.c/.h` | PWM 驱动 | TIMG8 双通道占空比换算 |
 | `Hardware/Motor/Encoder.c/.h` | 编码器驱动 | GPIO 双边沿中断正交计数 |
 | `Hardware/Motor/F32C.c/.h` | 无刷电机协议 | F32C 命令编码、校验和反馈解码 |
-| `Hardware/Sensors/Graydetect.c/.h` | 灰度驱动 | 五路 GPIO 位图和区域误差 |
+| `Hardware/Sensors/Graydetect.c/.h` | 灰度驱动 | 主车八路/从车五路 GPIO 位图和区域误差 |
 | `Hardware/Sensors/MPU6050.c/.h` | IMU 驱动 | 软件 I2C 初始化和原始数据读取 |
 | `System/Delay.c/.h` | 系统基础 | 微秒、毫秒和秒级阻塞延时 |
 | `System/Tick.c/.h` | 系统基础 | 100 Hz 累计节拍 |
@@ -453,13 +458,13 @@ uint8_t TestApp_Update(App_UpdateContext_t *context); /* 更新测试通道并�
 | `Accomplish/` | 具体题目实现 C 模块 | 位于工程根目录；每道题独立保存用户参数、状态编号、回调、转换表和静态状态图；当前启用 `25H.c/.h`，并保留 `25E.c/.h` 与刹车测试 `Test.c/.h` |
 | `Application/Control/` | 运动控制层 C 模块 | MotionManager、通用 PID、公共双轮速度闭环、直线、巡线、目标角转向和短暂主动刹车 |
 | `Application/Debug/` | 应用层 C 模块 | OLED 调试页面编排、CSV 遥测输出与运行时调参注册表 |
-| `Application/Servo/` | 舵机硬件模块 | TIMA0 双通道 PWM、角度限位和脉宽换算 |
+| `Application/Servo/` | 舵机硬件模块 | 当前关闭 PWM 硬件，仅保留角度限位和记录接口 |
 | `Application/State/` | 状态层 C 模块 | Z 轴航向角解算、编码器里程与速度状态 |
 | `Hardware/Board/` | 板级驱动 | 按键、LED、蜂鸣器 |
-| `Hardware/Comms/` | 通信驱动 | UART1 无线串口和 UART2 K230 的中断接收环形缓冲区与发送接口 |
+| `Hardware/Comms/` | 通信驱动 | `Serial1`/UART2 DAPLink、`Serial2`/UART1 HC05 与 `Serial3`/UART3 K230 的中断接收、环形缓冲和 DMA 发送接口 |
 | `Hardware/Display/` | 显示驱动与数据 | OLED I2C 驱动、帧缓冲、字模和图像数据 |
 | `Hardware/Motor/` | 电机驱动 | TIMG8 PWM、TB6612 方向控制、编码器正交解码 |
-| `Hardware/Sensors/` | 传感器驱动 | 五路灰度 GPIO、MPU6050 软件 I2C |
+| `Hardware/Sensors/` | 传感器驱动 | 主车八路/从车五路灰度 GPIO、MPU6050 软件 I2C |
 | `System/` | 系统基础模块 | 阻塞延时、100 Hz SysTick 计数和全局硬件中断开关 |
 | `Debug/`、`Release/` | 生成目录 | 目标文件、依赖文件、链接文件和固件输出；不手工修改 |
 | `.gitignore` | Git 配置 | 排除构建产物 |
@@ -480,28 +485,28 @@ uint8_t TestApp_Update(App_UpdateContext_t *context); /* 更新测试通道并�
 | `Application/Control/PID.c/.h` | 通用 PID 初始化、调参、复位和单步计算 |
 | `Application/Control/MotionStraight.c/.h` | 头文件顶部保存直线参数；源文件实现距离规划、5/6 末段减速、可选终点速度、MPU6050 航向 PD 和软停车状态机 |
 | `Application/Control/MotionWheel.c/.h` | 头文件顶部保存公共轮速参数；源文件实现 MotionStraight、MotionLine 与 Nav 共用的双轮速度 PI、前馈、差速修正合成和 PWM 限幅 |
-| `Application/Control/MotionLine.c/.h` | 头文件顶部保存巡线参数；源文件实现五路灰度离散权重差速、连续丢线确认、丢线正常完成和状态管理；巡线层不使用 PID |
+| `Application/Control/MotionLine.c/.h` | 头文件顶部保存巡线参数；源文件实现主车八路/从车五路灰度离散权重差速、连续丢线确认、丢线正常完成和状态管理；巡线层不使用 PID |
 | `Application/Control/MotionManager.c/.h` | 统一包装直线、巡线、转向和短暂刹车；自动停止旧模式并只更新当前模式 |
 | `Application/Control/Nav.c/.h` | 头文件顶部保存转向参数；源文件实现连续航向目标、双轮等速反向转向和到角稳定判定 |
 | `Application/Debug/DebugDisplay.c/.h` | 组织启动零漂提示、基础状态和 MotionLine 运行状态的 OLED 八行调试数据 |
-| `Application/Debug/Telemetry.c/.h` | 表驱动组装二进制 SCHEMA/SAMPLE 帧，按频率和 12 通道掩码经 UART1（DMA）输出；暴露 `SampleChannels`/`SendSchema` 供捕获复用 |
+| `Application/Debug/Telemetry.c/.h` | 表驱动组装二进制 SCHEMA/SAMPLE 帧，按频率和 12 通道掩码经 `Serial1`/UART2（DMA）输出；暴露 `SampleChannels`/`SendSchema` 供捕获复用 |
 | `Application/Debug/TelemFrame.c/.h` | 二进制帧编码：CRC-8/ATM、帧构建、float32 小端打包；与 K230Link 同 CRC，供遥测与捕获共用 |
 | `Application/Debug/Param.c/.h` | 运行时调参注册表：K 命令后端，26 个参数的读写、范围校验、左右轮独立参数与 PID apply 钩子 |
 | `Application/Debug/Capture.c/.h` | 板载高速捕获：24 KB RAM 缓冲，可变长度二进制存储最多 8 通道（单通道约 30 秒）；与遥测共用通道表，dump 发 CAP_META/SAMPLE/END 二进制帧 |
-| `Application/Servo/Servo.c/.h` | 将舵机角度换算为 TIMA0 比较值，并执行纵向/横向限位 |
+| `Application/Servo/Servo.c/.h` | 当前只执行纵向/横向角度限位和记录；`SERVO_ENABLED=0` 时不访问 PWM 硬件 |
 | `Application/State/Heading.c/.h` | MPU6050 Z 轴零漂标定、角速度积分和尺度标定 |
 | `Application/State/Odometry.c/.h` | 读取编码器增量，累计左右路程并计算 mm/s 速度 |
 | `Hardware/Board/Beep.c/.h` | 蜂鸣器与 LED2 的非阻塞提示状态机 |
 | `Hardware/Board/Key.c/.h` | 四个低有效按键的非阻塞状态读取 |
 | `Hardware/Board/LED.c/.h` | LED1、LED2 的开、关、翻转接口 |
-| `Hardware/Comms/Serial.c/.h` | UART1/UART2 RX 中断与环形缓冲；UART1 **TX 走 DMA 非阻塞发送**（TX 环形缓冲 + `DMA_DONE_TX` 中断推进、环绕分两次），主循环只写不等，缓冲满整帧丢弃并计数 |
+| `Hardware/Comms/Serial.c/.h` | 三路 UART 的 RX 中断和环形缓冲；三路 **TX 均走 DMA 非阻塞发送**。`Serial3` 独占 UART3/CH2，并在异常 RX 灌满缓冲时关闭自身 RX 中断以保护编码器、SysTick 和软件 I2C |
 | `Hardware/Display/OLED.c/.h` | OLED I2C 传输、128×64 帧缓冲、文本和图形绘制 |
 | `Hardware/Display/OLED_Data.c/.h` | ASCII/中文字模和公共位图常量 |
 | `Hardware/Motor/Encoder.c/.h` | GPIOA 中断中的左右编码器四倍频正交解码 |
 | `Hardware/Motor/Motor.c/.h` | 左右物理电机到 TB6612 A/B 通道的映射、方向和制动 |
 | `Hardware/Motor/PWM.c/.h` | TIMG8 双通道占空比到比较值的换算 |
-| `Hardware/Sensors/Graydetect.c/.h` | 五路灰度状态位图、通道读取和加权偏差 |
-| `Hardware/Sensors/MPU6050.c/.h` | PA10/PA11 软件 I2C、MPU6050 配置和原始数据读取 |
+| `Hardware/Sensors/Graydetect.c/.h` | 主车八路/从车五路灰度状态位图、通道读取和加权偏差 |
+| `Hardware/Sensors/MPU6050.c/.h` | PB2/PB3 软件 I2C、MPU6050 配置和原始数据读取 |
 | `System/Delay.c/.h` | 基于 32 MHz CPUCLK 的 us/ms/s 阻塞延时 |
 | `System/Tick.c/.h` | SysTick ISR 累计与主循环原子取出 100 Hz 节拍 |
 | `System/Interrupt.c/.h` | 在 App 和 Mission 初始化完成后统一开启或关闭全局硬件中断 |
@@ -596,6 +601,7 @@ uint8_t K230Link_PopCaptureAck(uint8_t *ok, uint16_t *index);
 | `K230Link.h` | `K230_LINK_FRAME_VERSION` | `0x01` | 协议版本 |
 | `K230Link.h` | `K230_LINK_MAX_PAYLOAD_LENGTH` | `32U` | 最大载荷长度 |
 | `K230Link.h` | `K230_LINK_READY_RETRY_TICKS` | `10U` | READY 重发周期，100 ms |
+| `K230Link.h` | `K230_LINK_RX_BUDGET_BYTES` | `128U` | 每个 10 ms 控制拍最多解析的 K230 RX 字节数 |
 | `K230Link.h` | `K230_LINK_MESSAGE_READY`、`K230_LINK_MESSAGE_READY_ACK`、`K230_LINK_MESSAGE_TARGET` | `0x01/0x02/0x10` | 消息类型 |
 | `DebugDisplay.h` | `DEBUG_DISPLAY_REFRESH_TICKS` | `10U` | OLED 刷新周期，100 ms |
 
@@ -969,6 +975,7 @@ const Mission_GraphDefinition_t *BrushlessMotorTest_GetMissionGraph(void); /* �
 | `K230Link.h` | `K230_LINK_FRAME_VERSION` | `0x01U` | 当前通信协议版本 |
 | `K230Link.h` | `K230_LINK_MAX_PAYLOAD_LENGTH` | `32U` | 允许接收的最大 PAYLOAD 长度 |
 | `K230Link.h` | `K230_LINK_READY_RETRY_TICKS` | `10U` | 100 Hz 下每 100 ms 重发 READY |
+| `K230Link.h` | `K230_LINK_RX_BUDGET_BYTES` | `128U` | 每拍 K230 接收解析预算，防止异常输入独占主循环 |
 | `K230Link.h` | `K230_LINK_MESSAGE_READY/READY_ACK/TARGET` | `0x01U` / `0x02U` / `0x10U` | 消息类型编号 |
 | `DebugDisplay.h` | `DEBUG_DISPLAY_REFRESH_TICKS` | `10U` | OLED 10 Hz 刷新间隔 |
 | `MotionStraight.h` | `MOTION_STRAIGHT_*` | 见 6.2 | 航向 PD、直线速度规划、减速起点比例和距离允许误差 |
@@ -987,9 +994,10 @@ const Mission_GraphDefinition_t *BrushlessMotorTest_GetMissionGraph(void); /* �
 | `Heading.h` | `HEADING_CALIBRATION_SAMPLES` | `400U` | 开机零漂采样数 |
 | `Heading.h` | `HEADING_CALIBRATION_INTERVAL_MS` | `2U` | 零漂采样间隔 |
 | `Odometry.h` | `Odometry_CountsPerMM` | `float`，初值 `6.23f` | 每毫米编码器计数，必须按实车标定 |
-| `Serial.h` | `SERIAL1_RX_BUFFER_SIZE` | `1024U` | UART1 环形接收缓冲区容量 |
-| `Serial.h` | `SERIAL2_RX_BUFFER_SIZE` | `256U` | UART2 K230 环形接收缓冲区容量 |
-| `Serial.h` | `Serial1_RxFlag` | `volatile uint8_t` | UART1 存在未读数据标志 |
+| `Serial.h` | `SERIAL1_RX_BUFFER_SIZE` | `1024U` | `Serial1`/UART2 DAPLink 环形接收缓冲区容量 |
+| `Serial.h` | `SERIAL2_RX_BUFFER_SIZE` | `256U` | `Serial2`/UART1 CarLink 环形接收缓冲区容量 |
+| `Serial.h` | `SERIAL3_RX_BUFFER_SIZE` / `SERIAL3_TX_BUFFER_SIZE` | `256U` / `256U` | `Serial3`/UART3 K230 接收与 DMA 发送缓冲区容量 |
+| `Serial.h` | `Serial1_RxFlag` | `volatile uint8_t` | PC/网页链路存在未读数据标志 |
 | `PWM.h` | `PWM_MAX_DUTY` | `1000U` | 电机 PWM 指令绝对值上限 |
 | `Graydetect.h` | `GRAY_SIDE_ALL/LEFT/RIGHT` | `0/1/2` | 灰度误差计算的通道范围 |
 | `OLED.h` | `OLED_8X16` / `OLED_6X8` | `8U` / `6U` | 字体尺寸选择 |
@@ -1070,7 +1078,7 @@ const Mission_GraphDefinition_t *BrushlessMotorTest_GetMissionGraph(void); /* �
 | `MOTION_LINE_INNER_WEIGHT` | 无 | `3` | 左右内侧灰度权重的绝对值，对应最大修正力度的一半 |
 | `MOTION_LINE_MAX_ADJUST_RATIO` | 比例 | `0.2f` | 权重达到正负 6 时，一侧减去、另一侧增加的巡线速度比例 |
 | `MOTION_LINE_MAX_SPEED_MMPS` | mm/s | `1000.0f` | 巡线请求软件上限；应结合公共轮速前馈和最终 PWM 上限设置 |
-| `MOTION_LINE_LOST_CONFIRM_TICKS` | 100 Hz 节拍 | `50U` | 连续五路全白达到 50 次后确认丢线，当前约为 500 ms |
+| `MOTION_LINE_LOST_CONFIRM_TICKS` | 100 Hz 节拍 | `50U` | 连续所有有效灰度通道全白达到 50 次后确认丢线，当前约为 500 ms |
 
 `MAX_ADJUST_RATIO` 是运行时变量 `MotionLine_TuneMaxAdjustRatio` 的上电默认值（`K9` lra）；另有仅运行时的权重变化率阻尼 `MotionLine_TuneWeightKd`（`K10` lkd，默认 0，行为与原纯离散权重差速一致）。
 

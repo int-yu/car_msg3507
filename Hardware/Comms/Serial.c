@@ -36,13 +36,25 @@ static volatile uint32_t s_serial2ReadIndex;
 static uint8_t s_serial2RxBuffer[SERIAL2_RX_BUFFER_SIZE];
 
 /* Serial2 TX 环形缓冲 + DMA，模型与 Serial1 完全一致（单生产者主循环 /
- * 单消费者 DMA 完成中断）。UART2 现承载 HC05 主从链路，需非阻塞发送。 */
+ * 单消费者 DMA 完成中断）。Serial2 现承载 HC05 主从链路，需非阻塞发送。 */
 static uint8_t s_serial2TxBuffer[SERIAL2_TX_BUFFER_SIZE];
 static volatile uint32_t s_serial2TxHead;
 static volatile uint32_t s_serial2TxTail;
 static volatile uint8_t s_serial2TxDmaActive;
 static volatile uint32_t s_serial2TxDmaLength;
 static volatile uint32_t s_serial2TxDropCount;
+
+/* Serial3 = UART3/PA14-PA25，独立承载 K230。 */
+static volatile uint32_t s_serial3WriteIndex;
+static volatile uint32_t s_serial3ReadIndex;
+static uint8_t s_serial3RxBuffer[SERIAL3_RX_BUFFER_SIZE];
+static uint8_t s_serial3TxBuffer[SERIAL3_TX_BUFFER_SIZE];
+static volatile uint32_t s_serial3TxHead;
+static volatile uint32_t s_serial3TxTail;
+static volatile uint8_t s_serial3TxDmaActive;
+static volatile uint32_t s_serial3TxDmaLength;
+static volatile uint32_t s_serial3TxDropCount;
+static volatile uint32_t s_serial3RxOverflowCount;
 
 void Serial1_Init(void)
 {
@@ -55,7 +67,7 @@ void Serial1_Init(void)
     s_txDmaLength = 0U;
     s_txDropCount = 0U;
     /*
-     * PB7 使用上拉，避免蓝牙模块断开或未供电时 RX 悬空并产生伪数据。
+     * PA22（DAPLink → MCU）使用上拉，避免调试链路断开时 RX 悬空并产生伪数据。
      * 本配置必须在 SYSCFG_DL_init() 之后执行，以重新应用带上拉的外设输入功能。
      */
     DL_GPIO_initPeripheralInputFunctionFeatures(
@@ -230,7 +242,7 @@ void Serial2_Init(void)
     s_serial2TxDmaActive = 0U;
     s_serial2TxDmaLength = 0U;
     s_serial2TxDropCount = 0U;
-    /* HC05（或 F32C）未上电时保持 RX 为确定的高电平，避免悬空产生伪字节。 */
+    /* PB7（HC05 → MCU）保持为确定的高电平，避免模块未上电时 RX 悬空产生伪字节。 */
     DL_GPIO_initPeripheralInputFunctionFeatures(
         GPIO_BRUSHLESS_UART_IOMUX_RX,
         GPIO_BRUSHLESS_UART_IOMUX_RX_FUNC,
@@ -337,7 +349,11 @@ void Serial2_SendByte(uint8_t byte)
     (void)Serial2_SendArray(&byte, 1U);
 }
 
-void UART1_IRQHandler(void)
+/*
+ * 中断入口使用 SysConfig 生成的实例宏：交换物理 UART 后，Serial1 自动落到
+ * UART2_IRQHandler，Serial2 自动落到 UART1_IRQHandler，避免向量与寄存器错配。
+ */
+void BLUETOOTH_UART_INST_IRQHandler(void)
 {
     /* 一次中断可能同时挂起 RX 与 DMA_DONE_TX；用 getPendingInterrupt 逐个取出，
      * 直到没有待处理中断为止，避免漏掉同时到达的事件。 */
@@ -371,9 +387,9 @@ void UART1_IRQHandler(void)
     }
 }
 
-void UART2_IRQHandler(void)
+void BRUSHLESS_UART_INST_IRQHandler(void)
 {
-    /* 与 UART1 同构：一次中断可能同时挂起 RX 与 DMA_DONE_TX，逐个取出直到清空。 */
+    /* 与 Serial1 同构：一次中断可能同时挂起 RX 与 DMA_DONE_TX，逐个取出直到清空。 */
     for (;;)
     {
         switch (DL_UART_Main_getPendingInterrupt(BRUSHLESS_UART_INST))
@@ -396,6 +412,184 @@ void UART2_IRQHandler(void)
                         s_serial2ReadIndex =
                             s_serial2WriteIndex - SERIAL2_RX_BUFFER_SIZE;
                     }
+                }
+                break;
+
+            case DL_UART_MAIN_IIDX_NO_INTERRUPT:
+            default:
+                return;
+        }
+    }
+}
+
+/* ---- Serial3：K230 视觉链路 ---- */
+
+void Serial3_Init(void)
+{
+    s_serial3WriteIndex = 0U;
+    s_serial3ReadIndex = 0U;
+    s_serial3TxHead = 0U;
+    s_serial3TxTail = 0U;
+    s_serial3TxDmaActive = 0U;
+    s_serial3TxDmaLength = 0U;
+    s_serial3TxDropCount = 0U;
+    s_serial3RxOverflowCount = 0U;
+
+    /*
+     * SysConfig 已从上电 PinMux 阶段给 PA25 上拉；这里再次配置并在启用 NVIC
+     * 前排空 FIFO/清外设 pending，避免未接模块时的启动瞬态留下伪 RX 中断。
+     */
+    NVIC_DisableIRQ(K230_UART_INST_INT_IRQN);
+    DL_GPIO_initPeripheralInputFunctionFeatures(
+        GPIO_K230_UART_IOMUX_RX,
+        GPIO_K230_UART_IOMUX_RX_FUNC,
+        DL_GPIO_INVERSION_DISABLE, DL_GPIO_RESISTOR_PULL_UP,
+        DL_GPIO_HYSTERESIS_DISABLE, DL_GPIO_WAKEUP_DISABLE);
+    while (!DL_UART_Main_isRXFIFOEmpty(K230_UART_INST))
+    {
+        (void)DL_UART_Main_receiveData(K230_UART_INST);
+    }
+    DL_UART_Main_clearInterruptStatus(
+        K230_UART_INST,
+        DL_UART_MAIN_INTERRUPT_RX | DL_UART_MAIN_INTERRUPT_DMA_DONE_TX);
+    NVIC_ClearPendingIRQ(K230_UART_INST_INT_IRQN);
+    NVIC_EnableIRQ(K230_UART_INST_INT_IRQN);
+}
+
+static void Serial3_StartTxDma(void)
+{
+    uint32_t tail = s_serial3TxTail % SERIAL3_TX_BUFFER_SIZE;
+    uint32_t pending = s_serial3TxHead - s_serial3TxTail;
+    uint32_t chunk;
+
+    if ((s_serial3TxDmaActive != 0U) || (pending == 0U))
+    {
+        return;
+    }
+
+    chunk = SERIAL3_TX_BUFFER_SIZE - tail;
+    if (chunk > pending)
+    {
+        chunk = pending;
+    }
+
+    s_serial3TxDmaActive = 1U;
+    s_serial3TxDmaLength = chunk;
+    DL_DMA_setSrcAddr(DMA, DMA_K230_TX_CHAN_ID,
+                      (uint32_t)&s_serial3TxBuffer[tail]);
+    DL_DMA_setDestAddr(DMA, DMA_K230_TX_CHAN_ID,
+                       (uint32_t)&K230_UART_INST->TXDATA);
+    DL_DMA_setTransferSize(DMA, DMA_K230_TX_CHAN_ID, chunk);
+    DL_DMA_enableChannel(DMA, DMA_K230_TX_CHAN_ID);
+}
+
+void Serial3_OnDmaTxComplete(void)
+{
+    s_serial3TxTail += s_serial3TxDmaLength;
+    s_serial3TxDmaLength = 0U;
+    s_serial3TxDmaActive = 0U;
+    Serial3_StartTxDma();
+}
+
+uint32_t Serial3_GetTxDropCount(void)
+{
+    return s_serial3TxDropCount;
+}
+
+uint32_t Serial3_GetRxOverflowCount(void)
+{
+    return s_serial3RxOverflowCount;
+}
+
+uint32_t Serial3_Available(void)
+{
+    return s_serial3WriteIndex - s_serial3ReadIndex;
+}
+
+uint8_t Serial3_ReadByte(uint8_t *byte)
+{
+    if ((byte == NULL) ||
+        (s_serial3ReadIndex == s_serial3WriteIndex))
+    {
+        return 0U;
+    }
+
+    *byte = s_serial3RxBuffer[
+        s_serial3ReadIndex % SERIAL3_RX_BUFFER_SIZE];
+    s_serial3ReadIndex++;
+    return 1U;
+}
+
+uint8_t Serial3_SendArray(const uint8_t *array, uint16_t length)
+{
+    uint16_t index;
+    uint32_t used;
+    uint32_t space;
+    uint32_t primask;
+
+    if ((array == NULL) || (length == 0U))
+    {
+        return 0U;
+    }
+
+    used = s_serial3TxHead - s_serial3TxTail;
+    space = SERIAL3_TX_BUFFER_SIZE - used;
+    if (length > space)
+    {
+        s_serial3TxDropCount += length;
+        return 0U;
+    }
+
+    for (index = 0U; index < length; index++)
+    {
+        s_serial3TxBuffer[
+            s_serial3TxHead % SERIAL3_TX_BUFFER_SIZE] = array[index];
+        s_serial3TxHead++;
+    }
+
+    /* 保留调用前 PRIMASK，避免在原本的关中断区错误地提前开启全局中断。 */
+    primask = __get_PRIMASK();
+    __disable_irq();
+    Serial3_StartTxDma();
+    __set_PRIMASK(primask);
+    return 1U;
+}
+
+void Serial3_SendByte(uint8_t byte)
+{
+    (void)Serial3_SendArray(&byte, 1U);
+}
+
+void K230_UART_INST_IRQHandler(void)
+{
+    for (;;)
+    {
+        switch (DL_UART_Main_getPendingInterrupt(K230_UART_INST))
+        {
+            case DL_UART_MAIN_IIDX_DMA_DONE_TX:
+                Serial3_OnDmaTxComplete();
+                break;
+
+            case DL_UART_MAIN_IIDX_RX:
+                while (!DL_UART_Main_isRXFIFOEmpty(K230_UART_INST))
+                {
+                    uint8_t data = DL_UART_Main_receiveData(K230_UART_INST);
+
+                    /*
+                     * 环形缓冲已满：丢弃当前字节并计数。解析器以 AA 55 为同步
+                     * 头，下一帧会自然对齐，不需要熔断 RX 中断。
+                     */
+                    if ((s_serial3WriteIndex - s_serial3ReadIndex) >=
+                        SERIAL3_RX_BUFFER_SIZE)
+                    {
+                        s_serial3RxOverflowCount++;
+                        continue;
+                    }
+
+                    s_serial3RxBuffer[
+                        s_serial3WriteIndex %
+                        SERIAL3_RX_BUFFER_SIZE] = data;
+                    s_serial3WriteIndex++;
                 }
                 break;
 

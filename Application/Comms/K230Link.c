@@ -107,7 +107,7 @@ static void K230Link_SendFrame(uint8_t type,
         crc = K230Link_Crc8Update(crc, payload[index]);
     }
     frame[6U + length] = crc;
-    Serial2_SendArray(frame, (uint16_t)(7U + length));
+    (void)Serial3_SendArray(frame, (uint16_t)(7U + length));
 }
 
 static void K230Link_HandleFrame(void)
@@ -241,7 +241,7 @@ static void K230Link_ParseByte(uint8_t data)
 
 void K230Link_Init(void)
 {
-    Serial2_Init();
+    Serial3_Init();
     K230Link_ResetParser();
     s_target.valid = 0U;
     s_target.offsetX = 0;
@@ -263,10 +263,17 @@ void K230Link_Init(void)
 void K230Link_Update(uint8_t elapsedTicks)
 {
     uint8_t data;
+    uint16_t processed = 0U;
 
-    while (Serial2_ReadByte(&data) != 0U)
+    /*
+     * 不再无上限追赶 RX 写指针。128 字节/拍略高于 115200 baud 在 10 ms
+     * 内的理论字节数，正常流量不会积压；异常噪声也不能独占主循环。
+     */
+    while ((processed < K230_LINK_RX_BUDGET_BYTES) &&
+           (Serial3_ReadByte(&data) != 0U))
     {
         K230Link_ParseByte(data);
+        processed++;
     }
 
     if (s_readyAcknowledged == 0U)

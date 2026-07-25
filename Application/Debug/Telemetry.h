@@ -24,7 +24,7 @@
 #define TELEMETRY_CH_YAW    0x0040U /* 连续累计航向角 度 */
 #define TELEMETRY_CH_NAVE   0x0080U /* 转向角误差 度 */
 #define TELEMETRY_CH_LERR   0x0100U /* 巡线权重误差 */
-#define TELEMETRY_CH_GRAY   0x0200U /* 五路灰度位图（转 float） */
+#define TELEMETRY_CH_GRAY   0x0200U /* 灰度位图（主车八路、从车五路） */
 #define TELEMETRY_CH_LD     0x0400U /* 左轮累计路程 mm */
 #define TELEMETRY_CH_RD     0x0800U /* 右轮累计路程 mm */
 #define TELEMETRY_CH_ALL    0x0FFFU

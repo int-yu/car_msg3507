@@ -4,10 +4,13 @@
 #include <stdint.h>
 
 /*
- * TIMA0 舵机 PWM 映射：
- *   PB8 / CCP0 -> 横向舵机
- *   PB9 / CCP1 -> 纵向舵机
+ * 新板将 PB8/PB9 用于灰度输入，本阶段停用舵机 PWM。角度 API 继续保留，
+ * 以免上层调试命令和测试入口失去链接；禁用时只记录角度，不访问硬件。
  */
+#ifndef SERVO_ENABLED
+#define SERVO_ENABLED 0
+#endif
+
 #define SERVO_PHYSICAL_RANGE_DEG          270U
 #define SERVO_MIN_PULSE_US                500U
 #define SERVO_MAX_PULSE_US                2500U

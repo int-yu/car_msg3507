@@ -142,8 +142,11 @@ void App_Init(void)
     Motor_Init();
     Servo_Init();
     Serial1_Init();
-    /* K230/F32C 暂时停用（UART2 已改接 HC05 主从链路）；代码保留，等挪串口再启用。 */
-    /* K230Link_Init(); */
+    /*
+     * K230 使用独立 Serial3/UART3。未连接时 PA25 由硬件上拉保持空闲高电平，
+     * 握手保持离线，不应影响网页、CarLink 或行车控制。
+     */
+    K230Link_Init();
     CarLink_Init();
     Odometry_Init();
 
@@ -194,7 +197,7 @@ uint8_t App_Update(App_UpdateContext_t *context)
 
     Heading_Update(context->dt);
     Odometry_Update(elapsedTicks);
-    /* 云台 F32C 停用：UART2 现为 HC05 主从链路，勿在此启用 Gimbal 以免冲突。 */
+    /* 云台 F32C 仍停用：其原逻辑串口 Serial2 当前用于 HC05 CarLink。 */
     /* Gimbal_Update(context->dt); */
 
     keyMask = Key_GetPressedMask();
@@ -204,6 +207,7 @@ uint8_t App_Update(App_UpdateContext_t *context)
     s_previousKeyMask = keyMask;
 
     CarLink_Update(elapsedTicks);
+    K230Link_Update(elapsedTicks);
 
     BluetoothDebug_Update(
         elapsedTicks, (MotionManager_IsBusy() == 0U) ? 1U : 0U);
@@ -252,7 +256,7 @@ uint8_t App_Update(App_UpdateContext_t *context)
     MotionManager_Update(context->dt);
     App_ReportMotionError();
 
-    /* K230 拍照 ACK 处理随 K230 一起停用（UART2 已改接主从链路）。
+    /* K230 拍照 ACK；未连接时没有 ACK，此块直接空转。 */
     {
         uint8_t captureOk;
         uint16_t captureIndex;
@@ -269,7 +273,6 @@ uint8_t App_Update(App_UpdateContext_t *context)
             }
         }
     }
-    */
 
     /* 必须在 MotionManager_Update() 之后：目标速度和输出 PWM 都是本拍算出的，
      * 提前采会记录到上一拍的值，阶跃起点会整体偏移一个控制周期。 */

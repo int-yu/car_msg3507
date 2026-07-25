@@ -15,7 +15,7 @@ static void DebugDisplay_ShowGrayState(uint8_t state)
     uint8_t index;
 
     OLED_ShowString(0, 8, "GRAY:", OLED_6X8);
-    for (index = 0U; index < 5U; index++)
+    for (index = 0U; index < GRAY_CHANNEL_COUNT; index++)
     {
         OLED_ShowChar((int16_t)(30 + index * OLED_6X8), 8,
                       ((state >> index) & 1U) != 0U ? '1' : '0',

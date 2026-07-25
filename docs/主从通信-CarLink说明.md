@@ -1,6 +1,6 @@
 # 主从双车通信（CarLink）说明
 
-两辆车各接一个 HC05 在 **PA21/PA22（UART2）** 上，互为主从、点对点通信。
+两辆车各接一个 HC05 在 **PB6/PB7（UART1）** 上，互为主从、点对点通信。
 链路用二进制帧 + DMA 非阻塞发送，复用工程里已验证过的 K230 帧范式，
 留足扩展点——**以后要传什么内容，基本只加“消息类型 + 一个 case”即可**。
 
@@ -8,13 +8,13 @@
 
 | 逻辑口 | UART | 引脚 | 现在接谁 | 发送方式 |
 |---|---|---|---|---|
-| Serial1 | UART1 | PB6/PB7 | BLOOTH →（主车）无线 daplink → 电脑/网页 | DMA TX (CH0) |
-| Serial2 | UART2 | **PA21/PA22** | **HC05 主从链路（CarLink）** | **DMA TX (CH1)** ← 本次新增 |
+| Serial1 | UART2 | PA21/PA22 | DAPLink → 电脑/网页 | DMA TX (CH0) |
+| Serial2 | UART1 | **PB6/PB7** | **HC05 主从链路（CarLink）** | **DMA TX (CH1)** |
+| Serial3 | UART3 | PA14/PA25 | K230 视觉链路（与 CarLink 独立） | DMA TX (CH2) |
 
-> UART2 原来接 K230 + F32C 云台，现改接 HC05。**K230/F32C 代码全部保留但已停用**
-> （`App.c` 里注释掉了 `K230Link_Init/Update`、拍照 ACK、`Gimbal_Update`）。
-> 等你把 K230 挪到别的 UART 时，再新建一个 Serial3 把它们接回去即可。
-> syscfg 里 UART2 的名字暂时仍叫 `BRUSHLESS_UART`（只为少改动、少一处重新命名的风险）。
+> `Serial1`/`Serial2` 是稳定的逻辑接口名，不等于物理外设编号：
+> `BLUETOOTH_UART` 当前落在 UART2，`BRUSHLESS_UART` 当前落在 UART1。
+> K230Link 当前使用独立 `Serial3`/UART3；PA25 RX 从 PinMux 阶段上拉，K230 未连接时保持离线，不占用 CarLink。F32C/Gimbal 仍停用。
 
 ## 二、主从身份：编译期二选一（两套固件）
 
@@ -27,19 +27,20 @@
 身份只影响“谁转发网页命令 / 谁执行被转发的命令 / 谁在满足条件时触发事件”。
 链路本身对称：两车都跑同一份 `CarLink`，都能主动收发。
 
-## 三、⚠️ 编译前必做一步：在 CCS 里重新生成 DMA 配置
+## 三、编译前必须重新生成 SysConfig
 
-和上次给 UART1 加 DMA 一样，UART2 的 DMA **初始化代码**要 SysConfig 生成，命令行做不了：
+UART 实例、PinMux、DMA 触发和 IRQ 宏都由 SysConfig 生成；交换映射后必须重新生成，不能沿用旧的 `Debug/ti_msp_dl_config.*`：
 
 1. CCS 里双击打开 `main.syscfg`。
-2. 左侧 **UART → BRUSHLESS_UART**，确认已勾选 **Enable DMA TX**，
-   **Enabled Interrupts** 含 **DMA Done TX + RX**，下面挂了个 DMA 通道 **DMA_PEERLINK_TX**（DMA_CH1）。
-   （这些我已写进 `main.syscfg`，正常会自动读出来，无需手改。）
+2. 确认 **BLUETOOTH_UART = UART2 / PA21/PA22 / DMA_CH0**，
+   **BRUSHLESS_UART = UART1 / PB6/PB7 / DMA_CH1**，
+   **K230_UART = UART3 / PA14/PA25 / DMA_CH2**；三路中断都包含 **DMA Done TX + RX**。
 3. `Ctrl+S` 保存 → 重新生成 `Debug/ti_msp_dl_config.c/.h`（会多出 `DMA_PEERLINK_TX_CHAN_ID` 等符号）。
 4. 右键工程 → **Clean Project** → **Build Project**。
 
-> 在这一步完成前，`Serial.c` 会因为缺 `DMA_PEERLINK_TX_CHAN_ID` 编译不过——这是正常的，
-> 生成后即可。（`CarLink.c` 是新文件，CCS 重建时会自动扫描到；裸 make 我也已补进 `subdir_vars.mk`。）
+> 生成头应显示 `BLUETOOTH_UART_INST = UART2`、`BRUSHLESS_UART_INST = UART1`；
+> `K230_UART_INST = UART3`；对应 ISR 宏分别展开为 `UART2_IRQHandler`、
+> `UART1_IRQHandler` 与 `UART3_IRQHandler`。
 
 ## 四、帧协议
 
@@ -88,11 +89,11 @@
   不二次封装、不重算 CRC。与 0xAA 控制帧靠首字节区分。
 - 网页：顶层 `routeStream` 按 0xAA/0xAB 分流到两个 `TelemetryParser`，各画各的面板。
 
-**默认关闭**：从车遥测要与主车遥测共用主车 UART1 上行带宽，所以**从车默认 `rate=0`**，
+**默认关闭**：从车遥测要与主车遥测共用主车 `Serial1`（物理 UART2）上行带宽，所以**从车默认 `rate=0`**，
 网页从车面板发 `@G<rate>` 开启、`@M<mask>` 选通道。面板实时显示估算带宽占用。
 
 **带宽/100Hz**：一帧 = `11 + 4×通道数` 字节。两车都选 6 通道 @50Hz ≈ 各 1750 B/s，
-合计约占主车 UART1 的 30%，**两车都能 100Hz**（全程 DMA 非阻塞）。别把从车遥测通道
+合计约占主车 `Serial1` 的 30%，**两车都能 100Hz**（全程 DMA 非阻塞）。别把从车遥测通道
 开太多/太高频，网页带宽条会提醒。
 
 **独立驾驶**：网页 `WASD` 控主车、`方向键` 控从车，可同时；点击驾驶盘按目标下拉框
@@ -119,15 +120,15 @@
 ## 七、涉及文件
 
 - 新增：`Application/Core/CarRole.h`、`Application/Comms/CarLink.{h,c}`
-- 改：`main.syscfg`（UART2 加 DMA TX）、`Hardware/Comms/Serial.{h,c}`（Serial2 升级 DMA）、
+- 改：`main.syscfg`（交换两路物理 UART 角色并新增独立 UART3/DMA CH2）、`Hardware/Comms/Serial.{h,c}`（ISR 随生成实例映射）、
   `Application/Comms/BluetoothDebug.{h,c}`（`@` 转发 + `FeedExternal`）、
-  `Application/Core/App.c`（停用 K230/云台、接入 CarLink）、`car_debug.html`（发给从机开关）
-- 停用（保留代码）：`K230Link`、`F32C`/`Gimbal`
+  `Application/Core/App.c`（接入 CarLink 与独立 K230Link、停用云台）、`car_debug.html`（发给从机开关）
+- 启用：`K230Link`（独立 UART3）；停用（保留代码）：`F32C`/`Gimbal`
 
 ## 八、实车验证建议（分阶段）
 
-1. **先验 DMA**：只烧主车，网页连上，看遥测/命令是否正常（等价上次 UART1 的验收，
-   确认 UART2 DMA 发送不卡死）。此时从车可不上电。
+1. **先验网页链路**：只烧主车，通过 PA21/PA22 的 DAPLink 连接网页，看遥测/命令是否正常，
+   确认 `Serial1`/UART2 的 RX、DMA TX 和 IRQ 都工作。此时从车可不上电。
 2. **验链路**：两车都烧（一主一从）、都上电。主车网页发 `@W200`，看从车是否走；
    发 `C0` 看两车是否一起停（EVENT 示例）。
 3. **验掉线**：断从车电，主车 `CarLink_IsPeerAlive()` 应在 ~2s 后转为离线。

@@ -2,16 +2,20 @@
 #define SERIAL_H
 
 /*
- * UART1 连接蓝牙（BLOOTH → 无线 daplink → 电脑/网页）。
- * UART2（PA21/PA22）原为 F32C 云台/K230，现改接 HC05 主从链路（CarLink）；
- *   F32C/K230 代码保留但暂时停用（见 App.c），等挪到新串口再启用。
- * 协议解析放在各自的专用应用层（BluetoothDebug / CarLink）。
+ * Serial1 = BLUETOOTH_UART = UART2 / PA21(TX)、PA22(RX)
+ *           -> DAPLink / PC / 网页。
+ * Serial2 = BRUSHLESS_UART = UART1 / PB6(TX)、PB7(RX)
+ *           -> HC05 车对车 CarLink。
+ * Serial3 = K230_UART = UART3 / PA14(TX)、PA25(RX)
+ *           -> K230 视觉链路。
+ * 协议解析放在各自的专用应用层（BluetoothDebug / CarLink / K230Link）。
  */
 
 #include <stdint.h>
 
 #define SERIAL1_RX_BUFFER_SIZE 1024U
 #define SERIAL2_RX_BUFFER_SIZE 256U
+#define SERIAL3_RX_BUFFER_SIZE 256U
 
 /* TX 环形缓冲：DMA 从这里搬到 UART，主循环只写不等。二进制遥测一帧可达
  * 数百字节且高频，缓冲要够大以吸收突发；2048 可容纳一帧 schema + 多帧样本。 */
@@ -19,6 +23,9 @@
 
 /* 主从链路帧短、频率低，512 足以吸收突发（一帧最多 7+32 字节）。 */
 #define SERIAL2_TX_BUFFER_SIZE 512U
+
+/* K230 帧最长 39 字节；256 字节可覆盖多帧突发。 */
+#define SERIAL3_TX_BUFFER_SIZE 256U
 
 extern volatile uint8_t Serial1_RxFlag;
 
@@ -54,5 +61,18 @@ uint8_t Serial2_SendArray(const uint8_t *array, uint16_t length);
 void Serial2_OnDmaTxComplete(void);
 /* TX 缓冲满时丢弃的字节数，用于诊断链路带宽是否超限。 */
 uint32_t Serial2_GetTxDropCount(void);
+
+/*
+ * K230 独立 UART。RX 环形缓冲写满时丢弃新字节并累计 overflow 计数，解析器
+ * 靠 AA 55 同步头自愈；不熔断 RX 中断，避免瞬时拥塞永久掉线。
+ */
+void Serial3_Init(void);
+uint32_t Serial3_Available(void);
+uint8_t Serial3_ReadByte(uint8_t *byte);
+void Serial3_SendByte(uint8_t byte);
+uint8_t Serial3_SendArray(const uint8_t *array, uint16_t length);
+void Serial3_OnDmaTxComplete(void);
+uint32_t Serial3_GetTxDropCount(void);
+uint32_t Serial3_GetRxOverflowCount(void);
 
 #endif
