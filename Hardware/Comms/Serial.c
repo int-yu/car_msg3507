@@ -136,6 +136,7 @@ void Serial1_SendArray(const uint8_t *array, uint16_t length)
     uint16_t i;
     uint32_t used;
     uint32_t space;
+    uint32_t primask;
 
     if (array == NULL)
     {
@@ -174,10 +175,14 @@ void Serial1_SendArray(const uint8_t *array, uint16_t length)
     }
 
     /* 若 DMA 当前空闲就点火；正忙则完成中断会自然接上。
-     * 关中断保护这个「检查—启动」，避免与完成中断同时判定 active。 */
+     * 关中断保护这个「检查—启动」，避免与完成中断同时判定 active。
+     * 必须保存/恢复 PRIMASK 而非无条件 __enable_irq()：本函数会在关中断的
+     * 临界区里被调用（例如 App_Init() 全程关中断，其中 BluetoothDebug_Init()
+     * 要发 READY 横幅），无条件开中断会把调用方的临界区静默打开。 */
+    primask = __get_PRIMASK();
     __disable_irq();
     Serial1_StartTxDma();
-    __enable_irq();
+    __set_PRIMASK(primask);
 }
 
 void Serial1_SendByte(uint8_t byte)
@@ -316,6 +321,7 @@ uint8_t Serial2_SendArray(const uint8_t *array, uint16_t length)
     uint16_t i;
     uint32_t used;
     uint32_t space;
+    uint32_t primask;
 
     if ((array == NULL) || (length == 0U))
     {
@@ -338,9 +344,11 @@ uint8_t Serial2_SendArray(const uint8_t *array, uint16_t length)
         s_serial2TxHead++;
     }
 
+    /* 与 Serial1_SendArray 同理：保存/恢复 PRIMASK，不得无条件开中断。 */
+    primask = __get_PRIMASK();
     __disable_irq();
     Serial2_StartTxDma();
-    __enable_irq();
+    __set_PRIMASK(primask);
     return 1U;
 }
 
