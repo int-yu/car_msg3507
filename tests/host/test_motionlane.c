@@ -36,20 +36,34 @@ static void FeedFrameLocal(uint8_t type, uint8_t sequence,
     Stub_FeedRx(frame, (uint16_t)(7U + length));
 }
 
-/* 把一帧 LANE 送进 K230Link，五个带用同一个偏差。 */
-static void FeedLane(int16_t offset, uint8_t confidence, uint8_t sequence)
+/* 把一帧 LANE 送进 K230Link，五个带各自的偏差可以不同——用于构造
+ * 「近带是哨兵、远带有效」之类的退带场景。 */
+static void FeedLaneBands(const int16_t offsets[5], uint8_t confidence,
+                          uint8_t sequence)
 {
     uint8_t payload[12];
     uint8_t band;
-    uint16_t raw = (uint16_t)offset;
 
     payload[0] = 1U;
     for (band = 0U; band < 5U; band++) {
+        uint16_t raw = (uint16_t)offsets[band];
         payload[1U + band * 2U] = (uint8_t)(raw & 0xFFU);
         payload[2U + band * 2U] = (uint8_t)((raw >> 8U) & 0xFFU);
     }
     payload[11] = confidence;
     FeedFrameLocal(K230_LINK_MESSAGE_LANE, sequence, payload, 12U);
+}
+
+/* 把一帧 LANE 送进 K230Link，五个带用同一个偏差。 */
+static void FeedLane(int16_t offset, uint8_t confidence, uint8_t sequence)
+{
+    int16_t offsets[5];
+    uint8_t band;
+
+    for (band = 0U; band < 5U; band++) {
+        offsets[band] = offset;
+    }
+    FeedLaneBands(offsets, confidence, sequence);
 }
 
 /* 复位到「握手完成、陀螺仪静止、巡道以 300 mm/s 运行中」。 */
@@ -155,22 +169,42 @@ static void test_low_confidence_is_treated_as_lost(void)
     CHECK_NEAR(g_lastRightMMps, 0.0f, 0.01f);
 }
 
-static void test_invalid_near_band_is_treated_as_lost(void)
+/* 五个带全部是哨兵——没有任何一条带能提供偏差，只能判丢道。 */
+static void test_all_bands_invalid_is_treated_as_lost(void)
 {
-    uint8_t payload[12];
+    int16_t offsets[5];
     uint8_t band;
 
     SetupRunning();
-    payload[0] = 1U;
     for (band = 0U; band < 5U; band++) {
-        payload[1U + band * 2U] = 0x00U;   /* -32768 的低字节 */
-        payload[2U + band * 2U] = 0x80U;   /* 高字节 */
+        offsets[band] = K230_LINK_LANE_OFFSET_INVALID;
     }
-    payload[11] = 95U;
-    FeedFrameLocal(K230_LINK_MESSAGE_LANE, 0x36U, payload, 12U);
+    FeedLaneBands(offsets, 95U, 0x36U);
     K230Link_Update(1U);
     MotionLane_Update(0.01f);
     CHECK_NEAR(g_lastLeftMMps, 0.0f, 0.01f);
+}
+
+/* b0 贴着中心线覆盖范围的边界，车头/阴影/赛道边沿遮住画面底部一点点
+ * 就会让它变成哨兵；只要 b1..b4 还有一条有效，就必须退到那条带继续
+ * 正常控制，而不是稀里糊涂判丢道。用的偏差必须是 b1 的（-100 → 车道
+ * 偏右 → 左轮快、右轮慢），不能是 b0 的（哨兵，如果被当成 0 会得到
+ * 完全不同、错误的“居中”结果）。 */
+static void test_near_band_invalid_falls_back_to_next_valid_band(void)
+{
+    int16_t offsets[5] = {
+        K230_LINK_LANE_OFFSET_INVALID, -100, -100, -100, -100
+    };
+
+    SetupRunning();
+    FeedLaneBands(offsets, 96U, 0x3AU);
+    K230Link_Update(1U);
+    MotionLane_Update(0.01f);
+
+    CHECK(MotionLane_IsBusy() == 1U);           /* 没有判丢道 */
+    CHECK(g_lastLeftMMps > g_lastRightMMps);    /* 用 b1 的偏差正常转向 */
+    CHECK_NEAR(MotionLane_GetLaneError(), 100.0f, 0.01f);
+    CHECK_NEAR(MotionLane_GetAdjustMMps(), 20.0f, 0.01f);  /* 0.20 * 100 */
 }
 
 /* 丢失先保持上一拍轮速，超过保持窗口才结束任务。 */
@@ -184,7 +218,10 @@ static void test_lost_holds_then_finishes(void)
     MotionLane_Update(0.01f);
     CHECK_NEAR(g_lastLeftMMps, 300.0f, 0.01f);
 
-    /* 之后不再喂帧：K230Link 超时 → MotionLane 判丢失。 */
+    /* 之后不再喂帧：视觉数据陈旧到一定程度就会被判失效——实际先触发的
+     * 是 MotionLane 自己更紧的新鲜度闸（见下面 test_stale_lane_*），
+     * 这里跑满 K230_LINK_LANE_TIMEOUT_TICKS 只是确保连链路层的超时也
+     * 一并过了，双重覆盖。丢失期间保持窗口还没走完，任务不结束。 */
     for (tick = 0U; tick < K230_LINK_LANE_TIMEOUT_TICKS; tick++) {
         K230Link_Update(1U);
         MotionLane_Update(0.01f);
@@ -198,6 +235,63 @@ static void test_lost_holds_then_finishes(void)
     }
     CHECK(MotionLane_IsFinished() == 1U);
     CHECK(MotionLane_IsBusy() == 0U);
+}
+
+/* 视觉数据本身允许多陈旧，控制层的新鲜度阈值必须比 K230Link 的链路层
+ * 300 ms 超时更紧——否则"链路还活着但偶尔丢帧"的 300 ms 里，控制律会
+ * 一直拿着同一帧陈旧偏差持续打方向。喂一帧有效数据后只推进
+ * K230Link_Update，不再喂新帧：走完 MOTION_LANE_MAX_LANE_AGE_TICKS 之后
+ * 丢失保持刚起步（还没结束），再叠加满一个 MOTION_LANE_LOST_HOLD_TICKS
+ * 窗口就必须结束——这时链路层的 K230_LINK_LANE_TIMEOUT_TICKS 还差得远
+ * （10+30 < 30+30），能在这里结束只能是控制层自己的新鲜度闸在起作用。 */
+static void test_stale_lane_starts_lost_hold_before_link_timeout(void)
+{
+    uint16_t tick;
+
+    SetupRunning();
+    FeedLane(-100, 90U, 0x41U);
+    K230Link_Update(1U);
+    MotionLane_Update(0.01f);
+    CHECK(g_lastLeftMMps > g_lastRightMMps);   /* 先确认控制生效 */
+
+    for (tick = 0U; tick < MOTION_LANE_MAX_LANE_AGE_TICKS; tick++) {
+        K230Link_Update(1U);
+        MotionLane_Update(0.01f);
+    }
+    CHECK(MotionLane_IsBusy() == 1U);   /* 丢失保持刚起步，还没结束 */
+
+    for (tick = 0U; tick < MOTION_LANE_LOST_HOLD_TICKS; tick++) {
+        K230Link_Update(1U);
+        MotionLane_Update(0.01f);
+    }
+    CHECK(MotionLane_IsFinished() == 1U);
+}
+
+/* FINISHED 是巡道任务因丢道而正常结束的路径，遥测量必须归零——不能像
+ * MotionWheel_Stop() 之外那样冻结在最后一次有效值，否则标定时会被
+ * 误读成"车已经停了但视觉还在报误差"。 */
+static void test_finished_resets_telemetry(void)
+{
+    uint16_t tick;
+
+    SetupRunning();
+    FeedLane(-100, 90U, 0x42U);
+    K230Link_Update(1U);
+    MotionLane_Update(0.01f);
+    CHECK(MotionLane_GetLaneError() != 0.0f);    /* 先确认遥测量非零 */
+    CHECK(MotionLane_GetAdjustMMps() != 0.0f);
+
+    for (tick = 0U; tick < K230_LINK_LANE_TIMEOUT_TICKS; tick++) {
+        K230Link_Update(1U);
+        MotionLane_Update(0.01f);
+    }
+    for (tick = 0U; tick < MOTION_LANE_LOST_HOLD_TICKS; tick++) {
+        K230Link_Update(1U);
+        MotionLane_Update(0.01f);
+    }
+    CHECK(MotionLane_IsFinished() == 1U);
+    CHECK_NEAR(MotionLane_GetLaneError(), 0.0f, 0.001f);
+    CHECK_NEAR(MotionLane_GetAdjustMMps(), 0.0f, 0.001f);
 }
 
 static void test_start_rejects_invalid_speed(void)
@@ -222,8 +316,11 @@ int main(void)
     test_yaw_rate_damps_the_command();
     test_adjust_is_clamped_by_ratio();
     test_low_confidence_is_treated_as_lost();
-    test_invalid_near_band_is_treated_as_lost();
+    test_all_bands_invalid_is_treated_as_lost();
+    test_near_band_invalid_falls_back_to_next_valid_band();
     test_lost_holds_then_finishes();
+    test_stale_lane_starts_lost_hold_before_link_timeout();
+    test_finished_resets_telemetry();
     test_start_rejects_invalid_speed();
     test_start_rejects_when_busy();
 

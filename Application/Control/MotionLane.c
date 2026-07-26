@@ -14,6 +14,7 @@ typedef struct
     float lastLeftSpeedMMps;
     float lastRightSpeedMMps;
     uint16_t lostTicks;
+    uint8_t laneBand;   /* 上一次成功读取时选中的带号，供遥测/排查使用。 */
     uint8_t configured;
 } MotionLane_Context_t;
 
@@ -58,6 +59,7 @@ static void MotionLane_ResetControl(void)
     s_context.lastLeftSpeedMMps = 0.0f;
     s_context.lastRightSpeedMMps = 0.0f;
     s_context.lostTicks = 0U;
+    s_context.laneBand = 0U;
 }
 
 static void MotionLane_SetError(MotionLane_Error_t error)
@@ -69,15 +71,30 @@ static void MotionLane_SetError(MotionLane_Error_t error)
 }
 
 /*
- * 判定本帧视觉是否可用。四个条件缺一不可：
- *   1. 链路新鲜（K230Link 的 ageTicks 未超时）；
- *   2. K230 自己认为这帧有效；
- *   3. 最近带不是哨兵——控制律只用 b0，b0 无效就等于没有误差可用；
- *   4. 置信度达标。
+ * 判定本帧视觉是否可用。以下条件缺一不可：
+ *   1. 链路新鲜（K230Link 自己的 ageTicks 未超过链路层 300 ms 超时）；
+ *   2. 视觉数据不陈旧（ageTicks 未超过控制层自己更紧的
+ *      MOTION_LANE_MAX_LANE_AGE_TICKS——链路层超时是给"链路还活着但
+ *      偶尔丢帧"用的，控制律拿着更旧的数据打方向没有意义）；
+ *   3. K230 自己认为这帧有效；
+ *   4. 置信度达标；
+ *   5. 五个带里至少有一个不是哨兵——取其中最近（编号最小）的一个。
+ *
+ * 第 5 条不能硬要 b0：最底那条采样行贴着中心线覆盖范围的边界，车头、
+ * 阴影或赛道边沿遮住画面底部一点点就会让它变成哨兵，此时其余各带往往
+ * 仍然有效，没有理由把整帧丢掉。代价是前视距离会随着退带而变远，同样
+ * 的 Kp 反应会略钝——这远好过停车。选中的带号存进 s_context 供遥测/
+ * 排查使用。
  */
 static uint8_t MotionLane_ReadLane(K230Link_Lane_t *lane)
 {
+    uint8_t band;
+
     if (K230Link_GetLane(lane) == 0U)
+    {
+        return 0U;
+    }
+    if (lane->ageTicks > MOTION_LANE_MAX_LANE_AGE_TICKS)
     {
         return 0U;
     }
@@ -85,14 +102,23 @@ static uint8_t MotionLane_ReadLane(K230Link_Lane_t *lane)
     {
         return 0U;
     }
-    if ((lane->bandValid & 0x01U) == 0U)
-    {
-        return 0U;
-    }
     if (lane->confidence < MOTION_LANE_MIN_CONFIDENCE)
     {
         return 0U;
     }
+
+    for (band = 0U; band < K230_LINK_LANE_BAND_COUNT; band++)
+    {
+        if ((lane->bandValid & (uint8_t)(1U << band)) != 0U)
+        {
+            break;
+        }
+    }
+    if (band >= K230_LINK_LANE_BAND_COUNT)
+    {
+        return 0U;
+    }
+    s_context.laneBand = band;
     return 1U;
 }
 
@@ -126,7 +152,7 @@ static uint8_t MotionLane_CalculateTargetSpeeds(
      * K230 发的是「画面中心 - 车道中心」，车道偏右时为负。这里翻成
      * 「车道偏右为正」，与下面 adjust 正=右转 的约定对齐。
      */
-    s_context.laneError = -(float)lane.offsetPermille[0];
+    s_context.laneError = -(float)lane.offsetPermille[s_context.laneBand];
 
     /*
      * 比例项来自视觉（约 25 Hz，两帧之间是零阶保持），微分阻尼来自陀螺仪
@@ -230,8 +256,11 @@ void MotionLane_Update(float dt)
     if (MotionLane_CalculateTargetSpeeds(
             &leftSpeedMMps, &rightSpeedMMps) == 0U)
     {
-        /* 确认丢道是巡道任务的正常结束条件，与 MotionLine 一致。 */
+        /* 确认丢道是巡道任务的正常结束条件，与 MotionLine 一致。
+         * 同时要清掉遥测量：不复位的话 vx/vad 会冻结在最后一次有效值，
+         * 标定时容易被误读成"车已经停了但视觉还在报误差"。 */
         MotionWheel_Stop();
+        MotionLane_ResetControl();
         s_context.error = MOTION_LANE_ERROR_NONE;
         s_context.state = MOTION_LANE_STATE_FINISHED;
         return;

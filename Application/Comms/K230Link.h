@@ -27,7 +27,11 @@
  * 正好位于画面中央」无法区分。 */
 #define K230_LINK_LANE_OFFSET_INVALID    ((int16_t)-32768)
 
-/* 100 Hz 下 300 ms。K230 约 25 fps，允许连续丢 7 帧左右再判失效。 */
+/* 链路层的新鲜度上限：100 Hz 下 300 ms，K230 约 25 fps，允许连续丢
+ * 7 帧左右再判整条链路失效（此后 K230Link_GetLane 返回 0）。这只管
+ * "数据还在不在"，不代表控制层可以放心用到 300 ms 这么旧的数据——
+ * MotionLane 自己另有一道更紧的 MOTION_LANE_MAX_LANE_AGE_TICKS 把关，
+ * 两者是不同层次的超时，不要因为数值一样就以为总盲开时间是 300 ms。 */
 #define K230_LINK_LANE_TIMEOUT_TICKS     30U
 
 #define K230_LINK_MESSAGE_CAPTURE        0x20U

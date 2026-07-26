@@ -481,7 +481,7 @@ kbd {
             </div>
             <button id="btnMask" disabled>应用 M</button>
         </div>
-        <p class="hint">勾选后上限实时更新。二进制帧每通道 4 字节，通道越少帧越短、频率越高。DMA 发送不阻塞主循环，全 12 通道也能 100Hz 直传。</p>
+        <p class="hint">勾选后上限实时更新。二进制帧每通道 4 字节，通道越少帧越短、频率越高。DMA 发送不阻塞主循环，全 14 通道也能 100Hz 直传。</p>
         <p class="hint">调 PID 时不必纠结这里：连接/切换阶段会自动准备本阶段最优通道；开始试验会先发激励，指标按实时流计算并标注来源。</p>
     </div>
 
@@ -1441,7 +1441,7 @@ const PALETTE = ['#4da3ff', '#46c17a', '#e0a13c', '#e05c5c', '#a97ee0', '#3fc4c4
 
 /* 各调参试验的预设：掩码只留相关字段换高频，激励与收尾命令成对。
  * 频率按固件动态上限（20% 带宽）预先算好，改固件常量后需同步。 */
-/* 统一 12 通道位定义，与固件 TELEMETRY_CH_*（= CAPTURE_CH_*）完全一致。
+/* 统一 14 通道位定义，与固件 TELEMETRY_CH_*（= CAPTURE_CH_*）完全一致。
    二进制架构后实时流与捕获共用同一套通道，掩码语义统一。
    必须定义在 SESSIONS / TUNING_FOCUS 之前——const 不提升，早引用会 TDZ 报错。 */
 const CH = {
@@ -1467,7 +1467,7 @@ const CH_LIST = [
 
 const SESSIONS = {
     wheel: {
-        /* 二进制后不再有 mode/单侧字段之分，一律用 12 通道位。捕获与实时流同掩码。 */
+        /* 二进制后不再有 mode/单侧字段之分，一律用 14 通道位。捕获与实时流同掩码。 */
         label: '轮速 PI', mask: CH.TL | CH.LV | CH.PL | CH.TR | CH.RV | CH.PR,
         ampLabel: '目标mm/s', ampDefault: 300, timed: true, durDefault: 8,
         excite: (amp) => 'W' + amp, stopCmd: 'W0',
@@ -2685,7 +2685,7 @@ async function startSession() {
     session.guardTimer = setTimeout(() => { stopSession('超时安全收尾', true); }, 30000);
 }
 
-/* 掩码 → 预期列名（按 12 通道位序）。用于等待 schema 帧到达确认切换成功。 */
+/* 掩码 → 预期列名（按 14 通道位序）。用于等待 schema 帧到达确认切换成功。 */
 function expectedColumnsForMask(mask) {
     const columns = ['ms'];
     for (const [name] of CH_LIST) {
@@ -4180,7 +4180,7 @@ function drawSlavePlot() {
     });
 }
 
-/* 从车掩码勾选框（复用 12 通道位定义），默认轮速子集。 */
+/* 从车掩码勾选框（复用 14 通道位定义），默认轮速子集。 */
 (function buildSlaveMaskUI() {
     const box = $('slaveMask');
     if (!box) { return; }

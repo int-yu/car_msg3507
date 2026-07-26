@@ -63,6 +63,10 @@ static void DebugDisplay_ShowMotionState(void)
     {
         OLED_ShowString(0, 56, "M:LINE", OLED_6X8);
     }
+    else if (mode == MOTION_MANAGER_MODE_LANE)
+    {
+        OLED_ShowString(0, 56, "M:LANE", OLED_6X8);
+    }
     else if (mode == MOTION_MANAGER_MODE_TURN)
     {
         OLED_ShowString(0, 56, "M:TURN", OLED_6X8);
