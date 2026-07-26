@@ -17,6 +17,7 @@
 static float s_yaw;
 static float s_bias;
 static float s_scale = 1.0f;      /* 陀螺仪尺度修正因子 */
+static float s_yawRate;           /* 最近一拍的角速度，°/s，已乘尺度因子 */
 static uint8_t s_ready;
 static uint8_t s_calibActive;     /* 1 表示正在进行尺度标定 */
 static float s_calibAngle;        /* 标定期间按标称灵敏度积分的原始角度 */
@@ -25,6 +26,7 @@ void Heading_Init(void)
 {
     MPU6050_Init();
     s_yaw = 0.0f;
+    s_yawRate = 0.0f;
     s_bias = 0.0f;
     s_scale = 1.0f;
     s_calibActive = 0U;
@@ -57,13 +59,15 @@ void Heading_Update(float dt)
 {
     float gz;
     float rate;
-    if (s_ready == 0U) return;
+    if (s_ready == 0U) { s_yawRate = 0.0f; return; }
     gz = (float)MPU6050_GetGyroZ() - s_bias;   /* 去零偏后的原始值 */
-    if (MPU6050_IsReady() == 0U) { s_ready = 0U; return; }
+    if (MPU6050_IsReady() == 0U) { s_ready = 0U; s_yawRate = 0.0f; return; }
     rate = GYRO_Z_DIR_SIGN * gz / GYRO_LSB_PER_DPS; /* 统一到工程约定的偏航角正方向。 */
-    s_yaw += rate * s_scale * dt;              /* 积分(应用标定尺度) */
+    s_yawRate = rate * s_scale;                /* 缓存给视觉巡道做微分阻尼 */
+    s_yaw += s_yawRate * dt;                   /* 积分(应用标定尺度) */
     if (s_calibActive != 0U)
     {
+        /* 标定的目的就是解算 s_scale，这里必须用未乘尺度的原始角速度。 */
         s_calibAngle += rate * dt;             /* 累计标称角度，用于解算真实尺度 */
     }
 }
@@ -71,6 +75,7 @@ void Heading_Update(float dt)
 uint8_t Heading_IsReady(void) { return s_ready; }
 float Heading_GetYaw(void) { return s_yaw; }
 void Heading_SetYaw(float yaw) { s_yaw = yaw; }
+float Heading_GetYawRate(void) { return s_yawRate; }
 
 /* ===== 陀螺仪尺度标定：原地旋转 N 圈 ===== */
 
