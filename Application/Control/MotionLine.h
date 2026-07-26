@@ -3,7 +3,7 @@
 
 #include <stdint.h>
 
-/* 五路灰度巡线参数：灰度返回 1 表示检测到黑线。 */
+/* 主车八路、从车五路灰度巡线参数：灰度返回 1 表示检测到黑线。 */
 #define MOTION_LINE_OUTER_WEIGHT        6       /* 左右最外侧灰度权重的绝对值。 */
 #define MOTION_LINE_INNER_WEIGHT        3       /* 左右内侧灰度权重的绝对值。 */
 #define MOTION_LINE_MAX_ADJUST_RATIO    0.2f    /* 最外侧压线时，每侧增减当前速度的比例。 */

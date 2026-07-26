@@ -4,11 +4,13 @@
 #include "Application/Control/MotionWheel.h"
 #include "Application/Control/Nav.h"
 #include "Application/Debug/TelemFrame.h"
+#include "Application/Core/CarRole.h"
 #include "Application/State/Heading.h"
 #include "Application/State/Odometry.h"
 #include "Hardware/Comms/Serial.h"
 #include "Hardware/Sensors/Graydetect.h"
 #include "ti_msp_dl_config.h"
+#include <math.h>
 #include <stddef.h>
 
 #define TELEMETRY_TICK_HZ 100U
@@ -38,8 +40,15 @@ static float Telemetry_ReadPL(void)   { return MotionWheel_GetLeftCommandPWM(); 
 static float Telemetry_ReadTR(void)   { return MotionWheel_GetTargetSpeedR(); }
 static float Telemetry_ReadRV(void)   { return Odometry_GetSpeedR(); }
 static float Telemetry_ReadPR(void)   { return MotionWheel_GetRightCommandPWM(); }
-static float Telemetry_ReadYaw(void)  { return Heading_GetYaw(); }
-static float Telemetry_ReadNavE(void) { return Nav_GetAngleErrorDeg(); }
+static float Telemetry_ReadYaw(void)
+{
+    return (Heading_IsReady() != 0U) ? Heading_GetYaw() : NAN;
+}
+
+static float Telemetry_ReadNavE(void)
+{
+    return (Heading_IsReady() != 0U) ? Nav_GetAngleErrorDeg() : NAN;
+}
 static float Telemetry_ReadLerr(void) { return MotionLine_GetLineError(); }
 static float Telemetry_ReadGray(void) { return (float)Graydetect_GetState(); }
 static float Telemetry_ReadLD(void)   { return Odometry_GetDistanceLMM(); }
@@ -70,6 +79,26 @@ static uint8_t s_tickAccumulator;
 static uint8_t s_schemaPending;
 static uint32_t s_elapsedMs;
 static uint8_t s_sequence;
+
+/*
+ * 遥测帧出口。主车走 Serial1（→ 电脑，首字节 0xAA）；从车走 HC05 主从链路
+ * Serial2，并把首字节改成 0xAB，与主车 0xAA 区分——CRC 只覆盖 VER..PAYLOAD，
+ * 不含 magic，改首字节不破坏校验。主车按 0xAB 原样透传给电脑，网页据此把从车
+ * 数据分流到独立曲线面板。
+ */
+static void Telemetry_Emit(uint8_t *frame, uint16_t frameLength)
+{
+    if (frame == NULL)
+    {
+        return;
+    }
+#if CAR_IS_SLAVE
+    frame[0] = 0xABU;
+    (void)Serial2_SendArray(frame, frameLength);
+#else
+    Serial1_SendArray(frame, frameLength);
+#endif
+}
 
 static uint8_t Telemetry_CountChannels(uint16_t mask)
 {
@@ -175,7 +204,7 @@ void Telemetry_SendSchema(uint16_t mask, uint8_t frameType)
 
     frameLength = TelemFrame_Build(frame, frameType, s_sequence++,
                                    payload, (uint8_t)offset);
-    Serial1_SendArray(frame, frameLength);
+    Telemetry_Emit(frame, frameLength);
 }
 
 static void Telemetry_SendSample(void)
@@ -193,7 +222,7 @@ static void Telemetry_SendSample(void)
 
     frameLength = TelemFrame_Build(frame, TELEM_FRAME_TYPE_SAMPLE,
                                    s_sequence++, payload, (uint8_t)offset);
-    Serial1_SendArray(frame, frameLength);
+    Telemetry_Emit(frame, frameLength);
 }
 
 void Telemetry_Init(void)
@@ -210,6 +239,12 @@ void Telemetry_Init(void)
     {
         s_rateHz = maxRate;
     }
+
+#if CAR_IS_SLAVE
+    /* 从车遥测默认关闭：它要经主车 UART1 转发给电脑，与主车自身遥测共用带宽。
+     * 默认关掉，网页需要时发 @G<rate> 开启，避免一上电就吃掉主车上行带宽。 */
+    s_rateHz = 0U;
+#endif
 
     s_tickAccumulator = 0U;
     s_schemaPending = 1U;

@@ -9,6 +9,8 @@
 #define K230_LINK_FRAME_VERSION          0x01U
 #define K230_LINK_MAX_PAYLOAD_LENGTH     32U
 #define K230_LINK_READY_RETRY_TICKS      10U /* 100 Hz 下每 100 ms 重发。 */
+/* 每个 10 ms 控制拍最多解析 128 字节，覆盖 115200 baud 满线速且保证执行有界。 */
+#define K230_LINK_RX_BUDGET_BYTES        128U
 
 #define K230_LINK_MESSAGE_READY          0x01U
 #define K230_LINK_MESSAGE_READY_ACK      0x02U

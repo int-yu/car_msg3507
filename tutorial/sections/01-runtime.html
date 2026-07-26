@@ -424,7 +424,7 @@ static uint8_t s_previousKeyMask;</code></pre>
   </ol>
 
   <h4>4.10 <code>App_Update()</code> 中段：按键边沿、通信与全局 C0 急停</h4>
-  <pre class="source-code"><code data-source="Application/Core/App.c" data-lines="101-123">    keyMask = Key_GetPressedMask();
+  <pre class="source-code"><code data-source="Application/Core/App.c" data-lines="102-124">    keyMask = Key_GetPressedMask();
     context-&gt;pressedKeys = keyMask;
     context-&gt;pressedEdges =
         (uint8_t)(keyMask &amp; (uint8_t)~s_previousKeyMask);
@@ -443,10 +443,10 @@ static uint8_t s_previousKeyMask;</code></pre>
     {
         MotionManager_Stop();
         Motor_StopAll();
+        (void)Gimbal_Disable();
     }
 
-    MotionManager_Update(context-&gt;dt);
-    App_ReportMotionError();</code></pre>
+    MotionManager_Update(context-&gt;dt);</code></pre>
   <ol class="line-notes">
     <li><strong>第 99～100 行：</strong>读取四个按键当前电平组成的位图，并把“当前按住哪些键”写入上下文。</li>
     <li><strong>第 101～102 行：</strong>新按下位 = <code>当前为 1 AND 上次为 0</code>。<code>~</code> 按位取反旧位图，<code>&amp;</code> 只保留当前为 1 的位；两次转为 <code>uint8_t</code> 是为了把运算结果明确限制在 8 位。</li>
@@ -470,7 +470,7 @@ static uint8_t s_previousKeyMask;</code></pre>
   </div>
 
   <h4>4.11 <code>App_Update()</code> 后半：回执、遥测、补拍与显示</h4>
-  <pre class="source-code"><code data-source="Application/Core/App.c" data-lines="125-157">    {
+  <pre class="source-code"><code data-source="Application/Core/App.c" data-lines="127-159">    {
         uint8_t captureOk;
         uint16_t captureIndex;
 
