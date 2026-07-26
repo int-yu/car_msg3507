@@ -15,6 +15,20 @@
 #define K230_LINK_MESSAGE_READY          0x01U
 #define K230_LINK_MESSAGE_READY_ACK      0x02U
 #define K230_LINK_MESSAGE_TARGET         0x10U
+#define K230_LINK_MESSAGE_LANE           0x13U
+
+/* LANE 的 PAYLOAD：valid:u8 | b0..b4:int16_LE | confidence:u8。
+ * b0 最近、b4 最远，单位是千分比（相对画面宽度），符号与 TARGET 一致：
+ * 画面中心 - 车道中心，车道偏右时为负。 */
+#define K230_LINK_LANE_BAND_COUNT        5U
+#define K230_LINK_LANE_PAYLOAD_LENGTH    12U
+
+/* 某一带没有被中心线覆盖时 K230 填这个哨兵。不能用 0——0 与「车道中心
+ * 正好位于画面中央」无法区分。 */
+#define K230_LINK_LANE_OFFSET_INVALID    ((int16_t)-32768)
+
+/* 100 Hz 下 300 ms。K230 约 25 fps，允许连续丢 7 帧左右再判失效。 */
+#define K230_LINK_LANE_TIMEOUT_TICKS     30U
 
 #define K230_LINK_MESSAGE_CAPTURE        0x20U
 #define K230_LINK_MESSAGE_CAPTURE_ACK    0x21U
@@ -31,10 +45,23 @@ typedef struct
     uint8_t sequence;
 } K230Link_Target_t;
 
+typedef struct
+{
+    uint8_t valid;
+    int16_t offsetPermille[K230_LINK_LANE_BAND_COUNT];
+    uint8_t bandValid;   /* bit0..bit4，1 表示该带不是哨兵。 */
+    uint8_t confidence;  /* 0..100。 */
+    uint8_t sequence;
+    uint8_t ageTicks;    /* 距最近一帧的控制拍数，饱和在超时阈值。 */
+} K230Link_Lane_t;
+
 void K230Link_Init(void);
 void K230Link_Update(uint8_t elapsedTicks);
 uint8_t K230Link_IsReady(void);
 uint8_t K230Link_GetTarget(K230Link_Target_t *target);
+/* 从未收到或已超时返回 0，此时不写 *lane。调用方必须按视觉失效处理，
+ * 绝不能把上一帧的偏差当成当前有效数据继续用。 */
+uint8_t K230Link_GetLane(K230Link_Lane_t *lane);
 uint8_t K230Link_RequestCapture(uint8_t count);
 uint8_t K230Link_IsCapturePending(void);
 uint8_t K230Link_PopCaptureAck(uint8_t *ok, uint16_t *index);
