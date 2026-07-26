@@ -926,10 +926,12 @@ const TELEMETRY_BAUD = 115200;
 const TELEMETRY_BANDWIDTH_PERCENT = 70;
 const TELEMETRY_RATE_HARD_LIMIT = 100;
 
-/* 通道数：12 位里被置位的个数。 */
+/* 通道数：被置位的个数。上界从 CH_ALL 派生，新增通道位时自动跟随，不再手写死值。
+ * CH_ALL 定义在本文件靠后位置（const 不提升），但本函数只在调用时才读取 CH_ALL，
+ * 而全部调用点（renderRateLimit 等）都发生在脚本初始化完成之后，不会触发 TDZ。 */
 function countCaptureChannels(mask) {
     let count = 0;
-    for (let bit = 1; bit <= 0x800; bit <<= 1) {
+    for (let bit = 1; bit <= CH_ALL; bit <<= 1) {
         if ((mask & bit) !== 0) {
             count += 1;
         }
@@ -1474,11 +1476,6 @@ const SESSIONS = {
         structure: '左右目标轮速 -> 左 PI(lwkp,lwki,lwil)+左前馈(lwff×v+lwsf×sign)，右 PI(rwkp,rwki,rwil)+右前馈(rwff×v+rwsf×sign) -> 各自 PWM(±1000)；测量为编码器轮速 mm/s，控制周期 10ms',
         columnsNote: 'TL/TR=左右目标轮速mm/s，LV/RV=左右实测轮速mm/s，PL/PR=左右输出PWM',
         expectation: '快速跟踪阶跃、无持续振荡、稳态误差接近 0、PWM 不长期饱和',
-    },
-    /* 视觉巡道：不接入聚焦调参工作台（无 TUNING_FOCUS/sessLoop 条目），
-     * 仅提供掩码预设供手动查看曲线；vkp/vkd/vra 走"全部 K 参数"面板调整。 */
-    lane: {
-        label: '视觉巡道', mask: CH.vx | CH.vad | CH.TL | CH.TR | CH.yaw,
     },
     straight: {
         label: '直线航向 PD', mask: CH.yaw | CH.LD | CH.RD | CH.LV | CH.RV | CH.TL,

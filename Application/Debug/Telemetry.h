@@ -14,7 +14,7 @@
 #define TELEMETRY_DEFAULT_RATE_HZ    50U   /* 默认频率；DMA 后可显著高于旧 20Hz。 */
 #define TELEMETRY_RATE_HARD_LIMIT_HZ 100U  /* 上限等于主循环频率。 */
 
-/* 通道位定义（12 位）。位序即 SCHEMA/SAMPLE 的列序，一经发布不得重排。 */
+/* 通道位定义（14 位）。位序即 SCHEMA/SAMPLE 的列序，一经发布不得重排。 */
 #define TELEMETRY_CH_TL     0x0001U /* 左轮目标速度 mm/s */
 #define TELEMETRY_CH_LV     0x0002U /* 左轮实测速度 mm/s */
 #define TELEMETRY_CH_PL     0x0004U /* 左轮输出 PWM */

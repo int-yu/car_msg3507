@@ -54,8 +54,8 @@ static float Telemetry_ReadLerr(void) { return MotionLine_GetLineError(); }
 static float Telemetry_ReadGray(void) { return (float)Graydetect_GetState(); }
 static float Telemetry_ReadLD(void)   { return Odometry_GetDistanceLMM(); }
 static float Telemetry_ReadRD(void)   { return Odometry_GetDistanceRMM(); }
-static float Telemetry_ReadVX(void)  { return MotionLane_GetLaneError(); }
-static float Telemetry_ReadVAD(void) { return MotionLane_GetAdjustMMps(); }
+static float Telemetry_ReadVX(void)   { return MotionLane_GetLaneError(); }
+static float Telemetry_ReadVAD(void)  { return MotionLane_GetAdjustMMps(); }
 
 /* 顺序必须与 TELEMETRY_CH_* 的位序一致：schema、sample、行长估算都遍历它。 */
 static const Telemetry_Channel_t s_channels[] = {
