@@ -50,6 +50,7 @@ static uint8_t BluetoothDebug_IsCommand(char value)
             (value == 'T') || (value == 'A') || (value == 'Z') ||
             (value == 'P') ||
             (value == 'K') || (value == 'W') || (value == 'N') ||
+            (value == 'H') ||
             (value == 'E') || (value == 'Y') ||
             (value == 'Q') || (value == 'J')) ? 1U : 0U;
 }
@@ -627,6 +628,56 @@ static void BluetoothDebug_ExecuteCommand(void)
             if (result == MOTION_MANAGER_RESULT_OK)
             {
                 Serial1_Printf("OK N=%d\r\n", (int)value);
+            }
+            else
+            {
+                Serial1_Printf("ERR MOTION %d\r\n", (int)result);
+            }
+            break;
+        }
+
+        case 'H':
+        {
+            MotionManager_Result_t result;
+
+            if (value == 0)
+            {
+                /* H0 只停巡道模式，与 N0 语义一致。 */
+                MotionManager_Mode_t mode = MotionManager_GetMode();
+
+                if ((mode != MOTION_MANAGER_MODE_LANE) &&
+                    (mode != MOTION_MANAGER_MODE_IDLE))
+                {
+                    Serial1_SendString("ERR BUSY\r\n");
+                    break;
+                }
+                MotionManager_Stop();
+                Serial1_SendString("OK H=0\r\n");
+                break;
+            }
+            if ((s_parser.isNegative != 0U) ||
+                (value < BLUETOOTH_DEBUG_MIN_SPEED_MMPS) ||
+                (value > BLUETOOTH_DEBUG_MAX_SPEED_MMPS))
+            {
+                Serial1_SendString("ERR RANGE\r\n");
+                break;
+            }
+            /* K230 没握手就起步 = 立刻判丢道再停下，不如直接拒绝并说明原因。 */
+            if (K230Link_IsReady() == 0U)
+            {
+                Serial1_SendString("ERR K230 OFFLINE\r\n");
+                break;
+            }
+            if ((MotionManager_IsBusy() != 0U) &&
+                (MotionManager_GetMode() != MOTION_MANAGER_MODE_LANE))
+            {
+                Serial1_SendString("ERR BUSY\r\n");
+                break;
+            }
+            result = MotionManager_StartLane((float)value);
+            if (result == MOTION_MANAGER_RESULT_OK)
+            {
+                Serial1_Printf("OK H=%d\r\n", (int)value);
             }
             else
             {
