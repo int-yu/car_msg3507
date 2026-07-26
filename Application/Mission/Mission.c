@@ -56,7 +56,7 @@ static void Mission_CallExit(Mission_ExitReason_t reason)
 {
     const Mission_StateDefinition_t *state;
 
-    if ((s_stateActive == 0U) || (s_graph == NULL) ||
+    if ((stateActive == 0U) || (s_graph == NULL) ||       //退出涉及资源清理，用stateActive == 0U保证发生错误时不会被退出两次，防止清理不存在的资源，野指针问题
         (s_runtime.currentState >= s_graph->stateCount))
     {
         return;
