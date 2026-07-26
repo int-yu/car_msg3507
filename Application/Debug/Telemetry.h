@@ -27,7 +27,9 @@
 #define TELEMETRY_CH_GRAY   0x0200U /* 灰度位图（主车八路、从车五路） */
 #define TELEMETRY_CH_LD     0x0400U /* 左轮累计路程 mm */
 #define TELEMETRY_CH_RD     0x0800U /* 右轮累计路程 mm */
-#define TELEMETRY_CH_ALL    0x0FFFU
+#define TELEMETRY_CH_VX     0x1000U /* 视觉最近带偏差 千分比，车道偏右为正 */
+#define TELEMETRY_CH_VAD    0x2000U /* 视觉差速修正量 mm/s，正 = 右转 */
+#define TELEMETRY_CH_ALL    0x3FFFU
 
 void Telemetry_Init(void);
 void Telemetry_Update(uint8_t elapsedTicks, uint8_t pressedKeys);

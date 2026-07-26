@@ -626,7 +626,7 @@ class TelemetryParser {
     static unitOf(column) {
         const g = { LV: 'mmps', RV: 'mmps', TL: 'mmps', TR: 'mmps',
             PL: 'pwm', PR: 'pwm', yaw: 'deg', navE: 'deg', navT: 'deg',
-            LD: 'mm', RD: 'mm' };
+            LD: 'mm', RD: 'mm', vad: 'mmps' };
         return g[column] || column;
     }
 
@@ -1447,8 +1447,9 @@ const CH = {
     TR: 0x0008, RV: 0x0010, PR: 0x0020,
     yaw: 0x0040, navE: 0x0080, lerr: 0x0100,
     gray: 0x0200, LD: 0x0400, RD: 0x0800,
+    vx: 0x1000, vad: 0x2000,
 };
-const CH_ALL = 0x0FFF;
+const CH_ALL = 0x3FFF;
 /* 捕获别名，保留旧引用可读性；与实时流同一套位。 */
 const CAPTURE_CH = CH;
 /* 固件 CAPTURE_MAX_CHANNELS；超出会被固件拒绝，网页先自查给出清晰提示。 */
@@ -1459,6 +1460,7 @@ const CH_LIST = [
     ['TR', 'mmps'], ['RV', 'mmps'], ['PR', 'pwm'],
     ['yaw', 'deg'], ['navE', 'deg'], ['lerr', 'raw'],
     ['gray', 'bits'], ['LD', 'mm'], ['RD', 'mm'],
+    ['vx', 'raw'], ['vad', 'mmps'],
 ];
 
 const SESSIONS = {
@@ -1472,6 +1474,11 @@ const SESSIONS = {
         structure: '左右目标轮速 -> 左 PI(lwkp,lwki,lwil)+左前馈(lwff×v+lwsf×sign)，右 PI(rwkp,rwki,rwil)+右前馈(rwff×v+rwsf×sign) -> 各自 PWM(±1000)；测量为编码器轮速 mm/s，控制周期 10ms',
         columnsNote: 'TL/TR=左右目标轮速mm/s，LV/RV=左右实测轮速mm/s，PL/PR=左右输出PWM',
         expectation: '快速跟踪阶跃、无持续振荡、稳态误差接近 0、PWM 不长期饱和',
+    },
+    /* 视觉巡道：不接入聚焦调参工作台（无 TUNING_FOCUS/sessLoop 条目），
+     * 仅提供掩码预设供手动查看曲线；vkp/vkd/vra 走"全部 K 参数"面板调整。 */
+    lane: {
+        label: '视觉巡道', mask: CH.vx | CH.vad | CH.TL | CH.TR | CH.yaw,
     },
     straight: {
         label: '直线航向 PD', mask: CH.yaw | CH.LD | CH.RD | CH.LV | CH.RV | CH.TL,

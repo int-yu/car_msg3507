@@ -1,4 +1,5 @@
 #include "Application/Debug/Telemetry.h"
+#include "Application/Control/MotionLane.h"
 #include "Application/Control/MotionLine.h"
 #include "Application/Control/MotionManager.h"
 #include "Application/Control/MotionWheel.h"
@@ -53,6 +54,8 @@ static float Telemetry_ReadLerr(void) { return MotionLine_GetLineError(); }
 static float Telemetry_ReadGray(void) { return (float)Graydetect_GetState(); }
 static float Telemetry_ReadLD(void)   { return Odometry_GetDistanceLMM(); }
 static float Telemetry_ReadRD(void)   { return Odometry_GetDistanceRMM(); }
+static float Telemetry_ReadVX(void)  { return MotionLane_GetLaneError(); }
+static float Telemetry_ReadVAD(void) { return MotionLane_GetAdjustMMps(); }
 
 /* 顺序必须与 TELEMETRY_CH_* 的位序一致：schema、sample、行长估算都遍历它。 */
 static const Telemetry_Channel_t s_channels[] = {
@@ -68,6 +71,8 @@ static const Telemetry_Channel_t s_channels[] = {
     { TELEMETRY_CH_GRAY, "gray", TELEM_UNIT_BITS, Telemetry_ReadGray },
     { TELEMETRY_CH_LD,   "LD",   TELEM_UNIT_MM,   Telemetry_ReadLD   },
     { TELEMETRY_CH_RD,   "RD",   TELEM_UNIT_MM,   Telemetry_ReadRD   },
+    { TELEMETRY_CH_VX,   "vx",   TELEM_UNIT_RAW,  Telemetry_ReadVX   },
+    { TELEMETRY_CH_VAD,  "vad",  TELEM_UNIT_MMPS, Telemetry_ReadVAD  },
 };
 
 #define TELEMETRY_CHANNEL_COUNT \
