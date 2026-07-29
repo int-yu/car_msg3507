@@ -14,6 +14,7 @@
 #include "Hardware/Board/LED.h"
 #include "Hardware/Comms/Serial.h"
 #include "Hardware/Motor/Motor.h"
+#include "Hardware/Motor/Stepper.h"
 #include "Hardware/Sensors/Graydetect.h"
 #include "System/Tick.h"
 #include "ti_msp_dl_config.h"
@@ -76,6 +77,7 @@ static void App_HandlePeerMessage(const CarLink_Message_t *msg)
             {
                 MotionManager_Stop();
                 Motor_StopAll();
+                Stepper_EmergencyStop();
             }
             else
             {
@@ -142,12 +144,13 @@ void App_Init(void)
     Servo_Init();
     Serial1_Init();
     /*
-     * K230 使用独立 Serial3/UART3。未连接时 PA25 由硬件上拉保持空闲高电平，
+     * K230 使用独立 Serial3/UART0。未连接时 PA11 由硬件上拉保持空闲高电平，
      * 握手保持离线，不应影响网页、CarLink 或行车控制。
      */
     K230Link_Init();
     CarLink_Init();
     Odometry_Init();
+    Stepper_Init();
 
     DebugDisplay_Init();
     Heading_Init();
@@ -195,7 +198,8 @@ uint8_t App_Update(App_UpdateContext_t *context)
 
     Heading_Update(context->dt);
     Odometry_Update(elapsedTicks);
-    /* 云台 F32C 仍停用：其原逻辑串口 Serial2 当前用于 HC05 CarLink。 */
+    Stepper_Update(elapsedTicks);
+    /* 云台 F32C 仍停用；Serial2 的 PB6/PB7 已改作步进 DIR/EN。 */
     /* Gimbal_Update(context->dt); */
 
     keyMask = Key_GetPressedMask();
@@ -227,6 +231,7 @@ uint8_t App_Update(App_UpdateContext_t *context)
     {
         MotionManager_Stop();
         Motor_StopAll();
+        Stepper_EmergencyStop();
         /* (void)Gimbal_Disable();  云台已停用 */
     }
 
