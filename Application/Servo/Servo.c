@@ -3,8 +3,18 @@
 #include "ti_msp_dl_config.h"
 
 #if (SERVO_PWM_INST_CLK_FREQ != 1000000)
-#error "Servo pulse conversion requires a 1 MHz TIMA0 clock"
+#error "Servo pulse conversion requires a 1 MHz TIMG7 clock"
 #endif
+_Static_assert((GPIO_SERVO_PWM_C0_PIN == DL_GPIO_PIN_26) &&
+                   (GPIO_SERVO_PWM_C0_IOMUX == IOMUX_PINCM59) &&
+                   (GPIO_SERVO_PWM_C0_IOMUX_FUNC ==
+                    IOMUX_PINCM59_PF_TIMG7_CCP0),
+               "Servo horizontal PWM must use TIMG7 CCP0/PA26");
+_Static_assert((GPIO_SERVO_PWM_C1_PIN == DL_GPIO_PIN_27) &&
+                   (GPIO_SERVO_PWM_C1_IOMUX == IOMUX_PINCM60) &&
+                   (GPIO_SERVO_PWM_C1_IOMUX_FUNC ==
+                    IOMUX_PINCM60_PF_TIMG7_CCP1),
+               "Servo vertical PWM must use TIMG7 CCP1/PA27");
 #endif
 
 static uint16_t s_verticalAngle = SERVO_VERTICAL_DEFAULT_ANGLE;
@@ -39,7 +49,7 @@ static uint16_t Servo_AngleToCompare(uint16_t angle)
 
 static void Servo_WriteCompare(uint16_t angle, DL_TIMER_CC_INDEX channel)
 {
-    DL_TimerA_setCaptureCompareValue(
+    DL_TimerG_setCaptureCompareValue(
         SERVO_PWM_INST, Servo_AngleToCompare(angle), channel);
 }
 #endif
@@ -48,7 +58,7 @@ void Servo_Init(void)
 {
     Servo_Reset();
 #if SERVO_ENABLED
-    DL_TimerA_startCounter(SERVO_PWM_INST);
+    DL_TimerG_startCounter(SERVO_PWM_INST);
 #endif
 }
 

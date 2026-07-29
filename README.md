@@ -11,6 +11,7 @@
 | CPUCLK / SYSCLK | 32 MHz | 全工程 | SysConfig 默认时钟源；延时、总线外设和 SysTick 的基准时钟 |
 | SysTick | 32 MHz / 320000 = 100 Hz | `System/Tick`、`Application/Core/App`、`MotionManager`、`Mission`、`Accomplish/25H` | 10 ms 系统节拍；`App_Update()` 传递实际累计 Tick 和 dt；当前巡线连续全白 50 拍（约 500 ms）后安全返回等待 |
 | TIMG8 | 32 MHz，周期 1600 = 20 kHz | `Hardware/Motor/PWM`、`MotionWheel`、`MotionManager`、`Accomplish/25H` | 25H 通过 MotionManager 依次选择巡线、定距直线和绝对角转向，再由 MotionWheel 输出双轮 PWM |
+| TIMG7 | 32 MHz / 32 = 1 MHz，周期 20000 = 50 Hz | `Application/Servo` | PA26/PA27 分别输出横向/纵向普通舵机 PWM；`D`/`O` 命令更新比较值 |
 | I2C0 | BUSCLK 32 MHz，SCL 400 kHz | `Hardware/Display/OLED` | OLED 控制器通信 |
 | UART1 | BUSCLK 32 MHz，115200 baud，8N1，RX + DMA TX 中断 | `Hardware/Comms/Serial`、`Application/Comms/CarLink` | PB6/PB7 接 HC05，作为车对车 CarLink；逻辑接口为 `Serial2`，TX 使用 DMA CH1 |
 | UART2 | BUSCLK 32 MHz，115200 baud，8N1，RX + DMA TX 中断 | `Hardware/Comms/Serial`、`Application/Comms/BluetoothDebug`、`App`、`Mission` | PA21/PA22 接 DAPLink，作为 PC/网页链路；逻辑接口为 `Serial1`，TX 使用 DMA CH0 |
@@ -34,6 +35,8 @@
 | PA22 | UART2 RX、上拉 | DAPLink TX | 接收 PC/网页命令；逻辑接口 `Serial1`，115200 |
 | PA24 | GPIO 输入、上拉、双边沿中断 | 左编码器 B | GPIOA GROUP1 IRQ；`MotionWheel` 左轮反馈 |
 | PA25 | UART3 RX、上拉 | K230 TX | 接收 K230 帧；未连接时保持 UART 空闲高电平，逻辑接口 `Serial3`，115200 |
+| PA26 | TIMG7 CCP0 | 横向舵机 PWM | 50 Hz；`D<number>` 更新角度 |
+| PA27 | TIMG7 CCP1 | 纵向舵机 PWM | 50 Hz；`O<number>` 更新角度 |
 | PA28 | I2C0 SDA | OLED | 400 kHz |
 | PA29 | GPIO 输入、上拉 | 灰度 CH0 | 灰度位图 bit0；最左侧，黑线为 1 |
 | PA30 | GPIO 输入、上拉 | KEY1 | 低电平按下，按键位图 bit0；App 生成按下沿事件，当前用于启动 25H |
@@ -62,9 +65,9 @@
 
 ### 2.1 硬件连接检查
 
-- `main.syscfg` 中没有重复分配的 Pin；UART1、UART2、UART3、I2C0、TIMG8、软件 I2C 和 SWD 互不冲突。
+- `main.syscfg` 中没有重复分配的 Pin；UART1、UART2、UART3、I2C0、TIMG7、TIMG8、软件 I2C 和 SWD 互不冲突。
 - 主车读取 U5 的 8 路灰度，CH0~CH7 为 PA29、PB26、PA13、PB9、PB8、PB13、PB12、PB5；从车读取同一序列的 CH0~CH4。
-- PB8/PB9 已让给灰度输入；`SERVO_ENABLED=0`，TIMA0 舵机 PWM 不配置，`O`/`D` 接口只保留角度记录。
+- PB8/PB9 继续作为灰度输入；舵机迁移到 PA26/PA27，由独立 TIMG7 输出 50 Hz PWM，不与 TIMG8 电机 PWM 冲突。
 - DAPLink 接 PA21/PA22（UART2），承载 PC/网页命令、回应和遥测；HC05 接 PB6/PB7（UART1），仅承载双车 CarLink。
 - K230 使用独立 UART3：PA14 为 MCU TX、PA25 为 MCU RX，TX DMA 为 CH2。PA25 从 PinMux 初始化起即内部上拉；K230 未连接时只保持 10 Hz READY 重试并处于离线，不阻塞主循环。
 - F32C/Gimbal 仍停用，不与当前三路串口共用。
@@ -354,8 +357,8 @@ OLED 默认显示 Z 轴连续角度、主车八路/从车五路灰度、四个�
 | `L<number>` | 设置左轮开环 PWM | MotionManager 空闲时有效，范围 `-1000~1000` |
 | `R<number>` | 设置右轮开环 PWM | MotionManager 空闲时有效，范围 `-1000~1000` |
 | `U<number>` | 设置双轮相同开环 PWM | MotionManager 空闲时有效，范围 `-1000~1000` |
-| `O<number>` | 记录纵向舵机角度 | 舵机 PWM 当前停用；只更新 `0°~270°` 的记录值 |
-| `D<number>` | 记录横向舵机角度 | 舵机 PWM 当前停用；只更新 `0°~270°` 的记录值 |
+| `O<number>` | 设置纵向舵机角度 | PA27 输出 50 Hz PWM，范围 `0°~270°` |
+| `D<number>` | 设置横向舵机角度 | PA26 输出 50 Hz PWM，范围 `0°~270°` |
 
 ## 4. 工程文件类型与职责
 
@@ -375,7 +378,7 @@ OLED 默认显示 Z 轴连续角度、主车八路/从车五路灰度、四个�
 | `Application/Control/PID.c/.h` | 通用控制器 | 位置式 PID 计算、复位和调参 |
 | `Application/Debug/DebugDisplay.c/.h` | 显示编排 | OLED 零漂页、整车页和 Gimbal 页 |
 | `Application/Gimbal/Gimbal.c/.h` | 云台应用层 | 管理 X/Y 地址、T 型多圈位置目标、反馈和到位状态 |
-| `Application/Servo/Servo.c/.h` | 舵机控制 | 当前停用硬件 PWM；保留双路角度限位和记录接口 |
+| `Application/Servo/Servo.c/.h` | 舵机控制 | TIMG7 双路 50 Hz PWM、角度限位与脉宽换算 |
 | `Application/State/Heading.c/.h` | 航向状态 | MPU6050 零漂、连续偏航积分和尺度标定 |
 | `Application/State/Odometry.c/.h` | 里程状态 | 编码器增量到双轮路程与速度的换算 |
 
@@ -451,7 +454,7 @@ uint8_t TestApp_Update(App_UpdateContext_t *context); /* 更新测试通道并�
 | `Accomplish/` | 具体题目实现 C 模块 | 位于工程根目录；每道题独立保存用户参数、状态编号、回调、转换表和静态状态图；当前启用 `25H.c/.h`，并保留 `25E.c/.h` 与刹车测试 `Test.c/.h` |
 | `Application/Control/` | 运动控制层 C 模块 | MotionManager、通用 PID、公共双轮速度闭环、直线、巡线、目标角转向和短暂主动刹车 |
 | `Application/Debug/` | 应用层 C 模块 | OLED 调试页面编排、CSV 遥测输出与运行时调参注册表 |
-| `Application/Servo/` | 舵机硬件模块 | 当前关闭 PWM 硬件，仅保留角度限位和记录接口 |
+| `Application/Servo/` | 舵机硬件模块 | PA26/PA27 上的 TIMG7 双路 50 Hz PWM、角度限位和脉宽换算 |
 | `Application/State/` | 状态层 C 模块 | Z 轴航向角解算、编码器里程与速度状态 |
 | `Hardware/Board/` | 板级驱动 | 按键、LED、蜂鸣器 |
 | `Hardware/Comms/` | 通信驱动 | `Serial1`/UART2 DAPLink、`Serial2`/UART1 HC05 与 `Serial3`/UART3 K230 的中断接收、环形缓冲和 DMA 发送接口 |
@@ -485,7 +488,7 @@ uint8_t TestApp_Update(App_UpdateContext_t *context); /* 更新测试通道并�
 | `Application/Debug/Telemetry.c/.h` | 表驱动组装二进制 SCHEMA/SAMPLE 帧，按频率和 12 通道掩码经 `Serial1`/UART2（DMA）输出（`SampleChannels`/`SendSchema` 原为捕获而导出，模块删除后已收回 `static`） |
 | `Application/Debug/TelemFrame.c/.h` | 二进制帧编码：CRC-8/ATM、帧构建、float32 小端打包；与 K230Link 同 CRC |
 | `Application/Debug/Param.c/.h` | 运行时调参注册表：K 命令后端，26 个参数的读写、范围校验、左右轮独立参数与 PID apply 钩子 |
-| `Application/Servo/Servo.c/.h` | 当前只执行纵向/横向角度限位和记录；`SERVO_ENABLED=0` 时不访问 PWM 硬件 |
+| `Application/Servo/Servo.c/.h` | 纵向/横向角度限位并换算为 500~2500 us 脉宽，写入 TIMG7 CCP1/CCP0 |
 | `Application/State/Heading.c/.h` | MPU6050 Z 轴零漂标定、角速度积分和尺度标定 |
 | `Application/State/Odometry.c/.h` | 读取编码器增量，累计左右路程并计算 mm/s 速度 |
 | `Hardware/Board/Beep.c/.h` | 蜂鸣器与 LED2 的非阻塞提示状态机 |
