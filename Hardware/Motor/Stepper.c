@@ -1,6 +1,6 @@
 #include "Hardware/Motor/Stepper.h"
 
-#include "Hardware/Motor/Encoder.h"
+#include "Hardware/Motor/EncoderStepper.h"
 #include "ti_msp_dl_config.h"
 
 #include <limits.h>
@@ -492,6 +492,7 @@ void Stepper_Init(void)
     const uint32_t primask = __get_PRIMASK();
 
     __disable_irq();
+    Encoder_InitStepper();
     s_state = STEPPER_STATE_DISABLED;
     s_enabled = false;
     s_ready = false;

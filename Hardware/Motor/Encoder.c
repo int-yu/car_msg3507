@@ -1,4 +1,5 @@
 #include "Hardware/Motor/Encoder.h"
+#include "Hardware/Motor/EncoderStepper.h"
 #include "ti_msp_dl_config.h"
 
 #define LEFT_ENCODER_SIGN  (-1)
@@ -54,7 +55,6 @@ void Encoder_Init(void)
     DL_GPIO_enableInterrupt(ENCODER_INPUTS_PORT, interruptMask);
     NVIC_ClearPendingIRQ(GPIOA_INT_IRQn);
     NVIC_EnableIRQ(GPIOA_INT_IRQn);
-    Encoder_InitStepper();
 }
 
 void Encoder_InitStepper(void)

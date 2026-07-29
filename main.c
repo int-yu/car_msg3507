@@ -1,6 +1,5 @@
 #include "Hardware/Board/Key.h"
 #include "Hardware/Display/OLED.h"
-#include "Hardware/Motor/Encoder.h"
 #include "Hardware/Motor/Stepper.h"
 #include "System/Interrupt.h"
 #include "System/Tick.h"
@@ -204,7 +203,6 @@ int main(void)
 
     Tick_Init();
     Key_Init();
-    Encoder_InitStepper();
     OLED_Init();
     Stepper_Init();
 
