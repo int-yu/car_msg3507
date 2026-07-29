@@ -15,6 +15,7 @@
 #include "Hardware/Board/LED.h"
 #include "Hardware/Comms/Serial.h"
 #include "Hardware/Motor/Motor.h"
+#include "Hardware/Motor/Stepper.h"
 #include "Hardware/Sensors/Graydetect.h"
 #include "System/Tick.h"
 #include "ti_msp_dl_config.h"
@@ -77,6 +78,7 @@ static void App_HandlePeerMessage(const CarLink_Message_t *msg)
             {
                 MotionManager_Stop();
                 Motor_StopAll();
+                Stepper_EmergencyStop();
             }
             else
             {
@@ -149,6 +151,7 @@ void App_Init(void)
     K230Link_Init();
     CarLink_Init();
     Odometry_Init();
+    Stepper_Init();
 
     DebugDisplay_Init();
     Heading_Init();
@@ -197,6 +200,7 @@ uint8_t App_Update(App_UpdateContext_t *context)
 
     Heading_Update(context->dt);
     Odometry_Update(elapsedTicks);
+    Stepper_Update(elapsedTicks);
     /* 云台 F32C 仍停用：其原逻辑串口 Serial2 当前用于 HC05 CarLink。 */
     /* Gimbal_Update(context->dt); */
 
@@ -229,6 +233,7 @@ uint8_t App_Update(App_UpdateContext_t *context)
     {
         MotionManager_Stop();
         Motor_StopAll();
+        Stepper_EmergencyStop();
         /* (void)Gimbal_Disable();  云台已停用 */
     }
 

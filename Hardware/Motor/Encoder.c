@@ -4,10 +4,17 @@
 #define LEFT_ENCODER_SIGN  (-1)
 #define RIGHT_ENCODER_SIGN (+1)
 
+#ifndef STEPPER_ENCODER_SIGN
+#define STEPPER_ENCODER_SIGN (+1)
+#endif
+
 static volatile int32_t s_leftCount;
 static volatile int32_t s_rightCount;
+static volatile int32_t s_stepperCount;
+static volatile uint32_t s_stepperTransitionErrors;
 static uint8_t s_leftState;
 static uint8_t s_rightState;
+static uint8_t s_stepperState;
 
 static const int8_t s_quadratureDelta[16] = {
      0, -1,  1,  0,
@@ -25,12 +32,17 @@ static uint8_t Encoder_ReadState(uint32_t pinA, uint32_t pinB)
 void Encoder_Init(void)
 {
     const uint32_t interruptMask = ENCODER_INPUTS_LEFT_A_PIN | ENCODER_INPUTS_LEFT_B_PIN |
-                                   ENCODER_INPUTS_RIGHT_A_PIN | ENCODER_INPUTS_RIGHT_B_PIN;
+                                   ENCODER_INPUTS_RIGHT_A_PIN | ENCODER_INPUTS_RIGHT_B_PIN |
+                                   ENCODER_INPUTS_STEPPER_A_PIN | ENCODER_INPUTS_STEPPER_B_PIN;
 
     s_leftCount = 0;
     s_rightCount = 0;
+    s_stepperCount = 0;
+    s_stepperTransitionErrors = 0U;
     s_leftState = Encoder_ReadState(ENCODER_INPUTS_LEFT_A_PIN, ENCODER_INPUTS_LEFT_B_PIN);
     s_rightState = Encoder_ReadState(ENCODER_INPUTS_RIGHT_A_PIN, ENCODER_INPUTS_RIGHT_B_PIN);
+    s_stepperState = Encoder_ReadState(
+        ENCODER_INPUTS_STEPPER_A_PIN, ENCODER_INPUTS_STEPPER_B_PIN);
     DL_GPIO_clearInterruptStatus(ENCODER_INPUTS_PORT, interruptMask);
     DL_GPIO_enableInterrupt(ENCODER_INPUTS_PORT, interruptMask);
     NVIC_ClearPendingIRQ(ENCODER_INPUTS_INT_IRQN);
@@ -50,10 +62,42 @@ int16_t Encoder_Get(uint8_t n)
     return (int16_t)value;
 }
 
+int32_t Encoder_GetStepperCount(void)
+{
+    int32_t count;
+    uint32_t primask = __get_PRIMASK();
+
+    __disable_irq();
+    count = s_stepperCount;
+    __set_PRIMASK(primask);
+    return count;
+}
+
+void Encoder_SetStepperCount(int32_t count)
+{
+    uint32_t primask = __get_PRIMASK();
+
+    __disable_irq();
+    s_stepperCount = count;
+    __set_PRIMASK(primask);
+}
+
+uint32_t Encoder_GetStepperTransitionErrors(void)
+{
+    uint32_t errors;
+    uint32_t primask = __get_PRIMASK();
+
+    __disable_irq();
+    errors = s_stepperTransitionErrors;
+    __set_PRIMASK(primask);
+    return errors;
+}
+
 void GROUP1_IRQHandler(void)
 {
     const uint32_t mask = ENCODER_INPUTS_LEFT_A_PIN | ENCODER_INPUTS_LEFT_B_PIN |
-                          ENCODER_INPUTS_RIGHT_A_PIN | ENCODER_INPUTS_RIGHT_B_PIN;
+                          ENCODER_INPUTS_RIGHT_A_PIN | ENCODER_INPUTS_RIGHT_B_PIN |
+                          ENCODER_INPUTS_STEPPER_A_PIN | ENCODER_INPUTS_STEPPER_B_PIN;
     uint32_t pending = DL_GPIO_getEnabledInterruptStatus(ENCODER_INPUTS_PORT, mask);
 
     if ((pending & (ENCODER_INPUTS_LEFT_A_PIN | ENCODER_INPUTS_LEFT_B_PIN)) != 0U)
@@ -69,6 +113,23 @@ void GROUP1_IRQHandler(void)
             RIGHT_ENCODER_SIGN *
             s_quadratureDelta[(s_rightState << 2) | next]);
         s_rightState = next;
+    }
+    if ((pending & (ENCODER_INPUTS_STEPPER_A_PIN | ENCODER_INPUTS_STEPPER_B_PIN)) != 0U)
+    {
+        uint8_t next = Encoder_ReadState(
+            ENCODER_INPUTS_STEPPER_A_PIN, ENCODER_INPUTS_STEPPER_B_PIN);
+        uint8_t transition = (uint8_t)((s_stepperState << 2) | next);
+
+        if ((uint8_t)(s_stepperState ^ next) == 3U)
+        {
+            s_stepperTransitionErrors++;
+        }
+        else
+        {
+            s_stepperCount +=
+                (int32_t)(STEPPER_ENCODER_SIGN * s_quadratureDelta[transition]);
+        }
+        s_stepperState = next;
     }
     DL_GPIO_clearInterruptStatus(ENCODER_INPUTS_PORT, pending & mask);
 }
