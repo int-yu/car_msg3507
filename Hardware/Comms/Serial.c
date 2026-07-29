@@ -46,7 +46,7 @@ static volatile uint8_t s_serial2TxDmaActive;
 static volatile uint32_t s_serial2TxDmaLength;
 static volatile uint32_t s_serial2TxDropCount;
 
-/* Serial3 = UART3/PA14-PA25，独立承载 K230。 */
+/* Serial3 = UART0/PA10-PA11，独立承载 K230。 */
 static volatile uint32_t s_serial3WriteIndex;
 static volatile uint32_t s_serial3ReadIndex;
 static uint8_t s_serial3RxBuffer[SERIAL3_RX_BUFFER_SIZE];
@@ -454,7 +454,7 @@ void Serial3_Init(void)
     s_serial3RxOverflowCount = 0U;
 
     /*
-     * SysConfig 已从上电 PinMux 阶段给 PA25 上拉；这里再次配置并在启用 NVIC
+     * SysConfig 已从上电 PinMux 阶段给 PA11 上拉；这里再次配置并在启用 NVIC
      * 前排空 FIFO/清外设 pending，避免未接模块时的启动瞬态留下伪 RX 中断。
      */
     NVIC_DisableIRQ(K230_UART_INST_INT_IRQN);

@@ -19,6 +19,7 @@
 #define STEPPER_PWM_MAX_FREQUENCY_HZ    1500U
 #define STEPPER_PWM_STABLE_FRAMES       3U
 #define STEPPER_PWM_TIMEOUT_TICKS       5U
+#define STEPPER_ABS_CAPTURE_CLOCK_HZ     CPUCLK_FREQ
 
 static volatile Stepper_State_t s_state;
 static volatile bool s_enabled;
@@ -370,9 +371,10 @@ static bool Stepper_DecodePwm(
     }
 
     minimumPeriod =
-        STEPPER_PULSE_INST_CLK_FREQ / STEPPER_PWM_MAX_FREQUENCY_HZ;
+        STEPPER_ABS_CAPTURE_CLOCK_HZ / STEPPER_PWM_MAX_FREQUENCY_HZ;
     maximumPeriod =
-        (STEPPER_PULSE_INST_CLK_FREQ + STEPPER_PWM_MIN_FREQUENCY_HZ - 1U) /
+        (STEPPER_ABS_CAPTURE_CLOCK_HZ +
+         STEPPER_PWM_MIN_FREQUENCY_HZ - 1U) /
         STEPPER_PWM_MIN_FREQUENCY_HZ;
     if ((periodTicks < minimumPeriod) || (periodTicks > maximumPeriod))
     {

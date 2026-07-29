@@ -5,7 +5,7 @@
  * Serial1 = BLUETOOTH_UART = UART2 / PA21(TX)、PA22(RX)
  *           -> DAPLink / PC / 网页。
  * Serial2 = 当前步进测试配置中停用，PB6/PB7 改作步进 DIR/EN。
- * Serial3 = K230_UART = UART3 / PA14(TX)、PA25(RX)
+ * Serial3 = K230_UART = UART0 / PA10(TX)、PA11(RX)
  *           -> K230 视觉链路。
  * 协议解析放在各自的专用应用层（BluetoothDebug / CarLink / K230Link）。
  */

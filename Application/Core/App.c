@@ -145,7 +145,7 @@ void App_Init(void)
     Servo_Init();
     Serial1_Init();
     /*
-     * K230 使用独立 Serial3/UART3。未连接时 PA25 由硬件上拉保持空闲高电平，
+     * K230 使用独立 Serial3/UART0。未连接时 PA11 由硬件上拉保持空闲高电平，
      * 握手保持离线，不应影响网页、CarLink 或行车控制。
      */
     K230Link_Init();
