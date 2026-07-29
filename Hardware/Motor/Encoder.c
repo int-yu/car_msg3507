@@ -68,7 +68,7 @@ void Encoder_InitStepper(void)
     DL_GPIO_setLowerPinsPolarity(
         STEPPER_ENCODER_A_PORT, DL_GPIO_PIN_8_EDGE_RISE_FALL);
     DL_GPIO_setUpperPinsPolarity(
-        STEPPER_ENCODER_B_PORT, DL_GPIO_PIN_20_EDGE_RISE_FALL);
+        STEPPER_ENCODER_B_PORT, DL_GPIO_PIN_25_EDGE_RISE_FALL);
 
     s_stepperCount = 0;
     s_stepperTransitionErrors = 0U;
