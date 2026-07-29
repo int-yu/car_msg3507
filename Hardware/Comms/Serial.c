@@ -136,6 +136,7 @@ void Serial1_SendArray(const uint8_t *array, uint16_t length)
     uint16_t i;
     uint32_t used;
     uint32_t space;
+    uint32_t primask;
 
     if (array == NULL)
     {
@@ -174,10 +175,14 @@ void Serial1_SendArray(const uint8_t *array, uint16_t length)
     }
 
     /* 若 DMA 当前空闲就点火；正忙则完成中断会自然接上。
-     * 关中断保护这个「检查—启动」，避免与完成中断同时判定 active。 */
+     * 关中断保护这个「检查—启动」，避免与完成中断同时判定 active。
+     * 必须保存/恢复 PRIMASK 而非无条件 __enable_irq()：本函数会在关中断的
+     * 临界区里被调用（例如 App_Init() 全程关中断，其中 BluetoothDebug_Init()
+     * 要发 READY 横幅），无条件开中断会把调用方的临界区静默打开。 */
+    primask = __get_PRIMASK();
     __disable_irq();
     Serial1_StartTxDma();
-    __enable_irq();
+    __set_PRIMASK(primask);
 }
 
 void Serial1_SendByte(uint8_t byte)
@@ -316,6 +321,7 @@ uint8_t Serial2_SendArray(const uint8_t *array, uint16_t length)
     uint16_t i;
     uint32_t used;
     uint32_t space;
+    uint32_t primask;
 
     if ((array == NULL) || (length == 0U))
     {
@@ -338,9 +344,11 @@ uint8_t Serial2_SendArray(const uint8_t *array, uint16_t length)
         s_serial2TxHead++;
     }
 
+    /* 与 Serial1_SendArray 同理：保存/恢复 PRIMASK，不得无条件开中断。 */
+    primask = __get_PRIMASK();
     __disable_irq();
     Serial2_StartTxDma();
-    __enable_irq();
+    __set_PRIMASK(primask);
     return 1U;
 }
 
@@ -424,8 +432,14 @@ void BRUSHLESS_UART_INST_IRQHandler(void)
 
 /* ---- Serial3：K230 视觉链路 ---- */
 
+/* 排空 RX FIFO 的次数上限。FIFO 深度为 4，正常情况下一轮就空；给一个上限
+ * 只是不让初始化有任何一条无界循环，避免 UART3 时钟/电源异常时卡在这里。 */
+#define SERIAL3_RX_FLUSH_LIMIT 8U
+
 void Serial3_Init(void)
 {
+    uint8_t flushGuard;
+
     s_serial3WriteIndex = 0U;
     s_serial3ReadIndex = 0U;
     s_serial3TxHead = 0U;
@@ -445,8 +459,12 @@ void Serial3_Init(void)
         GPIO_K230_UART_IOMUX_RX_FUNC,
         DL_GPIO_INVERSION_DISABLE, DL_GPIO_RESISTOR_PULL_UP,
         DL_GPIO_HYSTERESIS_DISABLE, DL_GPIO_WAKEUP_DISABLE);
-    while (!DL_UART_Main_isRXFIFOEmpty(K230_UART_INST))
+    for (flushGuard = 0U; flushGuard < SERIAL3_RX_FLUSH_LIMIT; flushGuard++)
     {
+        if (DL_UART_Main_isRXFIFOEmpty(K230_UART_INST))
+        {
+            break;
+        }
         (void)DL_UART_Main_receiveData(K230_UART_INST);
     }
     DL_UART_Main_clearInterruptStatus(

@@ -1,4 +1,5 @@
 #include "Application/Debug/Telemetry.h"
+#include "Application/Control/MotionLane.h"
 #include "Application/Control/MotionLine.h"
 #include "Application/Control/MotionManager.h"
 #include "Application/Control/MotionWheel.h"
@@ -53,6 +54,8 @@ static float Telemetry_ReadLerr(void) { return MotionLine_GetLineError(); }
 static float Telemetry_ReadGray(void) { return (float)Graydetect_GetState(); }
 static float Telemetry_ReadLD(void)   { return Odometry_GetDistanceLMM(); }
 static float Telemetry_ReadRD(void)   { return Odometry_GetDistanceRMM(); }
+static float Telemetry_ReadVX(void)   { return MotionLane_GetLaneError(); }
+static float Telemetry_ReadVAD(void)  { return MotionLane_GetAdjustMMps(); }
 
 /* 顺序必须与 TELEMETRY_CH_* 的位序一致：schema、sample、行长估算都遍历它。 */
 static const Telemetry_Channel_t s_channels[] = {
@@ -68,6 +71,8 @@ static const Telemetry_Channel_t s_channels[] = {
     { TELEMETRY_CH_GRAY, "gray", TELEM_UNIT_BITS, Telemetry_ReadGray },
     { TELEMETRY_CH_LD,   "LD",   TELEM_UNIT_MM,   Telemetry_ReadLD   },
     { TELEMETRY_CH_RD,   "RD",   TELEM_UNIT_MM,   Telemetry_ReadRD   },
+    { TELEMETRY_CH_VX,   "vx",   TELEM_UNIT_RAW,  Telemetry_ReadVX   },
+    { TELEMETRY_CH_VAD,  "vad",  TELEM_UNIT_MMPS, Telemetry_ReadVAD  },
 };
 
 #define TELEMETRY_CHANNEL_COUNT \
@@ -146,7 +151,8 @@ uint8_t Telemetry_GetMaxRateHz(void)
     return (uint8_t)maxRate;
 }
 
-uint8_t Telemetry_SampleChannels(uint16_t mask, float *out)
+/* 按掩码把选中通道当前值写进 out，返回通道数。 */
+static uint8_t Telemetry_SampleChannels(uint16_t mask, float *out)
 {
     uint8_t count = 0U;
     uint32_t index;
@@ -166,7 +172,8 @@ uint8_t Telemetry_SampleChannels(uint16_t mask, float *out)
     return count;
 }
 
-void Telemetry_SendSchema(uint16_t mask, uint8_t frameType)
+/* 发一帧 SCHEMA。板载捕获移除后只剩实时流一个调用方，故收回文件内部。 */
+static void Telemetry_SendSchema(uint16_t mask)
 {
     uint8_t payload[TELEM_FRAME_MAX_PAYLOAD];
     uint8_t frame[TELEM_FRAME_MAX_BYTES];
@@ -202,7 +209,7 @@ void Telemetry_SendSchema(uint16_t mask, uint8_t frameType)
         payload[offset++] = channel->unit;
     }
 
-    frameLength = TelemFrame_Build(frame, frameType, s_sequence++,
+    frameLength = TelemFrame_Build(frame, TELEM_FRAME_TYPE_SCHEMA, s_sequence++,
                                    payload, (uint8_t)offset);
     Telemetry_Emit(frame, frameLength);
 }
@@ -274,7 +281,7 @@ void Telemetry_Update(uint8_t elapsedTicks, uint8_t pressedKeys)
 
     if (s_schemaPending != 0U)
     {
-        Telemetry_SendSchema(s_fieldMask, TELEM_FRAME_TYPE_SCHEMA);
+        Telemetry_SendSchema(s_fieldMask);
         s_schemaPending = 0U;
     }
     Telemetry_SendSample();

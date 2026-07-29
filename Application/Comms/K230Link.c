@@ -1,6 +1,7 @@
 #include "Application/Comms/K230Link.h"
 #include "Hardware/Comms/Serial.h"
 #include <stddef.h>
+#include <string.h>
 
 typedef enum
 {
@@ -28,6 +29,8 @@ typedef struct
 static K230Link_Parser_t s_parser;
 static K230Link_Target_t s_target;
 static uint8_t s_hasTarget;
+static K230Link_Lane_t s_lane;
+static uint8_t s_hasLane;
 static uint8_t s_peerReadyReceived;
 static uint8_t s_readyAcknowledged;
 static uint8_t s_readySequence;
@@ -144,6 +147,31 @@ static void K230Link_HandleFrame(void)
         s_target.sequence = s_parser.sequence;
         s_hasTarget = 1U;
     }
+    else if ((s_parser.type == K230_LINK_MESSAGE_LANE) &&
+             (s_parser.length == K230_LINK_LANE_PAYLOAD_LENGTH) &&
+             (K230Link_IsReady() != 0U))
+    {
+        uint8_t band;
+
+        s_lane.valid = (s_parser.payload[0] != 0U) ? 1U : 0U;
+        s_lane.bandValid = 0U;
+        for (band = 0U; band < K230_LINK_LANE_BAND_COUNT; band++)
+        {
+            int16_t offset = (int16_t)(
+                (uint16_t)s_parser.payload[1U + (band * 2U)] |
+                ((uint16_t)s_parser.payload[2U + (band * 2U)] << 8U));
+
+            s_lane.offsetPermille[band] = offset;
+            if (offset != K230_LINK_LANE_OFFSET_INVALID)
+            {
+                s_lane.bandValid |= (uint8_t)(1U << band);
+            }
+        }
+        s_lane.confidence = s_parser.payload[11];
+        s_lane.sequence = s_parser.sequence;
+        s_lane.ageTicks = 0U;
+        s_hasLane = 1U;
+    }
     else if ((s_parser.type == K230_LINK_MESSAGE_CAPTURE_ACK) &&
              (s_parser.length == 3U) &&
              (s_capturePending != 0U))
@@ -248,6 +276,8 @@ void K230Link_Init(void)
     s_target.offsetY = 0;
     s_target.sequence = 0U;
     s_hasTarget = 0U;
+    (void)memset(&s_lane, 0, sizeof(s_lane));
+    s_hasLane = 0U;
     s_peerReadyReceived = 0U;
     s_readyAcknowledged = 0U;
     s_nextSequence = 0U;
@@ -274,6 +304,18 @@ void K230Link_Update(uint8_t elapsedTicks)
     {
         K230Link_ParseByte(data);
         processed++;
+    }
+
+    /*
+     * 新鲜度计数。饱和在超时阈值而不是回绕：回绕会让一个几秒前的陈旧
+     * 偏差周期性地重新"变新鲜"，车会拿着过期数据继续跑。
+     */
+    if (s_hasLane != 0U)
+    {
+        uint16_t age = (uint16_t)s_lane.ageTicks + elapsedTicks;
+
+        s_lane.ageTicks = (age >= K230_LINK_LANE_TIMEOUT_TICKS) ?
+            (uint8_t)K230_LINK_LANE_TIMEOUT_TICKS : (uint8_t)age;
     }
 
     if (s_readyAcknowledged == 0U)
@@ -326,6 +368,17 @@ uint8_t K230Link_GetTarget(K230Link_Target_t *target)
         return 0U;
     }
     *target = s_target;
+    return 1U;
+}
+
+uint8_t K230Link_GetLane(K230Link_Lane_t *lane)
+{
+    if ((lane == NULL) || (s_hasLane == 0U) ||
+        (s_lane.ageTicks >= K230_LINK_LANE_TIMEOUT_TICKS))
+    {
+        return 0U;
+    }
+    *lane = s_lane;
     return 1U;
 }
 

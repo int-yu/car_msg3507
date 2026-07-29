@@ -27,7 +27,7 @@ body {
     margin: 0;
     padding: 14px 16px;
     min-height: 100dvh; height: 100dvh; overflow: hidden;
-    display: grid; grid-template-rows: auto auto minmax(0, 1fr);
+    display: grid; grid-template-rows: auto auto auto minmax(0, 1fr);
     background:
         radial-gradient(1200px 400px at 20% -10%, #16233a55, transparent),
         var(--bg);
@@ -76,6 +76,76 @@ details.panel[open] > summary { margin-bottom: 10px; }
     background: #151b25;
     box-shadow: 0 4px 18px #000a;
 }
+[hidden] { display: none !important; }
+.view-tabs {
+    display: flex; gap: 6px; align-items: center; margin-bottom: 10px;
+    border-bottom: 1px solid var(--line);
+}
+.view-tab {
+    min-height: 38px; padding: 7px 14px; border: 0; border-bottom: 2px solid transparent;
+    border-radius: 5px 5px 0 0; background: transparent; color: var(--dim);
+}
+.view-tab:hover:not(:disabled) { background: #171e29; }
+.view-tab.active {
+    color: var(--fg); border-bottom-color: var(--accent); background: #171e29;
+    font-weight: bold;
+}
+.video-workspace {
+    display: grid; grid-template-columns: minmax(0, 1fr) minmax(280px, 340px);
+    gap: 14px; min-height: 0;
+}
+.video-stage {
+    min-width: 0; min-height: 0; display: grid;
+    grid-template-rows: auto auto auto minmax(0, 1fr);
+    border: 1px solid var(--line); border-radius: 8px; overflow: hidden;
+    background: #070a0f;
+}
+.video-toolbar {
+    display: grid; grid-template-columns: minmax(220px, 1fr) auto auto;
+    gap: 7px; padding: 10px; background: #151b25; border-bottom: 1px solid var(--line);
+}
+.video-toolbar input[type=text] { width: 100%; }
+.video-status {
+    min-height: 31px; padding: 6px 11px; color: var(--dim);
+    background: #10141c; border-bottom: 1px solid var(--line);
+}
+.video-status.ok { color: var(--ok); }
+.video-status.err { color: var(--err); }
+.video-view-tools {
+    display: flex; flex-wrap: wrap; align-items: center; gap: 7px;
+    padding: 7px 10px; background: #151b25; border-bottom: 1px solid var(--line);
+}
+.video-view-tools input[type=range] { width: clamp(90px, 12vw, 160px); }
+.video-view-tools output {
+    min-width: 44px; color: var(--dim); text-align: center;
+    font-variant-numeric: tabular-nums;
+}
+.video-view-tools button { min-width: 34px; padding-inline: 9px; }
+.video-screen {
+    position: relative; min-height: 280px; display: grid; place-items: center;
+    overflow: hidden; background: #020306; outline: none;
+    touch-action: none; user-select: none;
+}
+.video-screen:focus-visible { box-shadow: inset 0 0 0 2px var(--accent); }
+.video-screen.can-pan { cursor: grab; }
+.video-screen.dragging { cursor: grabbing; }
+#videoFeed {
+    display: none; width: auto; height: auto; max-width: none; max-height: none;
+    transform-origin: center center; will-change: transform; pointer-events: none;
+    user-select: none; -webkit-user-drag: none;
+}
+.video-placeholder { max-width: 420px; padding: 24px; color: var(--dim); text-align: center; }
+.video-controls {
+    min-width: 0; min-height: 0; overflow-y: auto; overscroll-behavior: contain;
+    scrollbar-width: thin; scrollbar-color: #3b475c transparent;
+}
+.video-controls .panel:last-child { margin-bottom: 0; }
+#videoDrivePanel.armed {
+    border-color: var(--accent); box-shadow: 0 0 0 1px var(--accent-dim), 0 2px 10px #0006;
+}
+.video-drive-pad { max-width: 250px; margin: 10px auto 8px; }
+.video-drive-key { touch-action: none; }
+.video-capture-count { width: 64px !important; }
 button {
     background: #232b3a; color: var(--fg); border: 1px solid var(--line);
     border-radius: 6px; padding: 6px 12px; cursor: pointer; font-size: 13px;
@@ -219,9 +289,16 @@ kbd {
         scrollbar-gutter: auto; padding-right: 0;
     }
     .topbar { position: static; }
+    .video-workspace { grid-template-columns: 1fr; }
+    .video-stage { min-height: min(68vh, 620px); }
+    .video-controls { overflow: visible; }
 }
 @media (max-width: 540px) {
     body { padding: 8px; }
+    .view-tabs { overflow-x: auto; }
+    .view-tab { flex: 1 0 auto; }
+    .video-toolbar { grid-template-columns: 1fr 1fr; }
+    .video-toolbar input { grid-column: 1 / -1; }
     .drive-decks { grid-template-columns: minmax(0, 240px); }
     .wheel-map-grid { grid-template-columns: 1fr; }
     .focus-param-grid { grid-template-columns: 1fr; }
@@ -234,6 +311,11 @@ kbd {
 
 <h1>小车串口调试台 <span class="hint" style="font-weight:normal">无线 DAPLink 串口 · 115200 8N1</span></h1>
 
+<nav class="view-tabs" aria-label="工作区切换">
+    <button type="button" class="view-tab active" data-workspace-view="debug" aria-selected="true">第一部分 · 调试工作台</button>
+    <button type="button" class="view-tab" data-workspace-view="video" aria-selected="false">第二部分 · 视频遥控</button>
+</nav>
+
 <div class="panel row topbar">
     <button id="btnConnect" class="primary">连接串口</button>
     <button id="btnDisconnect" disabled>断开</button>
@@ -243,7 +325,7 @@ kbd {
     <button id="btnStop" class="danger" disabled>急停 C0</button>
 </div>
 
-<div class="grid">
+<div class="grid" id="debugView">
 <div class="scroll-column">
 
     <div class="panel">
@@ -386,14 +468,14 @@ kbd {
     </details>
 
     <details class="panel">
-        <summary>舵机 <small>当前不参与调试</small></summary>
+        <summary>舵机 <small>50 Hz</small></summary>
         <div class="row">
-            <label style="width:38px">纵向</label>
+            <label style="width:72px">纵向 PA27</label>
             <input type="range" id="servoO" min="0" max="270" value="135" style="flex:1" disabled>
             <b id="servoOVal" style="width:34px;text-align:right">135</b>
         </div>
         <div class="row">
-            <label style="width:38px">横向</label>
+            <label style="width:72px">横向 PA26</label>
             <input type="range" id="servoD" min="0" max="270" value="135" style="flex:1" disabled>
             <b id="servoDVal" style="width:34px;text-align:right">135</b>
         </div>
@@ -481,7 +563,7 @@ kbd {
             </div>
             <button id="btnMask" disabled>应用 M</button>
         </div>
-        <p class="hint">勾选后上限实时更新。二进制帧每通道 4 字节，通道越少帧越短、频率越高。DMA 发送不阻塞主循环，全 12 通道也能 100Hz 直传。</p>
+        <p class="hint">勾选后上限实时更新。二进制帧每通道 4 字节，通道越少帧越短、频率越高。DMA 发送不阻塞主循环，全 14 通道也能 100Hz 直传。</p>
         <p class="hint">调 PID 时不必纠结这里：连接/切换阶段会自动准备本阶段最优通道；开始试验会先发激励，指标按实时流计算并标注来源。</p>
     </div>
 
@@ -544,6 +626,72 @@ kbd {
 
 </div>
 </div>
+
+<section class="video-workspace" id="videoView" hidden>
+    <div class="video-stage">
+        <div class="video-toolbar">
+            <input type="text" id="videoRtspUrl" spellcheck="false" value="rtsp://192.168.137.25:8554/test" aria-label="K230 RTSP 地址">
+            <button type="button" id="btnVideoStart" class="primary">开始播放</button>
+            <button type="button" id="btnVideoStop" disabled>停止</button>
+        </div>
+        <div id="videoStatus" class="video-status">正在检查本机视频服务…</div>
+        <div class="video-view-tools" aria-label="视频画面调整">
+            <button type="button" id="btnVideoZoomOut" title="缩小" aria-label="缩小" disabled>−</button>
+            <input id="videoZoom" type="range" min="25" max="400" step="5" value="100" aria-label="画面缩放比例" disabled>
+            <output id="videoZoomValue" for="videoZoom">100%</output>
+            <button type="button" id="btnVideoZoomIn" title="放大" aria-label="放大" disabled>+</button>
+            <button type="button" id="btnVideoRotateLeft" title="向左旋转 90 度" aria-label="向左旋转 90 度" disabled>↶</button>
+            <input id="videoRotation" type="range" min="-180" max="180" step="1" value="0" aria-label="画面旋转角度" disabled>
+            <output id="videoRotationValue" for="videoRotation">0°</output>
+            <button type="button" id="btnVideoRotateRight" title="向右旋转 90 度" aria-label="向右旋转 90 度" disabled>↷</button>
+            <button type="button" id="btnVideoFit" disabled>适应</button>
+            <button type="button" id="btnVideoReset" disabled>复位</button>
+        </div>
+        <div class="video-screen" id="videoScreen" tabindex="0" aria-label="K230 实时视频，可拖拽、滚轮缩放并旋转">
+            <div id="videoPlaceholder" class="video-placeholder">启动 K230 推流后输入 RTSP 地址并开始播放</div>
+            <img id="videoFeed" alt="K230 实时视频画面" draggable="false">
+        </div>
+    </div>
+
+    <aside class="video-controls">
+        <div class="panel" id="videoDrivePanel">
+            <h2>主车遥控 <small>WASD · 松开即停</small></h2>
+            <div class="row">
+                <button id="btnVideoDriveMode" disabled>启用键盘驾驶</button>
+                <span id="videoDriveState" class="hint">连接串口后可启用</span>
+            </div>
+            <div class="row">
+                <label for="videoDriveSpeed">档速</label>
+                <input type="number" id="videoDriveSpeed" value="250" min="20" max="800" style="width:64px">
+                <label for="videoDriveTurn">转向</label>
+                <input type="number" id="videoDriveTurn" value="150" min="0" max="800" style="width:64px">
+                <span class="hint">mm/s</span>
+            </div>
+            <div class="drive-pad video-drive-pad">
+                <span></span>
+                <button class="drive-key video-drive-key" data-video-drive="forward" disabled>W<small>前进</small></button>
+                <span></span>
+                <button class="drive-key video-drive-key" data-video-drive="left" disabled>A<small>左转</small></button>
+                <button class="drive-key video-drive-key" data-video-drive="back" disabled>S<small>后退</small></button>
+                <button class="drive-key video-drive-key" data-video-drive="right" disabled>D<small>右转</small></button>
+                <span></span>
+                <button class="drive-key video-drive-key danger" data-video-drive="stop" disabled>X<small>停止</small></button>
+                <span></span>
+            </div>
+            <p class="hint">只按 A / D 原地转向，配合 W / S 走弧线；Esc 始终急停主车和从车。</p>
+        </div>
+
+        <div class="panel">
+            <h2>拍照 <small>保存到 K230 TF 卡</small></h2>
+            <div class="row">
+                <label for="videoCaptureCount">张数</label>
+                <input type="number" id="videoCaptureCount" class="video-capture-count" value="1" min="1" max="20">
+                <button type="button" id="btnVideoCapture" class="primary" disabled>拍照</button>
+            </div>
+            <p id="videoCaptureStatus" class="hint">照片保存到 <code>/sdcard/pic/</code></p>
+        </div>
+    </aside>
+</section>
 
 <script>
 /* ==PARSER_BEGIN== */
@@ -626,7 +774,7 @@ class TelemetryParser {
     static unitOf(column) {
         const g = { LV: 'mmps', RV: 'mmps', TL: 'mmps', TR: 'mmps',
             PL: 'pwm', PR: 'pwm', yaw: 'deg', navE: 'deg', navT: 'deg',
-            LD: 'mm', RD: 'mm' };
+            LD: 'mm', RD: 'mm', vad: 'mmps' };
         return g[column] || column;
     }
 
@@ -926,10 +1074,12 @@ const TELEMETRY_BAUD = 115200;
 const TELEMETRY_BANDWIDTH_PERCENT = 70;
 const TELEMETRY_RATE_HARD_LIMIT = 100;
 
-/* 通道数：12 位里被置位的个数。 */
+/* 通道数：被置位的个数。上界从 CH_ALL 派生，新增通道位时自动跟随，不再手写死值。
+ * CH_ALL 定义在本文件靠后位置（const 不提升），但本函数只在调用时才读取 CH_ALL，
+ * 而全部调用点（renderRateLimit 等）都发生在脚本初始化完成之后，不会触发 TDZ。 */
 function countCaptureChannels(mask) {
     let count = 0;
-    for (let bit = 1; bit <= 0x800; bit <<= 1) {
+    for (let bit = 1; bit <= CH_ALL; bit <<= 1) {
         if ((mask & bit) !== 0) {
             count += 1;
         }
@@ -1439,7 +1589,7 @@ const PALETTE = ['#4da3ff', '#46c17a', '#e0a13c', '#e05c5c', '#a97ee0', '#3fc4c4
 
 /* 各调参试验的预设：掩码只留相关字段换高频，激励与收尾命令成对。
  * 频率按固件动态上限（20% 带宽）预先算好，改固件常量后需同步。 */
-/* 统一 12 通道位定义，与固件 TELEMETRY_CH_*（= CAPTURE_CH_*）完全一致。
+/* 统一 14 通道位定义，与固件 TELEMETRY_CH_*（= CAPTURE_CH_*）完全一致。
    二进制架构后实时流与捕获共用同一套通道，掩码语义统一。
    必须定义在 SESSIONS / TUNING_FOCUS 之前——const 不提升，早引用会 TDZ 报错。 */
 const CH = {
@@ -1447,8 +1597,9 @@ const CH = {
     TR: 0x0008, RV: 0x0010, PR: 0x0020,
     yaw: 0x0040, navE: 0x0080, lerr: 0x0100,
     gray: 0x0200, LD: 0x0400, RD: 0x0800,
+    vx: 0x1000, vad: 0x2000,
 };
-const CH_ALL = 0x0FFF;
+const CH_ALL = 0x3FFF;
 /* 捕获别名，保留旧引用可读性；与实时流同一套位。 */
 const CAPTURE_CH = CH;
 /* 固件 CAPTURE_MAX_CHANNELS；超出会被固件拒绝，网页先自查给出清晰提示。 */
@@ -1459,11 +1610,12 @@ const CH_LIST = [
     ['TR', 'mmps'], ['RV', 'mmps'], ['PR', 'pwm'],
     ['yaw', 'deg'], ['navE', 'deg'], ['lerr', 'raw'],
     ['gray', 'bits'], ['LD', 'mm'], ['RD', 'mm'],
+    ['vx', 'raw'], ['vad', 'mmps'],
 ];
 
 const SESSIONS = {
     wheel: {
-        /* 二进制后不再有 mode/单侧字段之分，一律用 12 通道位。捕获与实时流同掩码。 */
+        /* 二进制后不再有 mode/单侧字段之分，一律用 14 通道位。捕获与实时流同掩码。 */
         label: '轮速 PI', mask: CH.TL | CH.LV | CH.PL | CH.TR | CH.RV | CH.PR,
         ampLabel: '目标mm/s', ampDefault: 300, timed: true, durDefault: 8,
         excite: (amp) => 'W' + amp, stopCmd: 'W0',
@@ -1671,6 +1823,407 @@ const termEl = $('terminal');
 const plotEl = $('plot');
 const ctx = plotEl.getContext('2d');
 
+/* ---------- 工作区切换与本机视频 ---------- */
+
+const VIDEO_URL_STORE_KEY = 'carDebugRtspUrlV1';
+const VIEWER_PAGE_SERVED = window.location.protocol === 'http:' &&
+    (window.location.hostname === '127.0.0.1' ||
+        window.location.hostname === 'localhost');
+const VIEWER_API_BASE = '';
+let videoGeneration = null;
+let videoStarting = false;
+let videoOperationId = 0;
+let videoStatusTimer = null;
+let videoConnectionTimer = null;
+let videoFrameAbortController = null;
+let videoCurrentFrameUrl = null;
+let videoLastFrameId = 0;
+let videoViewReady = false;
+let videoDragPointerId = null;
+let videoDragStartX = 0;
+let videoDragStartY = 0;
+let videoDragPanX = 0;
+let videoDragPanY = 0;
+
+const videoViewState = {
+    zoom: 1,
+    rotation: 0,
+    panX: 0,
+    panY: 0,
+    fitScale: 1,
+};
+
+const videoViewControlIds = [
+    'btnVideoZoomOut', 'videoZoom', 'btnVideoZoomIn',
+    'btnVideoRotateLeft', 'videoRotation', 'btnVideoRotateRight',
+    'btnVideoFit', 'btnVideoReset',
+];
+
+function viewerUrl(path) {
+    return VIEWER_API_BASE + path;
+}
+
+async function viewerFetch(path, options = {}) {
+    if (!VIEWER_PAGE_SERVED) {
+        throw new Error('请通过 local_rtsp_viewer/start_viewer.bat 打开视频遥控');
+    }
+    const response = await fetch(viewerUrl(path), options);
+    const value = await response.json();
+    if (!response.ok) {
+        throw new Error(value.error || `HTTP ${response.status}`);
+    }
+    return value;
+}
+
+function setVideoStatus(message, tone = '') {
+    const status = $('videoStatus');
+    status.textContent = message;
+    status.className = 'video-status' + (tone ? ` ${tone}` : '');
+}
+
+function setVideoStarting(starting) {
+    videoStarting = starting;
+    $('btnVideoStart').disabled = starting;
+    $('btnVideoStop').disabled = starting || videoGeneration === null;
+    $('videoRtspUrl').disabled = starting;
+}
+
+function clearVideoTimers() {
+    if (videoStatusTimer !== null) {
+        clearInterval(videoStatusTimer);
+    }
+    if (videoConnectionTimer !== null) {
+        clearTimeout(videoConnectionTimer);
+    }
+    videoStatusTimer = null;
+    videoConnectionTimer = null;
+}
+
+function stopLatestVideoFrames() {
+    if (videoFrameAbortController !== null) {
+        videoFrameAbortController.abort();
+        videoFrameAbortController = null;
+    }
+    if (videoCurrentFrameUrl !== null) {
+        URL.revokeObjectURL(videoCurrentFrameUrl);
+        videoCurrentFrameUrl = null;
+    }
+    videoLastFrameId = 0;
+}
+
+function setVideoViewControlsEnabled(enabled) {
+    videoViewReady = enabled;
+    videoViewControlIds.forEach((id) => { $(id).disabled = !enabled; });
+    $('videoScreen').classList.toggle('can-pan', enabled);
+}
+
+function normalizedVideoAngle(angle) {
+    return ((angle + 180) % 360 + 360) % 360 - 180;
+}
+
+function updateVideoFitScale() {
+    const image = $('videoFeed');
+    const screen = $('videoScreen');
+    if (!image.naturalWidth || !image.naturalHeight ||
+        !screen.clientWidth || !screen.clientHeight) {
+        videoViewState.fitScale = 1;
+        return;
+    }
+    const radians = videoViewState.rotation * Math.PI / 180;
+    const rotatedWidth = Math.abs(image.naturalWidth * Math.cos(radians)) +
+        Math.abs(image.naturalHeight * Math.sin(radians));
+    const rotatedHeight = Math.abs(image.naturalWidth * Math.sin(radians)) +
+        Math.abs(image.naturalHeight * Math.cos(radians));
+    videoViewState.fitScale = Math.min(
+        Math.max(1, screen.clientWidth - 20) / rotatedWidth,
+        Math.max(1, screen.clientHeight - 20) / rotatedHeight,
+    );
+}
+
+function applyVideoTransform() {
+    $('videoFeed').style.transform =
+        `translate(${videoViewState.panX}px, ${videoViewState.panY}px) ` +
+        `rotate(${videoViewState.rotation}deg) ` +
+        `scale(${videoViewState.fitScale * videoViewState.zoom})`;
+    $('videoZoom').value = Math.round(videoViewState.zoom * 100);
+    $('videoZoomValue').value = `${Math.round(videoViewState.zoom * 100)}%`;
+    $('videoRotation').value = videoViewState.rotation;
+    $('videoRotationValue').value = `${videoViewState.rotation}°`;
+}
+
+function setVideoZoom(zoom) {
+    videoViewState.zoom = Math.max(0.25, Math.min(4, zoom));
+    applyVideoTransform();
+}
+
+function setVideoRotation(angle) {
+    videoViewState.rotation = normalizedVideoAngle(angle);
+    updateVideoFitScale();
+    applyVideoTransform();
+}
+
+function fitVideoView() {
+    videoViewState.zoom = 1;
+    videoViewState.panX = 0;
+    videoViewState.panY = 0;
+    updateVideoFitScale();
+    applyVideoTransform();
+}
+
+function resetVideoView() {
+    videoViewState.rotation = 0;
+    fitVideoView();
+}
+
+/* decode() 而不是 onload：解码完成才 resolve，上屏时不会再触发一次
+   阻塞布局的同步解码。上一帧的 decode() 落地后才会换 src，因此不会
+   出现换源导致的 AbortError。 */
+async function showLatestVideoFrame(blob, generation) {
+    const image = $('videoFeed');
+    const frameUrl = URL.createObjectURL(blob);
+    image.src = frameUrl;
+    try {
+        await image.decode();
+    } catch (error) {
+        URL.revokeObjectURL(frameUrl);
+        if (generation !== videoGeneration) {
+            return;
+        }
+        throw new Error('浏览器无法解码视频帧');
+    }
+    if (generation !== videoGeneration) {
+        URL.revokeObjectURL(frameUrl);
+        return;
+    }
+    if (videoCurrentFrameUrl !== null) {
+        URL.revokeObjectURL(videoCurrentFrameUrl);
+    }
+    videoCurrentFrameUrl = frameUrl;
+    image.style.display = 'block';
+    $('videoPlaceholder').style.display = 'none';
+    if (!videoViewReady) {
+        setVideoViewControlsEnabled(true);
+        resetVideoView();
+    }
+    setVideoStatus('正在播放最新实时画面', 'ok');
+    if (videoConnectionTimer !== null) {
+        clearTimeout(videoConnectionTimer);
+        videoConnectionTimer = null;
+    }
+}
+
+/* 取一张最新帧；204 表示这一轮没有更新的帧，返回 null 由调用方重试。 */
+async function fetchLatestVideoFrame(generation, afterFrameId, controller) {
+    const response = await fetch(viewerUrl(
+        `/frame.jpg?generation=${generation}&after=${afterFrameId}`
+    ), { cache: 'no-store', signal: controller.signal });
+    if (response.status === 204) {
+        return null;
+    }
+    if (!response.ok) {
+        let message = `HTTP ${response.status}`;
+        try {
+            const value = await response.json();
+            message = value.error || message;
+        } catch (_) {
+            // Keep the HTTP status when the body is not JSON.
+        }
+        throw new Error(message);
+    }
+    const frameId = Number(response.headers.get('X-Frame-Id'));
+    if (!Number.isFinite(frameId)) {
+        throw new Error('视频服务没有返回有效帧编号');
+    }
+    return { frameId, blob: await response.blob() };
+}
+
+async function pullLatestVideoFrames(generation, controller) {
+    let pending = null;
+    try {
+        pending = fetchLatestVideoFrame(
+            generation, videoLastFrameId, controller);
+        while (videoGeneration === generation && !controller.signal.aborted) {
+            const item = await pending;
+            if (item !== null) {
+                videoLastFrameId = item.frameId;
+            }
+            /* 先把下一次请求发出去，再解码手上这帧：链路等待与浏览器
+               解码重叠。串行版本在解码期间没有任何请求在飞，每帧都白
+               等一个来回。服务端只保留最新帧，抢先请求不会攒出积压。 */
+            pending = fetchLatestVideoFrame(
+                generation, videoLastFrameId, controller);
+            if (item !== null) {
+                await showLatestVideoFrame(item.blob, generation);
+            }
+        }
+    } catch (error) {
+        if (controller.signal.aborted || generation !== videoGeneration) {
+            return;
+        }
+        showVideoStopped(`连接失败：${error.message}`, 'err');
+    } finally {
+        if (pending !== null) {
+            /* 退出循环时通常还有一次请求在飞，吞掉结果避免未处理的拒绝。 */
+            pending.catch(() => {});
+        }
+    }
+}
+
+function showVideoStopped(message, tone = '') {
+    clearVideoTimers();
+    stopLatestVideoFrames();
+    $('videoFeed').removeAttribute('src');
+    $('videoFeed').style.display = 'none';
+    $('videoPlaceholder').style.display = 'block';
+    setVideoViewControlsEnabled(false);
+    videoGeneration = null;
+    setVideoStatus(message, tone);
+    setVideoStarting(false);
+}
+
+async function readVideoStatus() {
+    return viewerFetch('/api/status', { cache: 'no-store' });
+}
+
+async function checkVideoService() {
+    if (videoGeneration !== null || videoStarting) {
+        return;
+    }
+    if (!VIEWER_PAGE_SERVED) {
+        setVideoStatus('请运行 local_rtsp_viewer/start_viewer.bat 进入视频遥控', 'err');
+        return;
+    }
+    try {
+        await viewerFetch('/health', { cache: 'no-store' });
+        setVideoStatus('本机视频服务已就绪，等待开始播放', 'ok');
+    } catch (error) {
+        setVideoStatus('视频服务未启动，请运行 local_rtsp_viewer/start_viewer.bat', 'err');
+    }
+}
+
+function beginVideoStatusPolling() {
+    videoStatusTimer = setInterval(async () => {
+        try {
+            const value = await readVideoStatus();
+            if (value.generation !== videoGeneration) {
+                return;
+            }
+            if (value.state === 'failed') {
+                showVideoStopped(`连接失败：${value.error || 'FFmpeg 拉流失败'}`, 'err');
+            } else if (value.state === 'starting') {
+                setVideoStatus('正在连接 K230，等待首帧…');
+            }
+        } catch (error) {
+            showVideoStopped(`视频服务连接中断：${error.message}`, 'err');
+        }
+    }, 500);
+}
+
+async function startVideo() {
+    if (videoStarting) {
+        return;
+    }
+    if (!VIEWER_PAGE_SERVED) {
+        setVideoStatus('请运行 local_rtsp_viewer/start_viewer.bat 进入视频遥控', 'err');
+        return;
+    }
+    const url = $('videoRtspUrl').value.trim();
+    if (!url.toLowerCase().startsWith('rtsp://')) {
+        setVideoStatus('请输入以 rtsp:// 开头的完整地址', 'err');
+        return;
+    }
+
+    const operationId = ++videoOperationId;
+    setVideoStarting(true);
+    clearVideoTimers();
+    stopLatestVideoFrames();
+    $('videoFeed').removeAttribute('src');
+    $('videoFeed').style.display = 'none';
+    $('videoPlaceholder').style.display = 'block';
+    setVideoStatus('正在启动本机 FFmpeg…');
+    localStorage.setItem(VIDEO_URL_STORE_KEY, url);
+
+    try {
+        const value = await viewerFetch('/api/start', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ url }),
+        });
+        if (operationId !== videoOperationId) {
+            return;
+        }
+        videoGeneration = value.generation;
+        videoFrameAbortController = new AbortController();
+        pullLatestVideoFrames(videoGeneration, videoFrameAbortController);
+        setVideoStatus('正在连接 K230，等待首帧…');
+        beginVideoStatusPolling();
+        const expectedGeneration = videoGeneration;
+        videoConnectionTimer = setTimeout(async () => {
+            if (operationId !== videoOperationId ||
+                videoGeneration !== expectedGeneration) {
+                return;
+            }
+            const current = await readVideoStatus().catch(() => null);
+            if (operationId === videoOperationId &&
+                videoGeneration === expectedGeneration &&
+                current && current.state !== 'streaming') {
+                showVideoStopped(`连接失败：${current.error || '等待首帧超时'}`, 'err');
+            }
+        }, 12000);
+    } catch (error) {
+        if (operationId === videoOperationId) {
+            showVideoStopped(`连接失败：${error.message}`, 'err');
+        }
+    } finally {
+        if (operationId === videoOperationId) {
+            setVideoStarting(false);
+        }
+    }
+}
+
+async function stopVideo() {
+    const operationId = ++videoOperationId;
+    showVideoStopped('正在停止…');
+    try {
+        await viewerFetch('/api/stop', { method: 'POST' });
+        if (operationId === videoOperationId) {
+            setVideoStatus('视频已停止');
+        }
+    } catch (error) {
+        if (operationId === videoOperationId) {
+            setVideoStatus(`停止失败：${error.message}`, 'err');
+        }
+    }
+}
+
+function setWorkspaceView(view, updateHash = true) {
+    const next = view === 'video' ? 'video' : 'debug';
+    $('debugView').hidden = next !== 'debug';
+    $('videoView').hidden = next !== 'video';
+    document.querySelectorAll('[data-workspace-view]').forEach((button) => {
+        const active = button.dataset.workspaceView === next;
+        button.classList.toggle('active', active);
+        button.setAttribute('aria-selected', String(active));
+    });
+    if (updateHash) {
+        window.history.replaceState(null, '', `#${next}`);
+    }
+    if (writer) {
+        if (Object.values(driveHeld).some(Boolean)) {
+            clearDrive(true);
+        }
+        if (Object.values(driveHeldSlave).some(Boolean)) {
+            clearDriveSlave(true);
+        }
+    }
+    if (next === 'video') {
+        checkVideoService();
+    } else {
+        requestRedraw(true);
+        requestRedrawSlave();
+    }
+}
+
 /* ---------- 终端 ---------- */
 
 function log(text, cls) {
@@ -1736,6 +2289,13 @@ function handleTextLine(line) {
             updateParamValue(entry.id, parseFloat(m[1]));
         }
     }
+    if ((m = line.match(/^OK CAP REQ (\d+)$/))) {
+        $('videoCaptureStatus').textContent = `K230 已接收 ${m[1]} 张拍照请求，等待完成…`;
+    } else if ((m = line.match(/^OK CAP (\d+)$/))) {
+        $('videoCaptureStatus').textContent = `拍照完成，最新编号 ${m[1]}`;
+    } else if (line.startsWith('ERR CAP')) {
+        $('videoCaptureStatus').textContent = `拍照失败：${line}`;
+    }
     logReply(line);
 }
 
@@ -1747,8 +2307,9 @@ function setConnected(on) {
     $('btnConnect').disabled = on;
     $('btnDisconnect').disabled = !on;
     document.querySelectorAll(
-        'button[data-send], button[data-cmd], button[data-drive], ' +
-        '#btnMask, #btnMaxRate, #btnRaw, #btnStop, #btnDriveMode, #btnRecord, ' +
+        'button[data-send], button[data-cmd], button[data-drive], button[data-video-drive], ' +
+        '#btnMask, #btnMaxRate, #btnRaw, #btnStop, #btnDriveMode, #btnVideoDriveMode, ' +
+        '#btnVideoCapture, #btnRecord, ' +
         '#btnParamRefresh, #btnParamApplyStored, #btnSessStart, ' +
         '#btnSlaveRate, #btnSlaveStop, #btnSlaveMask, ' +
         '#btnCalFinish, #btnOdomMark, #btnOdomCalc')
@@ -2681,7 +3242,7 @@ async function startSession() {
     session.guardTimer = setTimeout(() => { stopSession('超时安全收尾', true); }, 30000);
 }
 
-/* 掩码 → 预期列名（按 12 通道位序）。用于等待 schema 帧到达确认切换成功。 */
+/* 掩码 → 预期列名（按 14 通道位序）。用于等待 schema 帧到达确认切换成功。 */
 function expectedColumnsForMask(mask) {
     const columns = ['ms'];
     for (const [name] of CH_LIST) {
@@ -3225,19 +3786,24 @@ const SESSION_STORE_KEY = 'carDebugSessionsV1';
 
 /* 主车 = WASD，从车 = 方向键，固定不变；两个控制板常显，可同时独立驾驶。 */
 function updateDriveControls() {
-    document.querySelectorAll('.drive-key[data-drive-car]').forEach((button) => {
+    document.querySelectorAll('.drive-key[data-drive-car], [data-video-drive]').forEach((button) => {
         button.disabled = !writer || !driveEnabled;
     });
     $('driveHint').innerHTML = driveEnabled ?
         '键盘已接管：<kbd>W</kbd><kbd>A</kbd><kbd>S</kbd><kbd>D</kbd> 控主车，方向键 <kbd>↑</kbd><kbd>↓</kbd><kbd>←</kbd><kbd>→</kbd> 控从车，可同时独立驾驶 · 松开即停 · <kbd>Esc</kbd> 急停两车' :
         '启用后：<kbd>W</kbd><kbd>A</kbd><kbd>S</kbd><kbd>D</kbd> 控主车，方向键控从车；两套按键可同时用，松开即停。';
+    $('videoDriveState').textContent = driveEnabled ?
+        '键盘驾驶已启用' : (writer ? '键盘驾驶未启用' : '连接串口后可启用');
 }
 
 function setDriveEnabled(on) {
     driveEnabled = on && !!writer;
     $('drivePanel').classList.toggle('armed', driveEnabled);
-    $('btnDriveMode').textContent = driveEnabled ? '停用键盘驾驶' : '启用键盘驾驶';
-    $('btnDriveMode').classList.toggle('primary', driveEnabled);
+    $('videoDrivePanel').classList.toggle('armed', driveEnabled);
+    [$('btnDriveMode'), $('btnVideoDriveMode')].forEach((button) => {
+        button.textContent = driveEnabled ? '停用键盘驾驶' : '启用键盘驾驶';
+        button.classList.toggle('primary', driveEnabled);
+    });
     /* 进入驾驶时清零方向；退出或断连时分别补发两车停车帧。 */
     clearDrive(!driveEnabled);
     clearDriveSlave(!driveEnabled);
@@ -3261,8 +3827,8 @@ function driveVector() {
 }
 
 function updateDriveVisuals() {
-    document.querySelectorAll('.drive-key[data-drive-car="master"]').forEach((btn) => {
-        const dir = btn.dataset.drive;
+    document.querySelectorAll('.drive-key[data-drive-car="master"], [data-video-drive]').forEach((btn) => {
+        const dir = btn.dataset.videoDrive || btn.dataset.drive;
         if (Object.prototype.hasOwnProperty.call(driveHeld, dir)) {
             btn.classList.toggle('held', driveHeld[dir]);
         }
@@ -3987,6 +4553,7 @@ $('gVal').addEventListener('input', renderRateLimit);
 /* ---------- 遥控采集事件 ---------- */
 
 $('btnDriveMode').onclick = () => setDriveEnabled(!driveEnabled);
+$('btnVideoDriveMode').onclick = () => setDriveEnabled(!driveEnabled);
 $('btnRecord').onclick = () => {
     if (recording) {
         stopRecording();
@@ -4009,6 +4576,131 @@ document.querySelectorAll('.drive-key[data-drive-car]').forEach((btn) => {
     btn.addEventListener('pointerleave', release);
     btn.addEventListener('pointercancel', release);
 });
+document.querySelectorAll('[data-video-drive]').forEach((button) => {
+    const dir = button.dataset.videoDrive;
+    button.addEventListener('pointerdown', (event) => {
+        event.preventDefault();
+        pressDrive(dir);
+    });
+    const release = () => releaseDrive(dir);
+    button.addEventListener('pointerup', release);
+    button.addEventListener('pointerleave', release);
+    button.addEventListener('pointercancel', release);
+});
+
+function mirrorDriveSetting(sourceId, targetId) {
+    const source = $(sourceId);
+    const target = $(targetId);
+    const copy = () => {
+        target.value = source.value;
+        if (Object.values(driveHeld).some(Boolean)) {
+            lastDriveSent = null;
+            applyDrive();
+        }
+    };
+    source.addEventListener('input', copy);
+}
+mirrorDriveSetting('driveSpeed', 'videoDriveSpeed');
+mirrorDriveSetting('videoDriveSpeed', 'driveSpeed');
+mirrorDriveSetting('driveTurn', 'videoDriveTurn');
+mirrorDriveSetting('videoDriveTurn', 'driveTurn');
+
+document.querySelectorAll('[data-workspace-view]').forEach((button) => {
+    button.addEventListener('click', () => setWorkspaceView(button.dataset.workspaceView));
+});
+window.addEventListener('hashchange', () => {
+    setWorkspaceView(window.location.hash === '#video' ? 'video' : 'debug', false);
+});
+$('btnVideoStart').onclick = startVideo;
+$('btnVideoStop').onclick = stopVideo;
+$('videoRtspUrl').addEventListener('keydown', (event) => {
+    if (event.key === 'Enter') {
+        startVideo();
+    }
+});
+$('btnVideoZoomOut').onclick = () => setVideoZoom(videoViewState.zoom - 0.1);
+$('btnVideoZoomIn').onclick = () => setVideoZoom(videoViewState.zoom + 0.1);
+$('videoZoom').addEventListener('input', (event) => {
+    setVideoZoom(Number(event.target.value) / 100);
+});
+$('btnVideoRotateLeft').onclick = () => setVideoRotation(videoViewState.rotation - 90);
+$('btnVideoRotateRight').onclick = () => setVideoRotation(videoViewState.rotation + 90);
+$('videoRotation').addEventListener('input', (event) => {
+    setVideoRotation(Number(event.target.value));
+});
+$('btnVideoFit').onclick = fitVideoView;
+$('btnVideoReset').onclick = resetVideoView;
+
+const videoScreen = $('videoScreen');
+videoScreen.addEventListener('wheel', (event) => {
+    if (!videoViewReady) return;
+    event.preventDefault();
+    setVideoZoom(videoViewState.zoom * (event.deltaY < 0 ? 1.1 : 0.9));
+}, { passive: false });
+videoScreen.addEventListener('dblclick', () => {
+    if (videoViewReady) fitVideoView();
+});
+videoScreen.addEventListener('pointerdown', (event) => {
+    if (!videoViewReady || event.button !== 0) return;
+    videoDragPointerId = event.pointerId;
+    videoDragStartX = event.clientX;
+    videoDragStartY = event.clientY;
+    videoDragPanX = videoViewState.panX;
+    videoDragPanY = videoViewState.panY;
+    videoScreen.setPointerCapture(event.pointerId);
+    videoScreen.classList.add('dragging');
+    videoScreen.focus();
+});
+videoScreen.addEventListener('pointermove', (event) => {
+    if (event.pointerId !== videoDragPointerId) return;
+    videoViewState.panX = videoDragPanX + event.clientX - videoDragStartX;
+    videoViewState.panY = videoDragPanY + event.clientY - videoDragStartY;
+    applyVideoTransform();
+});
+function finishVideoDrag(event) {
+    if (event.pointerId !== videoDragPointerId) return;
+    videoDragPointerId = null;
+    videoScreen.classList.remove('dragging');
+}
+videoScreen.addEventListener('pointerup', finishVideoDrag);
+videoScreen.addEventListener('pointercancel', finishVideoDrag);
+videoScreen.addEventListener('keydown', (event) => {
+    if (!videoViewReady) return;
+    const key = event.key.toLowerCase();
+    let handled = true;
+    if (key === 'q') setVideoRotation(videoViewState.rotation - 90);
+    else if (key === 'e') setVideoRotation(videoViewState.rotation + 90);
+    else if (key === 'f') fitVideoView();
+    else if (key === '0') resetVideoView();
+    else if (event.key === 'ArrowLeft') videoViewState.panX -= 16;
+    else if (event.key === 'ArrowRight') videoViewState.panX += 16;
+    else if (event.key === 'ArrowUp') videoViewState.panY -= 16;
+    else if (event.key === 'ArrowDown') videoViewState.panY += 16;
+    else handled = false;
+    if (!handled) return;
+    if (event.key.startsWith('Arrow')) applyVideoTransform();
+    event.preventDefault();
+    event.stopPropagation();
+});
+if (typeof ResizeObserver !== 'undefined') {
+    new ResizeObserver(() => {
+        if (videoViewReady) {
+            updateVideoFitScale();
+            applyVideoTransform();
+        }
+    }).observe(videoScreen);
+}
+$('btnVideoCapture').onclick = async () => {
+    const count = Math.max(1, Math.min(20,
+        parseInt($('videoCaptureCount').value, 10) || 1));
+    $('videoCaptureCount').value = count;
+    $('capVal').value = count;
+    $('videoCaptureStatus').textContent = `正在请求拍摄 ${count} 张…`;
+    const sent = await send('P' + count);
+    $('videoCaptureStatus').textContent = sent ?
+        `拍照命令已发送：P${count}，等待 K230 回执…` :
+        '拍照命令发送失败，请检查串口连接';
+};
 
 /*
  * 键盘驾驶与标记。只在启用驾驶模式后接管 WASD，避免误触；
@@ -4176,7 +4868,7 @@ function drawSlavePlot() {
     });
 }
 
-/* 从车掩码勾选框（复用 12 通道位定义），默认轮速子集。 */
+/* 从车掩码勾选框（复用 14 通道位定义），默认轮速子集。 */
 (function buildSlaveMaskUI() {
     const box = $('slaveMask');
     if (!box) { return; }
@@ -4436,6 +5128,11 @@ refreshSessionInputs(true);
 renderFocusNavigation();
 applyFocusedTelemetrySelection(false);
 renderRateLimit();
+const storedVideoUrl = localStorage.getItem(VIDEO_URL_STORE_KEY);
+if (storedVideoUrl) {
+    $('videoRtspUrl').value = storedVideoUrl;
+}
+setWorkspaceView(window.location.hash === '#video' ? 'video' : 'debug', false);
 log('等待连接。浏览器需支持 Web Serial（Chrome / Edge）。');
 </script>
 </body>

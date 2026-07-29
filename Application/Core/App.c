@@ -5,7 +5,6 @@
 #include "Application/Core/CarRole.h"
 #include "Application/Control/MotionManager.h"
 #include "Application/Debug/DebugDisplay.h"
-#include "Application/Debug/Capture.h"
 #include "Application/Debug/Telemetry.h"
 #include "Application/Servo/Servo.h"
 #include "Application/State/Heading.h"
@@ -161,7 +160,6 @@ void App_Init(void)
 
     BluetoothDebug_Init();
     Telemetry_Init();
-    Capture_Init();
     if (MotionManager_Init() != MOTION_MANAGER_RESULT_OK)
     {
         Beep_Long();
@@ -275,12 +273,8 @@ uint8_t App_Update(App_UpdateContext_t *context)
     }
 
     /* 必须在 MotionManager_Update() 之后：目标速度和输出 PWM 都是本拍算出的，
-     * 提前采会记录到上一拍的值，阶跃起点会整体偏移一个控制周期。 */
-    Capture_Update((uint32_t)elapsedTicks * 10U);
-
+     * 提前采会发出上一拍的值，阶跃起点会整体偏移一个控制周期。 */
     Telemetry_Update(elapsedTicks, context->pressedKeys);
-    /* dump 与实时流互斥：捕获输出期间车已停稳，让它独占串口。 */
-    Capture_DumpNext();
 
     for (index = 0U; index < elapsedTicks; index++)
     {

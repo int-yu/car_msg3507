@@ -11,6 +11,7 @@
 | CPUCLK / SYSCLK | 32 MHz | 全工程 | SysConfig 默认时钟源；延时、总线外设和 SysTick 的基准时钟 |
 | SysTick | 32 MHz / 320000 = 100 Hz | `System/Tick`、`Application/Core/App`、`MotionManager`、`Mission`、`Accomplish/25H` | 10 ms 系统节拍；`App_Update()` 传递实际累计 Tick 和 dt；当前巡线连续全白 50 拍（约 500 ms）后安全返回等待 |
 | TIMG8 | 32 MHz，周期 1600 = 20 kHz | `Hardware/Motor/PWM`、`MotionWheel`、`MotionManager`、`Accomplish/25H` | 25H 通过 MotionManager 依次选择巡线、定距直线和绝对角转向，再由 MotionWheel 输出双轮 PWM |
+| TIMG7 | 32 MHz / 32 = 1 MHz，周期 20000 = 50 Hz | `Application/Servo` | PA26/PA27 分别输出横向/纵向普通舵机 PWM；`D`/`O` 命令更新比较值 |
 | I2C0 | BUSCLK 32 MHz，SCL 400 kHz | `Hardware/Display/OLED` | OLED 控制器通信 |
 | UART1 | BUSCLK 32 MHz，115200 baud，8N1，RX + DMA TX 中断 | `Hardware/Comms/Serial`、`Application/Comms/CarLink` | PB6/PB7 接 HC05，作为车对车 CarLink；逻辑接口为 `Serial2`，TX 使用 DMA CH1 |
 | UART2 | BUSCLK 32 MHz，115200 baud，8N1，RX + DMA TX 中断 | `Hardware/Comms/Serial`、`Application/Comms/BluetoothDebug`、`App`、`Mission` | PA21/PA22 接 DAPLink，作为 PC/网页链路；逻辑接口为 `Serial1`，TX 使用 DMA CH0 |
@@ -34,6 +35,8 @@
 | PA22 | UART2 RX、上拉 | DAPLink TX | 接收 PC/网页命令；逻辑接口 `Serial1`，115200 |
 | PA24 | GPIO 输入、上拉、双边沿中断 | 左编码器 B | GPIOA GROUP1 IRQ；`MotionWheel` 左轮反馈 |
 | PA25 | UART3 RX、上拉 | K230 TX | 接收 K230 帧；未连接时保持 UART 空闲高电平，逻辑接口 `Serial3`，115200 |
+| PA26 | TIMG7 CCP0 | 横向舵机 PWM | 50 Hz；`D<number>` 更新角度 |
+| PA27 | TIMG7 CCP1 | 纵向舵机 PWM | 50 Hz；`O<number>` 更新角度 |
 | PA28 | I2C0 SDA | OLED | 400 kHz |
 | PA29 | GPIO 输入、上拉 | 灰度 CH0 | 灰度位图 bit0；最左侧，黑线为 1 |
 | PA30 | GPIO 输入、上拉 | KEY1 | 低电平按下，按键位图 bit0；App 生成按下沿事件，当前用于启动 25H |
@@ -62,9 +65,9 @@
 
 ### 2.1 硬件连接检查
 
-- `main.syscfg` 中没有重复分配的 Pin；UART1、UART2、UART3、I2C0、TIMG8、软件 I2C 和 SWD 互不冲突。
+- `main.syscfg` 中没有重复分配的 Pin；UART1、UART2、UART3、I2C0、TIMG7、TIMG8、软件 I2C 和 SWD 互不冲突。
 - 主车读取 U5 的 8 路灰度，CH0~CH7 为 PA29、PB26、PA13、PB9、PB8、PB13、PB12、PB5；从车读取同一序列的 CH0~CH4。
-- PB8/PB9 已让给灰度输入；`SERVO_ENABLED=0`，TIMA0 舵机 PWM 不配置，`O`/`D` 接口只保留角度记录。
+- PB8/PB9 继续作为灰度输入；舵机迁移到 PA26/PA27，由独立 TIMG7 输出 50 Hz PWM，不与 TIMG8 电机 PWM 冲突。
 - DAPLink 接 PA21/PA22（UART2），承载 PC/网页命令、回应和遥测；HC05 接 PB6/PB7（UART1），仅承载双车 CarLink。
 - K230 使用独立 UART3：PA14 为 MCU TX、PA25 为 MCU RX，TX DMA 为 CH2。PA25 从 PinMux 初始化起即内部上拉；K230 未连接时只保持 10 Hz READY 重试并处于离线，不阻塞主循环。
 - F32C/Gimbal 仍停用，不与当前三路串口共用。
@@ -164,9 +167,9 @@ Heading -> Odometry -> Gimbal -> Key -> BluetoothDebug
 | `K?` / `K<id>?` / `K<id>=<float>` | 运行时读写控制参数（见 3.3.1 参数表）：列表 / 读单个 / 写入（支持小数与负号，写入立即生效） | id `1~26`；越界返回 `ERR K RANGE MIN=<min> MAX=<max>`，格式错误返回 `ERR K FORMAT` | `K17=1.5` |
 | `E<number>` | 陀螺仪尺度标定：`E1` 开始（清零标定角），`E0` 取消 | 仅 `0/1`；运动中 `ERR BUSY`，MPU 离线 `ERR CAL OFFLINE` | `E1` |
 | `Y<number>` | 原地转 n 整圈回到起始朝向后结束标定，解算并应用尺度因子 | `1~20` 圈；未在标定中返回 `ERR CAL IDLE`，积分角过小返回 `ERR CAL SMALL`；成功回 `OK Y SCALE=<新因子> RAW=<积分角>` | `Y3` |
-| `X<mask>` | **板载捕获**：按通道掩码 arm，下一条运动命令自动触发，以 100 Hz 无损写入 RAM（期间不发串口） | 掩码见 3.3.2；通道数超 8 或掩码非法返回 `ERR X MASK MAXCH=8`；成功回 `OK X ARM=<mask> CAP=<最大样本数>` | `X7` |
-| `X0` | 停止捕获并分批 dump 全部数据 | 无数据返回 `ERR X EMPTY`；成功先回 `OK X DUMP=<n>`，随后输出 `CH,` 表头与 `C,` 数据行，末尾 `OK X END=<n>` | `X0` |
-| `Q` | 查询遥测能力与捕获状态；**上位机据此自适应频率，不再各存一份阈值** | 无参数（裸 `Q` 即可）；回 `OK Q MAX=<上限Hz> MASK=<掩码> RATE=<当前Hz> CAPST=<捕获状态> CAPN=<已采样本> CAPMAX=<容量>` | `Q` |
+| `Q` | 查询遥测能力；**上位机据此自适应频率，不再各存一份阈值** | 无参数（裸 `Q` 即可）；回 `OK Q MAX=<上限Hz> MASK=<掩码> RATE=<当前Hz>` | `Q` |
+
+> **`X` 命令已移除。** 板载捕获模块连同它的 24 KB RAM 缓冲一并删除，详见 3.3.0。`Q` 回应中原有的 `CAPST`/`CAPN`/`CAPMAX` 三个字段同时撤销；`car_debug.html` 的 Q 解析器本就把这三项写成可选组，无需改动。
 
 **`ERR MOTION 3` 的含义。** MotionManager 错误码 `3` 是 `SENSOR_NOT_READY`。若 `B/F/T/A` 都返回 `ERR MOTION 3`，同时 `Z2` 返回 `ERR Z OFFLINE`，说明动作命令没有真正启动，根因是 Heading 层未就绪，通常是 MPU6050 离线或初始化失败。此时 `yaw/navE` 遥测会作为无效字段发送，网页显示为空值，不再把默认 `0°` 当成有效航向；优先检查 MPU6050 供电、GND、PB2/PB3 软件 I2C 线序、上拉/开漏连接和地址 `0x68`。
 
@@ -192,26 +195,19 @@ Heading -> Odometry -> Gimbal -> Key -> BluetoothDebug
 
 - `0xAA` 是非 ASCII 可打印字符，绝不出现在文本回应里；网页见 `0xAA` 进二进制解析，否则累积成 ASCII 文本行。
 - `CRC8` 为 CRC-8/ATM（多项式 `0x07`，初值 0），覆盖 `VER` 到 `PAYLOAD`。
-- 帧类型：`SCHEMA=0x30`（掩码变化时先发，含列名+单位码）、`SAMPLE=0x31`（ms + 各通道 float32）、`CAP_META=0x32`/`CAP_SAMPLE=0x33`/`CAP_END=0x34`（板载捕获 dump）。
+- 帧类型：`SCHEMA=0x30`（掩码变化时先发，含列名+单位码）、`SAMPLE=0x31`（ms + 各通道 float32）。`0x32`~`0x34` 曾是板载捕获的 `CAP_META`/`CAP_SAMPLE`/`CAP_END`，模块删除后这三个类型号保留不复用，避免旧版网页把新帧误认成捕获数据。
 
-**命令仍走 ASCII。** `K/W/N/M/G/F/B/T/A/Z/X/Q/E/Y/P/C/L/R/U/O/D` 及其 `OK`/`ERR` 回应保持文本——低频、要人读、任何串口助手可直接调试。只有高频遥测数据二进制化。
+**命令仍走 ASCII。** `K/W/N/M/G/F/B/T/A/Z/Q/E/Y/P/C/L/R/U/O/D` 及其 `OK`/`ERR` 回应保持文本——低频、要人读、任何串口助手可直接调试。只有高频遥测数据二进制化。
 
-**双通道仍在，但定位变了：**
+**单通道：实时流。** `M` 设掩码、`G` 设频率，`SCHEMA` + `SAMPLE` 两种帧，边跑边发（DMA 不阻塞），可达 100 Hz 与控制环同频，容量无限。监视、遥控采数据、调参全部够用。
 
-| | 通道 A：实时流 | 通道 B：板载捕获 |
-|---|---|---|
-| 命令 | `M` 掩码 + `G` 频率 | `X<mask>` arm / `X0` dump |
-| 帧类型 | `SCHEMA` + `SAMPLE` | `CAP_META` + `CAP_SAMPLE` + `CAP_END` |
-| 频率 | 可达 100 Hz（DMA 后与控制环同频） | 固定 100 Hz |
-| 传输时机 | 边跑边发（DMA 不阻塞） | 记录期间不发，动作结束后 dump |
-| 容量 | 无限（持续流） | 24 KB RAM，可变长度 |
-| 用途 | 监视、遥控采数据、**调参**（已够用） | 超长录制、绝对零丢包的瞬态 |
+**板载捕获（通道 B）已删除。** 它在第一次架构（ASCII 双通道）里引入，唯一理由是"实时流 30 Hz 低于控制环 100 Hz"。二进制 + DMA 之后实时流本身就是 100 Hz 无损，捕获只剩两个边缘场景（录得比串口实时率更久、绝对零丢包），却要独占 **24 KB RAM——32 KB SRAM 的 75%**。
 
-**为什么捕获降级。** 第一次架构（ASCII 双通道）引入板载捕获，唯一理由是"实时流 30 Hz 低于控制环 100 Hz"。二进制 + DMA 后实时流本身就是 100 Hz 无损，捕获不再是调参必需，而是两种补充场景：① 想录得比串口实时率更久（**单通道 8 字节/样本，24 KB 可录约 30 秒**）；② 想要绝对零丢包（防 Web Serial 偶发丢包）。这与 ODrive 板载 oscilloscope、Betaflight Blackbox 同源。
+这不是"占地方"而已：`.stack` 被 SysConfig 硬编码为 512 字节且位于 SRAM 顶部向下生长，紧邻其下就是 `.data`。捕获缓冲把栈可用余量压到 1587 字节，而实测最深调用链约 1900 字节，栈越界改写了 `.data` 里的 `Heading::s_scale`、`Odometry_CountsPerMM` 和各运动模块的增益，表现为整车卡死（OLED 航向角固定、`LD/RD/LV/RV` 恒为 0、灰度却正常刷新）。删除后 SRAM 占用从 96.7% 降到 21.7%，栈可用余量 26175 字节。
 
-### 3.3.2 通道掩码（M 与 X 命令共用）
+### 3.3.2 通道掩码（`M` 命令）
 
-实时流与捕获**共用同一套 12 通道位定义**（`TELEMETRY_CH_*`）。`M<mask>` 设实时流通道，`X<mask>` arm 捕获通道。捕获最多 **8 通道**（`CAPTURE_MAX_CHANNELS`），超出返回 `ERR X MASK MAXCH=8`。
+12 通道位定义见 `TELEMETRY_CH_*`，由 `M<mask>` 选择实时流通道。
 
 | 位 | 通道 | 单位 | 来源 |
 |---:|---|---|---|
@@ -361,8 +357,8 @@ OLED 默认显示 Z 轴连续角度、主车八路/从车五路灰度、四个�
 | `L<number>` | 设置左轮开环 PWM | MotionManager 空闲时有效，范围 `-1000~1000` |
 | `R<number>` | 设置右轮开环 PWM | MotionManager 空闲时有效，范围 `-1000~1000` |
 | `U<number>` | 设置双轮相同开环 PWM | MotionManager 空闲时有效，范围 `-1000~1000` |
-| `O<number>` | 记录纵向舵机角度 | 舵机 PWM 当前停用；只更新 `0°~270°` 的记录值 |
-| `D<number>` | 记录横向舵机角度 | 舵机 PWM 当前停用；只更新 `0°~270°` 的记录值 |
+| `O<number>` | 设置纵向舵机角度 | PA27 输出 50 Hz PWM，范围 `0°~270°` |
+| `D<number>` | 设置横向舵机角度 | PA26 输出 50 Hz PWM，范围 `0°~270°` |
 
 ## 4. 工程文件类型与职责
 
@@ -382,7 +378,7 @@ OLED 默认显示 Z 轴连续角度、主车八路/从车五路灰度、四个�
 | `Application/Control/PID.c/.h` | 通用控制器 | 位置式 PID 计算、复位和调参 |
 | `Application/Debug/DebugDisplay.c/.h` | 显示编排 | OLED 零漂页、整车页和 Gimbal 页 |
 | `Application/Gimbal/Gimbal.c/.h` | 云台应用层 | 管理 X/Y 地址、T 型多圈位置目标、反馈和到位状态 |
-| `Application/Servo/Servo.c/.h` | 舵机控制 | 当前停用硬件 PWM；保留双路角度限位和记录接口 |
+| `Application/Servo/Servo.c/.h` | 舵机控制 | TIMG7 双路 50 Hz PWM、角度限位与脉宽换算 |
 | `Application/State/Heading.c/.h` | 航向状态 | MPU6050 零漂、连续偏航积分和尺度标定 |
 | `Application/State/Odometry.c/.h` | 里程状态 | 编码器增量到双轮路程与速度的换算 |
 
@@ -458,7 +454,7 @@ uint8_t TestApp_Update(App_UpdateContext_t *context); /* 更新测试通道并�
 | `Accomplish/` | 具体题目实现 C 模块 | 位于工程根目录；每道题独立保存用户参数、状态编号、回调、转换表和静态状态图；当前启用 `25H.c/.h`，并保留 `25E.c/.h` 与刹车测试 `Test.c/.h` |
 | `Application/Control/` | 运动控制层 C 模块 | MotionManager、通用 PID、公共双轮速度闭环、直线、巡线、目标角转向和短暂主动刹车 |
 | `Application/Debug/` | 应用层 C 模块 | OLED 调试页面编排、CSV 遥测输出与运行时调参注册表 |
-| `Application/Servo/` | 舵机硬件模块 | 当前关闭 PWM 硬件，仅保留角度限位和记录接口 |
+| `Application/Servo/` | 舵机硬件模块 | PA26/PA27 上的 TIMG7 双路 50 Hz PWM、角度限位和脉宽换算 |
 | `Application/State/` | 状态层 C 模块 | Z 轴航向角解算、编码器里程与速度状态 |
 | `Hardware/Board/` | 板级驱动 | 按键、LED、蜂鸣器 |
 | `Hardware/Comms/` | 通信驱动 | `Serial1`/UART2 DAPLink、`Serial2`/UART1 HC05 与 `Serial3`/UART3 K230 的中断接收、环形缓冲和 DMA 发送接口 |
@@ -489,11 +485,10 @@ uint8_t TestApp_Update(App_UpdateContext_t *context); /* 更新测试通道并�
 | `Application/Control/MotionManager.c/.h` | 统一包装直线、巡线、转向和短暂刹车；自动停止旧模式并只更新当前模式 |
 | `Application/Control/Nav.c/.h` | 头文件顶部保存转向参数；源文件实现连续航向目标、双轮等速反向转向和到角稳定判定 |
 | `Application/Debug/DebugDisplay.c/.h` | 组织启动零漂提示、基础状态和 MotionLine 运行状态的 OLED 八行调试数据 |
-| `Application/Debug/Telemetry.c/.h` | 表驱动组装二进制 SCHEMA/SAMPLE 帧，按频率和 12 通道掩码经 `Serial1`/UART2（DMA）输出；暴露 `SampleChannels`/`SendSchema` 供捕获复用 |
-| `Application/Debug/TelemFrame.c/.h` | 二进制帧编码：CRC-8/ATM、帧构建、float32 小端打包；与 K230Link 同 CRC，供遥测与捕获共用 |
+| `Application/Debug/Telemetry.c/.h` | 表驱动组装二进制 SCHEMA/SAMPLE 帧，按频率和 12 通道掩码经 `Serial1`/UART2（DMA）输出（`SampleChannels`/`SendSchema` 原为捕获而导出，模块删除后已收回 `static`） |
+| `Application/Debug/TelemFrame.c/.h` | 二进制帧编码：CRC-8/ATM、帧构建、float32 小端打包；与 K230Link 同 CRC |
 | `Application/Debug/Param.c/.h` | 运行时调参注册表：K 命令后端，26 个参数的读写、范围校验、左右轮独立参数与 PID apply 钩子 |
-| `Application/Debug/Capture.c/.h` | 板载高速捕获：24 KB RAM 缓冲，可变长度二进制存储最多 8 通道（单通道约 30 秒）；与遥测共用通道表，dump 发 CAP_META/SAMPLE/END 二进制帧 |
-| `Application/Servo/Servo.c/.h` | 当前只执行纵向/横向角度限位和记录；`SERVO_ENABLED=0` 时不访问 PWM 硬件 |
+| `Application/Servo/Servo.c/.h` | 纵向/横向角度限位并换算为 500~2500 us 脉宽，写入 TIMG7 CCP1/CCP0 |
 | `Application/State/Heading.c/.h` | MPU6050 Z 轴零漂标定、角速度积分和尺度标定 |
 | `Application/State/Odometry.c/.h` | 读取编码器增量，累计左右路程并计算 mm/s 速度 |
 | `Hardware/Board/Beep.c/.h` | 蜂鸣器与 LED2 的非阻塞提示状态机 |
@@ -524,7 +519,7 @@ uint8_t TestApp_Update(App_UpdateContext_t *context); /* 更新测试通道并�
 1. 用「任务→对象→阶段」导航选定要调什么（如 轮速 → 左轮 → P），点「开始试验」；
 2. 连接和阶段切换时，网页提前准备本阶段的**最优掩码**（调左轮只传 TL/LV/PL）并按固件 `Q` 回报的真实频率上限设频；
 3. 点「开始试验」后，网页先清空本次终端与曲线、记录参数快照，然后立即发激励命令，不再等待遥测准备链；
-4. 指标卡明确标注数据来源：直启流程使用 `实时流 xx Hz`，峰值可能漏采、仅供参考；若后续流程使用板载捕获，`板载 100 Hz 捕获` 表示与控制环同频、指标可信；
+4. 指标卡明确标注数据来源：使用 `实时流 xx Hz`，低于 100 Hz 控制环时峰值可能漏采、仅供参考；
 5. 每条记录可设为基准（虚线叠加对比）、导出 CSV，或一键复制 **AI 调参包**（含控制结构、参数、激励、列说明、自动指标和完整数据），直接粘给 AI 要下一组参数；
 6. 在阶段参数区就地微调（`−`/`+` 按钮或直接输入，写入立即生效），再跑下一次对比。
 
@@ -536,7 +531,7 @@ uint8_t TestApp_Update(App_UpdateContext_t *context); /* 更新测试通道并�
 
 - **频率上限由固件说了算，网页不各存一份阈值。** 改掩码后网页主动发 `Q` 查询，用固件回报的 `MAX` 自动设频；勾选字段的瞬间另有一份本地复算用于即时显示（公式与 `Telemetry.c` 相同），两者不一致就说明固件与网页失配。
 - **指标必须标注来源。** 直启流程优先让车先动，因此默认用实时流指标；实时流受串口带宽限制低于 100 Hz 控制环，阶跃峰值会落在采样点之间，界面必须让用户看见这次结论是基于哪种数据得出的。
-- **捕获与实时流分开解析、分开存储。** 前缀 `CH,`/`C,` 与 `H,`/`D,` 互不冲突，两者列集和采样率都不同，混在一起会让指标取到错误的时间基准。
+- **页面里的捕获解析分支已成死代码。** 固件的板载捕获模块已删除（见 3.3.0），`CH,`/`C,` 前缀与 `CAP_*` 帧类型不会再出现；`session.captureArmed` 恒为 `false`。清理页面时可一并删除，保留也不影响运行。
 - **舵机滑块节流 100 ms。** 拖动会逐像素触发事件，不节流会瞬间发出几十条命令占满串口，把遥测流挤垮。
 - **曲线按量纲分组共享刻度。** `LV/RV/TL/TR` 同为 mm/s、`PL/PR` 同为 PWM、`yaw/navT/navE` 同为度、`LD/RD` 同为 mm，各组内共用一套 min/max，目标与实测才能直接对比；不在分组表里的列仍各自独立归一化。
 - **`ms` 和 `mode` 不进曲线选择器。** 前者是横轴，画出来是单调直线；后者是文本。两者仍会写进导出的 CSV。
@@ -547,9 +542,8 @@ uint8_t TestApp_Update(App_UpdateContext_t *context); /* 更新测试通道并�
 
 | 测试 | 覆盖什么 |
 |---|---|
-| `test_csv_parse.mjs` | 从 `car_debug.html` 抽取解析器与纯函数源码运行——测的是页面里的真代码而非副本，避免两边漂移。含 CSV 解析、捕获行解析、阶跃指标、频率估算、标记分段 |
+| `test_csv_parse.mjs` | 从 `car_debug.html` 抽取解析器与纯函数源码运行——测的是页面里的真代码而非副本，避免两边漂移。含 CSV 解析、阶跃指标、频率估算、标记分段 |
 | `test_page_boot.mjs` | 用最小 DOM 桩**真正执行整段页面脚本**。`node --check` 只查语法，查不出 `let/const` 的初始化顺序错误（函数声明提升而变量不提升），那类错误只有打开页面才暴露；本测试把「打开就白屏」挡在提交前，并交叉校验 HTML 的 `id` 与脚本引用是否对得上 |
-| `test_capture_contract.mjs` | 板载捕获与 `X`/`Q` 命令的固件-网页协议：通道位序、dump 前缀、回应格式、RAM 预算、单侧掩码的实际增益 |
 | `test_wheel_tuning_contract.mjs` | 左右轮独立调参的参数表兼容性与网页联动 |
 | `test_heading_resample_contract.mjs` | `Z1`/`Z2` 的语义区分与错误分支 |
 | `test_tutorial.mjs` | 教程内联源码块与真实源文件逐字一致（防止改了源码而教程还在讲旧代码） |
@@ -870,50 +864,13 @@ void Param_HandleCommand(const char *args);
 
 K 命令后端：`args` 为去掉 `K` 前缀的文本参数（`?` 列表 / `<id>?` 读 / `<id>=<float>` 写），直接经 UART1 回应。参数注册表见 3.3.1；表序即协议 id，一经发布不得重排，只能尾部追加。
 
-### 5.7.3 `Application/Debug/Capture.h`
+### 5.7.3 `Application/Debug/Capture.h`（已删除）
 
-```c
-#define CAPTURE_MAX_CHANNELS 4U
-#define CAPTURE_BUFFER_BYTES 20480U
-#define CAPTURE_CH_TL   0x0001U
-#define CAPTURE_CH_LV   0x0002U
-#define CAPTURE_CH_PL   0x0004U
-#define CAPTURE_CH_TR   0x0008U
-#define CAPTURE_CH_RV   0x0010U
-#define CAPTURE_CH_PR   0x0020U
-#define CAPTURE_CH_YAW  0x0040U
-#define CAPTURE_CH_NAVE 0x0080U
-#define CAPTURE_CH_LERR 0x0100U
-#define CAPTURE_CH_ALL  0x01FFU
+板载高速捕获模块连同 `X` 命令、`CAP_META`/`CAP_SAMPLE`/`CAP_END` 帧类型和 24 KB RAM 缓冲已整体移除，原因见 3.3.0：二进制 + DMA 之后实时流本身即 100 Hz 无损，而那 24 KB 把栈可用余量压到 1587 字节，导致栈越界改写 `.data` 中的整车参数。
 
-typedef enum
-{
-    CAPTURE_STATE_IDLE = 0,
-    CAPTURE_STATE_ARMED,
-    CAPTURE_STATE_RUNNING,
-    CAPTURE_STATE_FULL,
-    CAPTURE_STATE_DUMPING
-} Capture_State_t;
+需要它的历史实现时，在 `fix/ram-stack-overflow` 分支删除该模块的那个提交之前取。
 
-void Capture_Init(void);
-uint8_t Capture_Arm(uint16_t channelMask);
-void Capture_Trigger(void);
-void Capture_Update(uint32_t elapsedMs);
-void Capture_Stop(void);
-uint16_t Capture_StartDump(void);
-void Capture_DumpNext(void);
-Capture_State_t Capture_GetState(void);
-uint16_t Capture_GetSampleCount(void);
-uint16_t Capture_GetCapacity(void);
-uint16_t Capture_GetChannelMask(void);
-```
-
-板载高速捕获（通道 B），设计动机见 3.3.0。几个必须遵守的约束：
-
-- **`Capture_Update()` 必须排在 `MotionManager_Update()` 之后调用。** 目标速度和输出 PWM 都是本拍刚算出的，提前采会记录到上一拍的值，整条阶跃曲线向后偏移一个控制周期（10 ms），上升时间会被算长。
-- **`Capture_Trigger()` 由运动命令在启动成功后调用**，仅在 `ARMED` 状态生效，其余状态是空操作。这样捕获的第一个样本恰好是阶跃起点。
-- 缓冲写满即停（进入 `FULL`），不做环形覆盖——覆盖会让时间轴失去连续性，分析阶跃时更麻烦。
-- 内部逐字节读写缓冲，不按 `float*` 解引用：样本大小随通道数变化，奇数偏移上直接解引用会触发 Cortex-M0+ 的非对齐访问异常。
+**这里有一条对以后仍然适用的教训：** 任何新增的大型静态缓冲，都要同时核对 `Debug/ArcLineTest.map` 里 `.data` 末尾到 `.stack` 之间还剩多少空隙——那才是栈真正能用的空间。`--stack_size` 由 SysConfig 按器件硬编码生成到 `device_linker.cmd`（本器件为 512），既不在 `main.syscfg` 里、改了也会被下次构建覆盖，指望它报错是靠不住的。
 
 ### 5.8 `Application/Servo/Servo.h`
 

@@ -23,7 +23,8 @@ typedef enum
     MOTION_MANAGER_MODE_TURN,
     MOTION_MANAGER_MODE_BRAKE,
     MOTION_MANAGER_MODE_SPEED,
-    MOTION_MANAGER_MODE_DRIVE
+    MOTION_MANAGER_MODE_DRIVE,
+    MOTION_MANAGER_MODE_LANE
 } MotionManager_Mode_t;
 
 typedef enum
@@ -35,7 +36,8 @@ typedef enum
     MOTION_MANAGER_ERROR_TURN,
     MOTION_MANAGER_ERROR_BRAKE,
     MOTION_MANAGER_ERROR_SPEED,
-    MOTION_MANAGER_ERROR_DRIVE
+    MOTION_MANAGER_ERROR_DRIVE,
+    MOTION_MANAGER_ERROR_LANE
 } MotionManager_Error_t;
 
 typedef enum
@@ -54,6 +56,8 @@ MotionManager_Result_t MotionManager_StartForward(
 MotionManager_Result_t MotionManager_StartBackward(
     uint32_t distanceMM, float speedMMps, float endSpeedMMps);
 MotionManager_Result_t MotionManager_StartLine(float speedMMps);
+/* 视觉巡道。K230 未握手时不要调用——MotionLane 会立刻判丢失并结束。 */
+MotionManager_Result_t MotionManager_StartLane(float speedMMps);
 MotionManager_Result_t MotionManager_TurnTo(
     float targetYawDeg, float speedMMps);
 MotionManager_Result_t MotionManager_TurnBy(

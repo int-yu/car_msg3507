@@ -3,12 +3,9 @@
 
 #include <stdint.h>
 
-/*
- * 新板将 PB8/PB9 用于灰度输入，本阶段停用舵机 PWM。角度 API 继续保留，
- * 以免上层调试命令和测试入口失去链接；禁用时只记录角度，不访问硬件。
- */
+/* TIMG7 舵机 PWM 映射：PA26/CCP0 -> 横向，PA27/CCP1 -> 纵向。 */
 #ifndef SERVO_ENABLED
-#define SERVO_ENABLED 0
+#define SERVO_ENABLED 1
 #endif
 
 #define SERVO_PHYSICAL_RANGE_DEG          270U

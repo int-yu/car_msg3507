@@ -26,9 +26,9 @@
 /* 帧类型。MCU→PC 单向；命令与回应仍走 ASCII，不在此列。 */
 #define TELEM_FRAME_TYPE_SCHEMA     0x30U /* 通道表，掩码变化时先发 */
 #define TELEM_FRAME_TYPE_SAMPLE     0x31U /* 实时流样本 */
-#define TELEM_FRAME_TYPE_CAP_META   0x32U /* 捕获 dump 开始 */
-#define TELEM_FRAME_TYPE_CAP_SAMPLE 0x33U /* 捕获样本 */
-#define TELEM_FRAME_TYPE_CAP_END    0x34U /* 捕获 dump 结束 */
+/* 0x32~0x34 曾是板载捕获的 CAP_META/CAP_SAMPLE/CAP_END。捕获模块已移除
+ * （二进制 + DMA 后实时流本身即 100 Hz 无损），这三个类型号保留不复用，
+ * 以免旧版网页把新帧误认成捕获数据。 */
 
 /* 单位码：网页据此把同量纲通道画在共享刻度上。 */
 #define TELEM_UNIT_RAW  0U

@@ -50,6 +50,17 @@ int16_t Encoder_Get(uint8_t n)
     return (int16_t)value;
 }
 
+/*
+ * GROUP1 是 GPIOA、GPIOB、COMP0/1/2、TRNG 共用的一个中断向量，本函数是它
+ * 唯一的入口。下面只处理编码器所在的 GPIOA 四个引脚，但**必须**把同组其它
+ * 已使能的挂起中断也清掉：组内任何一个源没被清，中断线就一直拉着，而
+ * GROUP1 是优先级 0，会把主循环彻底饿死（现象即 OLED 冻结、车不动）。
+ *
+ * 现在 GPIOB 没有任何引脚开中断，这段兜底是空转；但只要以后给 GPIOB 加边沿
+ * 中断（按键改中断触发、超声波 echo 捕获、对射传感器、比较器过零等），没有
+ * 它就是一个必然踩到的死机。刻意不改动上面的 GPIOA 分派逻辑——组 IIDX 寄存器
+ * 读一次只返回并清一个源，按它重写分派容易漏掉编码器脉冲、让里程和速度失真。
+ */
 void GROUP1_IRQHandler(void)
 {
     const uint32_t mask = ENCODER_INPUTS_LEFT_A_PIN | ENCODER_INPUTS_LEFT_B_PIN |
@@ -71,4 +82,21 @@ void GROUP1_IRQHandler(void)
         s_rightState = next;
     }
     DL_GPIO_clearInterruptStatus(ENCODER_INPUTS_PORT, pending & mask);
+
+    /* 兜底：清掉本组其余已使能的挂起中断（GPIOA 非编码器引脚 + 整个 GPIOB），
+     * 避免将来新增的中断源在这里清不掉而把中断线永久拉住。 */
+    {
+        uint32_t others =
+            DL_GPIO_getEnabledInterruptStatus(ENCODER_INPUTS_PORT, ~mask);
+
+        if (others != 0U)
+        {
+            DL_GPIO_clearInterruptStatus(ENCODER_INPUTS_PORT, others);
+        }
+        others = DL_GPIO_getEnabledInterruptStatus(GPIOB, 0xFFFFFFFFU);
+        if (others != 0U)
+        {
+            DL_GPIO_clearInterruptStatus(GPIOB, others);
+        }
+    }
 }

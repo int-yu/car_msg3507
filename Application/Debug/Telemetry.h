@@ -14,7 +14,7 @@
 #define TELEMETRY_DEFAULT_RATE_HZ    50U   /* 默认频率；DMA 后可显著高于旧 20Hz。 */
 #define TELEMETRY_RATE_HARD_LIMIT_HZ 100U  /* 上限等于主循环频率。 */
 
-/* 通道位定义（12 位）。位序即 SCHEMA/SAMPLE 的列序，一经发布不得重排。 */
+/* 通道位定义（14 位）。位序即 SCHEMA/SAMPLE 的列序，一经发布不得重排。 */
 #define TELEMETRY_CH_TL     0x0001U /* 左轮目标速度 mm/s */
 #define TELEMETRY_CH_LV     0x0002U /* 左轮实测速度 mm/s */
 #define TELEMETRY_CH_PL     0x0004U /* 左轮输出 PWM */
@@ -27,7 +27,9 @@
 #define TELEMETRY_CH_GRAY   0x0200U /* 灰度位图（主车八路、从车五路） */
 #define TELEMETRY_CH_LD     0x0400U /* 左轮累计路程 mm */
 #define TELEMETRY_CH_RD     0x0800U /* 右轮累计路程 mm */
-#define TELEMETRY_CH_ALL    0x0FFFU
+#define TELEMETRY_CH_VX     0x1000U /* 视觉最近带偏差 千分比，车道偏右为正 */
+#define TELEMETRY_CH_VAD    0x2000U /* 视觉差速修正量 mm/s，正 = 右转 */
+#define TELEMETRY_CH_ALL    0x3FFFU
 
 void Telemetry_Init(void);
 void Telemetry_Update(uint8_t elapsedTicks, uint8_t pressedKeys);
@@ -36,9 +38,5 @@ uint8_t Telemetry_SetFieldMask(uint16_t mask);
 uint8_t Telemetry_GetRateHz(void);
 uint16_t Telemetry_GetFieldMask(void);
 uint8_t Telemetry_GetMaxRateHz(void);
-/* 供捕获模块复用同一张通道表：按掩码把选中通道当前值写进 out，返回通道数。 */
-uint8_t Telemetry_SampleChannels(uint16_t mask, float *out);
-/* 供捕获 dump 复用：发一帧 SCHEMA（type 由调用方给，实时流与捕获类型不同）。 */
-void Telemetry_SendSchema(uint16_t mask, uint8_t frameType);
 
 #endif

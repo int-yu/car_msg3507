@@ -20,7 +20,7 @@
 #define CAR_ROLE_SLAVE  2
 
 #ifndef CAR_ROLE
-#define CAR_ROLE CAR_ROLE_MASTER /* ← 烧从车时改成 CAR_ROLE_SLAVE */
+#define CAR_ROLE CAR_ROLE_SLAVE /* ← 烧从车时改成 CAR_ROLE_SLAVE */
 #endif
 
 #if (CAR_ROLE != CAR_ROLE_MASTER) && (CAR_ROLE != CAR_ROLE_SLAVE)
