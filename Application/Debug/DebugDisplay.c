@@ -1,4 +1,5 @@
 #include "Application/Debug/DebugDisplay.h"
+#include "Accomplish/26H.h"
 #include "Application/Control/MotionManager.h"
 #include "Application/Gimbal/Gimbal.h"
 #include "Application/Mission/Mission.h"
@@ -7,6 +8,7 @@
 #include "Hardware/Board/Key.h"
 #include "Hardware/Display/OLED.h"
 #include "Hardware/Sensors/Graydetect.h"
+#include "System/Tick.h"
 
 static uint8_t s_refreshTicks;
 
@@ -141,6 +143,18 @@ void DebugDisplay_ShowHeadingCalibration(uint8_t mpuReady)
     OLED_Update();
 }
 
+static void DebugDisplay_ShowElapsedTime(void)
+{
+    uint32_t elapsedTicks = Accomplish26H_GetElapsedTicks();
+    uint32_t seconds = elapsedTicks / TICK_HZ;
+    uint32_t centiseconds =
+        ((elapsedTicks % TICK_HZ) * 100U) / TICK_HZ;
+
+    OLED_Printf(0, 0, OLED_6X8, "T:%lu.%02lus",
+                (unsigned long)seconds,
+                (unsigned long)centiseconds);
+}
+
 void DebugDisplay_Update(uint8_t elapsedTicks)
 {
     uint8_t grayState;
@@ -164,16 +178,7 @@ void DebugDisplay_Update(uint8_t elapsedTicks)
         return;
     }
 
-    OLED_ShowString(0, 0, "Z:", OLED_6X8);
-    if (Heading_IsReady() != 0U)
-    {
-        OLED_ShowFloatNum(12, 0, Heading_GetYaw(), 6U, 1U, OLED_6X8);
-        OLED_ShowString(72, 0, "deg", OLED_6X8);
-    }
-    else
-    {
-        OLED_ShowString(12, 0, "OFFLINE", OLED_6X8);
-    }
+    DebugDisplay_ShowElapsedTime();
 
     DebugDisplay_ShowGrayState(grayState);
     DebugDisplay_ShowKeyState(keyMask);

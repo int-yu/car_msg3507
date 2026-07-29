@@ -1,6 +1,5 @@
-#include "Accomplish/25H.h"
+#include "Accomplish/26H.h"
 #include "Application/Core/App.h"
-#include "Application/Mission/Mission.h"
 #include "System/Interrupt.h"
 
 int main(void)
@@ -8,14 +7,14 @@ int main(void)
     App_UpdateContext_t updateContext;
 
     App_Init();
-    Mission_Init(Accomplish25H_GetMissionGraph());
+    Accomplish26H_Init();
     Interrupt_Enable();
 
     for (;;)
     {
         if (App_Update(&updateContext) != 0U)
         {
-            Mission_Update(&updateContext);
+            Accomplish26H_Update(&updateContext);
         }
     }
 }
