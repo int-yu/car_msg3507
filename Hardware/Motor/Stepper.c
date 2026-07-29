@@ -157,6 +157,14 @@ static void Stepper_ReleasePulseOutput(void)
 static void Stepper_StopTimer(void)
 {
     DL_TimerA_stopCounter(STEPPER_PULSE_INST);
+    DL_TimerA_disableInterrupt(
+        STEPPER_PULSE_INST,
+        DL_TIMERA_INTERRUPT_REPC_EVENT |
+        DL_TIMERA_INTERRUPT_ZERO_EVENT);
+    DL_TimerA_clearInterruptStatus(
+        STEPPER_PULSE_INST,
+        DL_TIMERA_INTERRUPT_REPC_EVENT |
+        DL_TIMERA_INTERRUPT_ZERO_EVENT);
     Stepper_ForcePulseLow();
     s_timerRunning = false;
 }
@@ -249,7 +257,19 @@ static void Stepper_StartSegment(void)
     DL_TimerA_setRepeatCounter(
         STEPPER_PULSE_INST, (uint8_t)(segmentSteps - 1U));
     DL_TimerA_clearInterruptStatus(
-        STEPPER_PULSE_INST, DL_TIMERA_INTERRUPT_REPC_EVENT);
+        STEPPER_PULSE_INST,
+        DL_TIMERA_INTERRUPT_REPC_EVENT |
+        DL_TIMERA_INTERRUPT_ZERO_EVENT);
+    if (segmentSteps == 1U)
+    {
+        DL_TimerA_enableInterrupt(
+            STEPPER_PULSE_INST, DL_TIMERA_INTERRUPT_ZERO_EVENT);
+    }
+    else
+    {
+        DL_TimerA_enableInterrupt(
+            STEPPER_PULSE_INST, DL_TIMERA_INTERRUPT_REPC_EVENT);
+    }
 
     s_segmentSteps = (uint16_t)segmentSteps;
     Stepper_ReleasePulseOutput();
@@ -507,10 +527,10 @@ void Stepper_Init(void)
         DL_TIMER_CC_CDACT_CCP_HIGH |
         DL_TIMER_CC_ZACT_CCP_LOW,
         GPIO_STEPPER_PULSE_C0_IDX);
-    DL_TimerA_enableInterrupt(
-        STEPPER_PULSE_INST, DL_TIMERA_INTERRUPT_REPC_EVENT);
     DL_TimerA_clearInterruptStatus(
-        STEPPER_PULSE_INST, DL_TIMERA_INTERRUPT_REPC_EVENT);
+        STEPPER_PULSE_INST,
+        DL_TIMERA_INTERRUPT_REPC_EVENT |
+        DL_TIMERA_INTERRUPT_ZERO_EVENT);
     NVIC_ClearPendingIRQ(STEPPER_PULSE_INST_INT_IRQN);
     NVIC_EnableIRQ(STEPPER_PULSE_INST_INT_IRQN);
 
@@ -689,14 +709,13 @@ void Stepper_EmergencyStop(void)
 
         DL_TimerA_stopCounter(STEPPER_PULSE_INST);
         partialSteps = Stepper_GetPartialSegmentSteps();
-        Stepper_ForcePulseLow();
-        s_timerRunning = false;
+        Stepper_StopTimer();
         s_emittedSteps +=
             (int32_t)s_direction * (int32_t)partialSteps;
     }
     else
     {
-        Stepper_ForcePulseLow();
+        Stepper_StopTimer();
     }
 
     s_targetSteps = s_emittedSteps;
@@ -804,10 +823,24 @@ void Stepper_GetStatus(Stepper_Status_t *status)
 
 void STEPPER_PULSE_INST_IRQHandler(void)
 {
-    if (DL_TimerA_getPendingInterrupt(STEPPER_PULSE_INST) ==
-        DL_TIMER_IIDX_REPEAT_COUNT)
+    switch (DL_TimerA_getPendingInterrupt(STEPPER_PULSE_INST))
     {
-        Stepper_CompleteSegment();
+        case DL_TIMER_IIDX_REPEAT_COUNT:
+            if (s_segmentSteps > 1U)
+            {
+                Stepper_CompleteSegment();
+            }
+            break;
+
+        case DL_TIMER_IIDX_ZERO:
+            if (s_segmentSteps == 1U)
+            {
+                Stepper_CompleteSegment();
+            }
+            break;
+
+        default:
+            break;
     }
 }
 
