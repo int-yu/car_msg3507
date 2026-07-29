@@ -11,6 +11,7 @@
 /.clangd
 /.codex/
 /.vscode/
+/.worktrees/
 
 # 宿主机测试的编译产物，不随源码提交。
 /tests/host/build/
