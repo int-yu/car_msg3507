@@ -1,21 +1,243 @@
-#include "Accomplish/25H.h"
-#include "Application/Core/App.h"
-#include "Application/Mission/Mission.h"
+#include "Hardware/Board/Key.h"
+#include "Hardware/Display/OLED.h"
+#include "Hardware/Motor/Encoder.h"
+#include "Hardware/Motor/Stepper.h"
 #include "System/Interrupt.h"
+#include "System/Tick.h"
+#include "ti_msp_dl_config.h"
+
+#include <stdbool.h>
+#include <stdint.h>
+
+#define TEST_KEY_ENABLE_MASK         0x01U
+#define TEST_KEY_FORWARD_MASK        0x02U
+#define TEST_KEY_REVERSE_MASK        0x04U
+#define TEST_KEY_STOP_MASK           0x08U
+#define TEST_KEY_EMERGENCY_MASK      (TEST_KEY_ENABLE_MASK | TEST_KEY_STOP_MASK)
+#define TEST_KEY_DEBOUNCE_TICKS      3U
+#define TEST_DISPLAY_REFRESH_TICKS   10U
+
+static const Stepper_Profile_t s_testProfile = {
+    .startStepRateHz = 200U,
+    .maxStepRateHz = 3200U,
+    .accelerationStepsPerSec2 = 6400U
+};
+
+static uint8_t s_keyCandidate;
+static uint8_t s_keyStable;
+static uint8_t s_keyDebounceTicks;
+static uint8_t s_displayTicks;
+static Stepper_Result_t s_lastResult;
+
+static void Test_InitPower(void)
+{
+    DL_GPIO_reset(GPIOA);
+    DL_GPIO_reset(GPIOB);
+    DL_TimerA_reset(STEPPER_PULSE_INST);
+    DL_TimerG_reset(STEPPER_ABS_CAPTURE_INST);
+    DL_I2C_reset(OLED_I2C_INST);
+
+    DL_GPIO_enablePower(GPIOA);
+    DL_GPIO_enablePower(GPIOB);
+    DL_TimerA_enablePower(STEPPER_PULSE_INST);
+    DL_TimerG_enablePower(STEPPER_ABS_CAPTURE_INST);
+    DL_I2C_enablePower(OLED_I2C_INST);
+    delay_cycles(POWER_STARTUP_DELAY);
+}
+
+static void Test_InitPins(void)
+{
+    DL_GPIO_initPeripheralOutputFunctionFeatures(
+        GPIO_STEPPER_PULSE_C0_IOMUX, GPIO_STEPPER_PULSE_C0_IOMUX_FUNC,
+        DL_GPIO_INVERSION_DISABLE, DL_GPIO_RESISTOR_PULL_UP,
+        DL_GPIO_DRIVE_STRENGTH_LOW, DL_GPIO_HIZ_DISABLE);
+    DL_GPIO_enableOutput(
+        GPIO_STEPPER_PULSE_C0_PORT, GPIO_STEPPER_PULSE_C0_PIN);
+
+    DL_GPIO_initPeripheralInputFunction(
+        GPIO_STEPPER_ABS_CAPTURE_C0_IOMUX,
+        GPIO_STEPPER_ABS_CAPTURE_C0_IOMUX_FUNC);
+
+    DL_GPIO_initPeripheralInputFunctionFeatures(
+        GPIO_OLED_I2C_IOMUX_SDA, GPIO_OLED_I2C_IOMUX_SDA_FUNC,
+        DL_GPIO_INVERSION_DISABLE, DL_GPIO_RESISTOR_NONE,
+        DL_GPIO_HYSTERESIS_DISABLE, DL_GPIO_WAKEUP_DISABLE);
+    DL_GPIO_initPeripheralInputFunctionFeatures(
+        GPIO_OLED_I2C_IOMUX_SCL, GPIO_OLED_I2C_IOMUX_SCL_FUNC,
+        DL_GPIO_INVERSION_DISABLE, DL_GPIO_RESISTOR_NONE,
+        DL_GPIO_HYSTERESIS_DISABLE, DL_GPIO_WAKEUP_DISABLE);
+    DL_GPIO_enableHiZ(GPIO_OLED_I2C_IOMUX_SDA);
+    DL_GPIO_enableHiZ(GPIO_OLED_I2C_IOMUX_SCL);
+
+    DL_GPIO_initDigitalOutput(BOARD_OUTPUTS_STEPPER_DIR_IOMUX);
+    DL_GPIO_initDigitalOutput(BOARD_OUTPUTS_STEPPER_EN_IOMUX);
+    DL_GPIO_clearPins(BOARD_OUTPUTS_STEPPER_DIR_PORT,
+        BOARD_OUTPUTS_STEPPER_DIR_PIN | BOARD_OUTPUTS_STEPPER_EN_PIN);
+    DL_GPIO_enableOutput(BOARD_OUTPUTS_STEPPER_DIR_PORT,
+        BOARD_OUTPUTS_STEPPER_DIR_PIN | BOARD_OUTPUTS_STEPPER_EN_PIN);
+}
+
+static uint8_t Test_GetPressedEdges(void)
+{
+    uint8_t raw = Key_GetPressedMask();
+    uint8_t edges = 0U;
+
+    if (raw != s_keyCandidate)
+    {
+        s_keyCandidate = raw;
+        s_keyDebounceTicks = 1U;
+    }
+    else
+    {
+        if (s_keyDebounceTicks < TEST_KEY_DEBOUNCE_TICKS)
+        {
+            s_keyDebounceTicks++;
+        }
+        if ((s_keyDebounceTicks >= TEST_KEY_DEBOUNCE_TICKS) &&
+            (s_keyStable != s_keyCandidate))
+        {
+            edges = (uint8_t)(s_keyCandidate & (uint8_t)~s_keyStable);
+            s_keyStable = s_keyCandidate;
+        }
+    }
+
+    return edges;
+}
+
+static void Test_HandleKeys(uint8_t pressedEdges)
+{
+    uint8_t pressedMask = s_keyStable;
+    Stepper_Status_t status;
+
+    if ((pressedMask & TEST_KEY_EMERGENCY_MASK) ==
+        TEST_KEY_EMERGENCY_MASK)
+    {
+        if ((pressedEdges & TEST_KEY_EMERGENCY_MASK) != 0U)
+        {
+            Stepper_EmergencyStop();
+            s_lastResult = STEPPER_RESULT_OK;
+        }
+        return;
+    }
+
+    Stepper_GetStatus(&status);
+    if ((pressedEdges & TEST_KEY_ENABLE_MASK) != 0U)
+    {
+        s_lastResult = Stepper_Enable(!status.enabled);
+    }
+    else if ((pressedEdges & TEST_KEY_FORWARD_MASK) != 0U)
+    {
+        s_lastResult = Stepper_MoveBySteps(
+            (int32_t)STEPPER_STEPS_PER_REVOLUTION, &s_testProfile);
+    }
+    else if ((pressedEdges & TEST_KEY_REVERSE_MASK) != 0U)
+    {
+        s_lastResult = Stepper_MoveBySteps(
+            -(int32_t)STEPPER_STEPS_PER_REVOLUTION, &s_testProfile);
+    }
+    else if ((pressedEdges & TEST_KEY_STOP_MASK) != 0U)
+    {
+        Stepper_Stop();
+        s_lastResult = STEPPER_RESULT_OK;
+    }
+}
+
+static void Test_UpdateDisplay(void)
+{
+    Stepper_Status_t status;
+    uint32_t angleTenths;
+
+    if (OLED_IsReady() == 0U)
+    {
+        return;
+    }
+
+    Stepper_GetStatus(&status);
+    angleTenths =
+        ((uint32_t)status.absoluteCode * 3600U + 2048U) / 4096U;
+
+    OLED_Clear();
+    OLED_ShowString(0, 0, "MS42CG", OLED_6X8);
+    OLED_ShowString(48, 0, "R", OLED_6X8);
+    OLED_ShowNum(54, 0, (uint32_t)s_lastResult, 1U, OLED_6X8);
+    OLED_ShowString(0, 8, "1EN 2+ 3- 4STOP", OLED_6X8);
+    OLED_ShowString(0, 16, "1+4 EMERGENCY", OLED_6X8);
+
+    OLED_ShowString(0, 24, "P", OLED_6X8);
+    OLED_ShowNum(6, 24, status.pwmValid ? 1U : 0U, 1U, OLED_6X8);
+    OLED_ShowString(18, 24, "R", OLED_6X8);
+    OLED_ShowNum(24, 24, status.ready ? 1U : 0U, 1U, OLED_6X8);
+    OLED_ShowString(36, 24, "E", OLED_6X8);
+    OLED_ShowNum(42, 24, status.enabled ? 1U : 0U, 1U, OLED_6X8);
+    OLED_ShowString(54, 24, "B", OLED_6X8);
+    OLED_ShowNum(60, 24, status.busy ? 1U : 0U, 1U, OLED_6X8);
+
+    OLED_ShowString(0, 32, "ST", OLED_6X8);
+    OLED_ShowSignedNum(12, 32, status.emittedSteps, 8U, OLED_6X8);
+    OLED_ShowString(0, 40, "AB", OLED_6X8);
+    OLED_ShowSignedNum(12, 40, status.encoderCounts, 8U, OLED_6X8);
+    OLED_ShowString(0, 48, "TE", OLED_6X8);
+    OLED_ShowSignedNum(12, 48, status.trackingErrorCounts, 5U, OLED_6X8);
+    OLED_ShowString(54, 48, "Q", OLED_6X8);
+    OLED_ShowNum(60, 48, status.encoderTransitionErrors, 4U, OLED_6X8);
+    OLED_ShowString(0, 56, "ABS", OLED_6X8);
+    OLED_ShowNum(18, 56, status.absoluteCode, 4U, OLED_6X8);
+    OLED_ShowNum(48, 56, angleTenths / 10U, 3U, OLED_6X8);
+    OLED_ShowString(66, 56, ".", OLED_6X8);
+    OLED_ShowNum(72, 56, angleTenths % 10U, 1U, OLED_6X8);
+    OLED_Update();
+}
 
 int main(void)
 {
-    App_UpdateContext_t updateContext;
+    uint8_t elapsedTicks;
 
-    App_Init();
-    Mission_Init(Accomplish25H_GetMissionGraph());
+    __disable_irq();
+
+    Test_InitPower();
+    Test_InitPins();
+    SYSCFG_DL_SYSCTL_init();
+    SYSCFG_DL_STEPPER_PULSE_init();
+    SYSCFG_DL_STEPPER_ABS_CAPTURE_init();
+    SYSCFG_DL_OLED_I2C_init();
+    SYSCFG_DL_SYSTICK_init();
+
+    Tick_Init();
+    Key_Init();
+    Encoder_InitStepper();
+    OLED_Init();
+    Stepper_Init();
+
+    s_keyCandidate = Key_GetPressedMask();
+    s_keyStable = s_keyCandidate;
+    s_keyDebounceTicks = TEST_KEY_DEBOUNCE_TICKS;
+    s_displayTicks = TEST_DISPLAY_REFRESH_TICKS;
+    s_lastResult = STEPPER_RESULT_OK;
+
     Interrupt_Enable();
+    Test_UpdateDisplay();
 
     for (;;)
     {
-        if (App_Update(&updateContext) != 0U)
+        elapsedTicks = Tick_PollCount();
+        if (elapsedTicks == 0U)
         {
-            Mission_Update(&updateContext);
+            __WFI();
+            continue;
+        }
+
+        Stepper_Update(elapsedTicks);
+        Test_HandleKeys(Test_GetPressedEdges());
+
+        if ((uint16_t)s_displayTicks + elapsedTicks >=
+            TEST_DISPLAY_REFRESH_TICKS)
+        {
+            s_displayTicks = 0U;
+            Test_UpdateDisplay();
+        }
+        else
+        {
+            s_displayTicks = (uint8_t)(s_displayTicks + elapsedTicks);
         }
     }
 }

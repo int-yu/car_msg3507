@@ -6,6 +6,7 @@
 #include <stdint.h>
 
 void Encoder_Init(void);
+void Encoder_InitStepper(void);
 int16_t Encoder_Get(uint8_t n);
 int32_t Encoder_GetStepperCount(void);
 void Encoder_SetStepperCount(int32_t count);

@@ -37,7 +37,9 @@ static uint8_t s_serial2RxBuffer[SERIAL2_RX_BUFFER_SIZE];
 
 /* Serial2 TX 环形缓冲 + DMA，模型与 Serial1 完全一致（单生产者主循环 /
  * 单消费者 DMA 完成中断）。Serial2 现承载 HC05 主从链路，需非阻塞发送。 */
+#if defined(BRUSHLESS_UART_INST)
 static uint8_t s_serial2TxBuffer[SERIAL2_TX_BUFFER_SIZE];
+#endif
 static volatile uint32_t s_serial2TxHead;
 static volatile uint32_t s_serial2TxTail;
 static volatile uint8_t s_serial2TxDmaActive;
@@ -242,6 +244,7 @@ void Serial2_Init(void)
     s_serial2TxDmaActive = 0U;
     s_serial2TxDmaLength = 0U;
     s_serial2TxDropCount = 0U;
+#if defined(BRUSHLESS_UART_INST)
     /* PB7（HC05 → MCU）保持为确定的高电平，避免模块未上电时 RX 悬空产生伪字节。 */
     DL_GPIO_initPeripheralInputFunctionFeatures(
         GPIO_BRUSHLESS_UART_IOMUX_RX,
@@ -250,11 +253,13 @@ void Serial2_Init(void)
         DL_GPIO_HYSTERESIS_DISABLE, DL_GPIO_WAKEUP_DISABLE);
     NVIC_ClearPendingIRQ(BRUSHLESS_UART_INST_INT_IRQN);
     NVIC_EnableIRQ(BRUSHLESS_UART_INST_INT_IRQN);
+#endif
 }
 
 /* 与 Serial1_StartTxDma 同构：搬 s_serial2TxTail 到「缓冲尾或 head」的连续段。 */
 static void Serial2_StartTxDma(void)
 {
+#if defined(BRUSHLESS_UART_INST)
     uint32_t tail = s_serial2TxTail % SERIAL2_TX_BUFFER_SIZE;
     uint32_t pending = s_serial2TxHead - s_serial2TxTail;
     uint32_t chunk;
@@ -278,6 +283,7 @@ static void Serial2_StartTxDma(void)
                        (uint32_t)&BRUSHLESS_UART_INST->TXDATA);
     DL_DMA_setTransferSize(DMA, DMA_PEERLINK_TX_CHAN_ID, chunk);
     DL_DMA_enableChannel(DMA, DMA_PEERLINK_TX_CHAN_ID);
+#endif
 }
 
 void Serial2_OnDmaTxComplete(void)
@@ -313,6 +319,14 @@ uint8_t Serial2_ReadByte(uint8_t *byte)
 
 uint8_t Serial2_SendArray(const uint8_t *array, uint16_t length)
 {
+#if !defined(BRUSHLESS_UART_INST)
+    if ((array == NULL) || (length == 0U))
+    {
+        return 0U;
+    }
+    s_serial2TxDropCount += length;
+    return 0U;
+#else
     uint16_t i;
     uint32_t used;
     uint32_t space;
@@ -342,6 +356,7 @@ uint8_t Serial2_SendArray(const uint8_t *array, uint16_t length)
     Serial2_StartTxDma();
     __enable_irq();
     return 1U;
+#endif
 }
 
 void Serial2_SendByte(uint8_t byte)
@@ -387,6 +402,7 @@ void BLUETOOTH_UART_INST_IRQHandler(void)
     }
 }
 
+#if defined(BRUSHLESS_UART_INST)
 void BRUSHLESS_UART_INST_IRQHandler(void)
 {
     /* 与 Serial1 同构：一次中断可能同时挂起 RX 与 DMA_DONE_TX，逐个取出直到清空。 */
@@ -423,6 +439,8 @@ void BRUSHLESS_UART_INST_IRQHandler(void)
 }
 
 /* ---- Serial3：K230 视觉链路 ---- */
+
+#endif
 
 void Serial3_Init(void)
 {
