@@ -1,5 +1,6 @@
 #include "Application/Debug/DebugDisplay.h"
 #include "Accomplish/26H.h"
+#include "Application/Control/BallHold.h"
 #include "Application/Control/MotionManager.h"
 #include "Application/Gimbal/Gimbal.h"
 #include "Application/Mission/Mission.h"
@@ -54,11 +55,32 @@ static void DebugDisplay_ShowMotionValue(int16_t y,
 static void DebugDisplay_ShowMotionState(void)
 {
     MotionManager_Mode_t mode = MotionManager_GetMode();
+    BallHold_State_t holdState = BallHold_GetState();
 
     if (Accomplish26H_GetState() == ACCOMPLISH_26H_STATE_ERROR)
     {
         OLED_Printf(0, 56, OLED_6X8, "H:E%u",
                     (unsigned)Accomplish26H_GetError());
+    }
+    /* 要求 4 运行时底盘是 IDLE，不显示的话这一行会让人以为程序没在跑。
+     * 摆杆任务优先于底盘模式显示：要求 4 期间底盘本来就该是空闲。 */
+    else if (holdState == BALL_HOLD_STATE_ERROR)
+    {
+        OLED_Printf(0, 56, OLED_6X8, "H4:E%u",
+                    (unsigned)BallHold_GetError());
+    }
+    else if (holdState == BALL_HOLD_STATE_CONVERGING)
+    {
+        OLED_ShowString(0, 56, "H4:->O", OLED_6X8);
+    }
+    else if (holdState == BALL_HOLD_STATE_HOLDING)
+    {
+        /* 收敛耗时是要求 4 现场最想看的数：拨球后多久回到 O。 */
+        OLED_Printf(0, 56, OLED_6X8, "H4:HOLD %lu.%02lus",
+                    (unsigned long)(BallHold_GetConvergeTicks() /
+                                    TICK_HZ),
+                    (unsigned long)(((BallHold_GetConvergeTicks() %
+                                      TICK_HZ) * 100U) / TICK_HZ));
     }
     else if ((MotionManager_GetError() != MOTION_MANAGER_ERROR_NONE) ||
         (Mission_GetStatus() == MISSION_STATUS_ERROR))

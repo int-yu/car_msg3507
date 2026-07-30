@@ -576,6 +576,7 @@ kbd {
                 <span class="line-live"><small>目标 TL / TR</small><b id="lineLiveTargets">— / —</b></span>
                 <span class="line-live"><small>实测 LV / RV</small><b id="lineLiveSpeeds">— / —</b></span>
                 <span class="line-live"><small>目标差 TL−TR</small><b id="lineLiveDelta">—</b></span>
+                <span class="line-live"><small>偏航速率 yaw</small><b id="lineLiveYawRate">—</b></span>
             </div>
             <div id="lineTrialSpeeds" class="quick-speeds">
                 <span class="hint">试验速度</span>
@@ -589,7 +590,7 @@ kbd {
         </div>
         <div id="ballSessionTools" class="ball-session-tools" style="display:none">
             <div class="ball-monitor-head">
-                <b>要求 3 · O → +5 cm → -5 cm</b>
+                <b id="ballMonitorTitle">要求 3 · O → +5 cm → -5 cm</b>
                 <span class="hint">实测与内部梯形参考同拍</span>
             </div>
             <div class="ball-track">
@@ -744,10 +745,14 @@ kbd {
 
     <aside class="video-controls">
         <div class="panel" id="ballTaskPanel">
-            <h2>要求 3 摆球 <small>KEY2 等效任务</small></h2>
+            <h2>摆杆滚球 <small>KEY2 / KEY3 等效任务</small></h2>
             <div class="row">
-                <button type="button" id="btnBallVideoRun" class="primary" disabled>运行并记录</button>
+                <button type="button" id="btnBallVideoRun" class="primary" disabled>要求3 运行并记录</button>
                 <button type="button" id="btnBallVideoStop" disabled>回中停止 C4</button>
+            </div>
+            <div class="row">
+                <button type="button" id="btnHoldVideoRun" class="primary" disabled>要求4 保持O点</button>
+                <button type="button" id="btnHoldVideoStop" disabled>回中停止 C6</button>
                 <button type="button" id="btnBallOpenTuning">打开调参</button>
             </div>
             <div class="ball-track">
@@ -764,7 +769,7 @@ kbd {
                 <span class="ball-live"><small>轨迹参考</small><b data-ball-field="reference">—</b></span>
                 <span class="ball-live"><small>跟踪误差</small><b data-ball-field="error">—</b></span>
             </div>
-            <p class="hint">每轮自动按 C3 启动、到 -5 cm 稳定或满 5 秒后 C4 回中；参数顺序 bgr/bzo → bhl → bgk → bkd → bkp。</p>
+            <p class="hint">要求3：C3 启动，到 -5 cm 稳定或满 5 秒后 C4 回中。要求4：钢球放在任意位置后 C5 启动收敛到 O 点，记满时长后 C6 回中。标定顺序 bgr/bzo → bhl → bgk → bkd → bkp，两个要求共用。</p>
         </div>
 
         <div class="panel" id="videoDrivePanel">
@@ -1607,6 +1612,126 @@ function computeBallMetrics(samples) {
     };
 }
 
+/*
+ * 要求 4 指标：钢球从任意位置放下后收敛到 O 并长期保持。
+ * 和要求 3 的口径完全不同——那里查两个 ±50 mm 点，这里查「多久回到 O、
+ * 稳住之后偏多少、有没有一直来回振」。
+ */
+function computeHoldMetrics(samples) {
+    const values = samples.filter((s) =>
+        Number.isFinite(s.ms) && Number.isFinite(s.bpos) &&
+        Number.isFinite(s.bref));
+    if (values.length < 3) {
+        return null;
+    }
+
+    const TOL_MM = 10;      /* 题目 1 cm。 */
+    const STABLE_MS = 300;  /* 连续待够这么久才算收敛，躲开穿越 O 的瞬间。 */
+    const startMs = values[0].ms;
+    const startPositionMM = values[0].bpos;
+
+    /* 收敛时间：第一次进入容差且此后连续保持 STABLE_MS 的那个时刻。 */
+    let convergeMs = null;
+    let windowStartMs = null;
+    for (const sample of values) {
+        if (Math.abs(sample.bpos) <= TOL_MM) {
+            if (windowStartMs === null) {
+                windowStartMs = sample.ms;
+            } else if (convergeMs === null &&
+                       sample.ms - windowStartMs >= STABLE_MS) {
+                convergeMs = windowStartMs - startMs;
+            }
+        } else {
+            windowStartMs = null;
+        }
+    }
+
+    /* 稳态段取收敛之后的全部样本；没收敛就退化成最后 1 秒，仍能看出偏多少。 */
+    const steadyFromMs = convergeMs !== null ?
+        startMs + convergeMs : values[values.length - 1].ms - 1000;
+    const steady = values.filter((s) => s.ms >= steadyFromMs);
+    let steadySumSq = 0;
+    let steadyMaxAbs = 0;
+    let steadySum = 0;
+    for (const sample of steady) {
+        steadySumSq += sample.bpos * sample.bpos;
+        steadySum += sample.bpos;
+        steadyMaxAbs = Math.max(steadyMaxAbs, Math.abs(sample.bpos));
+    }
+    const steadyRmsMM = steady.length > 0 ?
+        Math.sqrt(steadySumSq / steady.length) : null;
+    const steadyBiasMM = steady.length > 0 ? steadySum / steady.length : null;
+
+    /*
+     * 振荡计数：稳态段内 bpos 穿过 O 的次数换算成每秒次数。持续往复是
+     * 要求 4 最难看的失败模式，比稳态误差更值得单独列出来。
+     */
+    let crossings = 0;
+    for (let i = 1; i < steady.length; i += 1) {
+        const previous = steady[i - 1].bpos;
+        const current = steady[i].bpos;
+        /* 只算真正穿过去的，2 mm 死区滤掉视觉抖动造成的假穿越。 */
+        if (Math.abs(previous) > 2 && Math.abs(current) > 2 &&
+            ((previous > 0) !== (current > 0))) {
+            crossings += 1;
+        }
+    }
+    const steadySpanMs = steady.length > 1 ?
+        steady[steady.length - 1].ms - steady[0].ms : 0;
+    const oscillationHz = steadySpanMs > 0 ?
+        crossings / (steadySpanMs / 1000) / 2 : null;
+
+    /*
+     * 扰动恢复：收敛之后如果又冲出过容差（手拨或大扰动），记录最大偏离和
+     * 从偏离峰值回到容差内所用的时间。没扰动就是 null，不算失败。
+     */
+    let disturbPeakMM = null;
+    let disturbRecoverMs = null;
+    if (convergeMs !== null) {
+        let peakMM = 0;
+        let peakMs = null;
+        for (const sample of steady) {
+            const absolute = Math.abs(sample.bpos);
+            if (absolute > TOL_MM && absolute > peakMM) {
+                peakMM = absolute;
+                peakMs = sample.ms;
+            }
+            if (peakMs !== null && sample.ms > peakMs &&
+                absolute <= TOL_MM && disturbRecoverMs === null) {
+                disturbRecoverMs = sample.ms - peakMs;
+            }
+        }
+        if (peakMM > TOL_MM) {
+            disturbPeakMM = peakMM;
+        }
+    }
+
+    /* 跟踪误差：球跟不跟得上梯形参考，用来区分「参考没动」和「球没跟上」。 */
+    let trackingSumSq = 0;
+    for (const sample of values) {
+        const error = sample.bpos - sample.bref;
+        trackingSumSq += error * error;
+    }
+    const trackingRmsMM = Math.sqrt(trackingSumSq / values.length);
+
+    const pass = convergeMs !== null && steadyMaxAbs <= TOL_MM &&
+        (oscillationHz === null || oscillationHz <= 1);
+
+    return {
+        startPositionMM,
+        convergeMs,
+        steadyRmsMM,
+        steadyMaxAbsMM: steady.length > 0 ? steadyMaxAbs : null,
+        steadyBiasMM,
+        oscillationHz,
+        disturbPeakMM,
+        disturbRecoverMs,
+        trackingRmsMM,
+        steadySamples: steady.length,
+        pass,
+    };
+}
+
 /* 按环路分派指标计算；amp 是激励幅值（直线用作目标距离），tolDeg 是转向容差。 */
 function analyzeRun(loop, samples, amp, tolDeg) {
     if (!Array.isArray(samples) || samples.length < 3) {
@@ -1638,6 +1763,9 @@ function analyzeRun(loop, samples, amp, tolDeg) {
     }
     if (loop === 'ball') {
         return computeBallMetrics(samples);
+    }
+    if (loop === 'hold') {
+        return computeHoldMetrics(samples);
     }
     return null;
 }
@@ -1687,6 +1815,20 @@ function describeRunMetrics(loop, metrics, focusSide = 'both') {
                `；-5cm 稳定${ms(metrics.minusTimeMs)} 末端误差${mm(metrics.minusErrorMM)}` +
                `；跟踪RMS ${mm(metrics.trackingRmsMM)}` +
                `；${metrics.pass ? '要求3达标' : '要求3未达标'}`;
+    }
+    if (loop === 'hold') {
+        const mm = (value) => value === null ? '—' : value.toFixed(1) + 'mm';
+        let summary =
+            `起点${mm(metrics.startPositionMM)} 收敛${ms(metrics.convergeMs)}` +
+            `；稳态RMS ${mm(metrics.steadyRmsMM)} 最大${mm(metrics.steadyMaxAbsMM)}` +
+            ` 偏置${mm(metrics.steadyBiasMM)}`;
+        if (Number.isFinite(metrics.oscillationHz)) {
+            summary += `；振荡${metrics.oscillationHz.toFixed(2)}Hz`;
+        }
+        if (metrics.disturbPeakMM !== null) {
+            summary += `；扰动${mm(metrics.disturbPeakMM)} 恢复${ms(metrics.disturbRecoverMs)}`;
+        }
+        return summary + `；${metrics.pass ? '要求4达标' : '要求4未达标'}`;
     }
     return '';
 }
@@ -1875,15 +2017,16 @@ const SESSIONS = {
     },
     line: {
         label: '六路红外巡线',
-        mask: CH.lerr | CH.gray | CH.TL | CH.TR | CH.LV | CH.RV,
+        mask: CH.yaw | CH.lerr | CH.gray | CH.TL | CH.TR | CH.LV | CH.RV,
         ampLabel: '请求速度 mm/s', ampDefault: 200, timed: true, durDefault: 5,
         excite: (amp) => 'N' + amp, stopCmd: 'N0',
         params: ['h2cru', 'h2fin', 'h2clr', 'h2lap', 'h2app', 'h2arm',
                  'h2max', 'h2off', 'lacc', 'ldec', 'lra', 'lkd',
+                 'lcra', 'lckd', 'lcv',
                  'lwkp', 'lwki', 'rwkp', 'rwki'],
-        structure: 'KEY1 启动时快照现有 26H 阶段参数：以 h2cru 离开起点并巡航，距 h2lap 还剩 h2app 时按 ldec 降到 h2fin，h2arm 后任意三路黑线连续 3 拍判为终点横线，确认后再走 h2off 并按同一 ldec 软停，h2max 是未识别横线的保护距离；六路红外权重(-6..+6)经 P/D 与轮速底环保持原控制路径',
-        columnsNote: 'gray=CH1~CH6 位图，lerr=滤波后巡线权重，(TL+TR)/2=弯道基准速度，TL/TR=左右目标轮速，LV/RV=左右实测轮速',
-        expectation: '正常压线时 gray 不应长时间全 0；lerr 在 0 附近收敛，TL/TR 差速方向正确，LV/RV 轮速 MAE 较小，弯道时基准速度从请求值平滑降到最低 68%',
+        structure: 'KEY1 启动时快照现有 26H 阶段参数：以 h2cru 离开起点并巡航，距 h2lap 还剩 h2app 时按 ldec 降到 h2fin，h2arm 后任意三路黑线连续 3 拍判为终点横线，确认后再走 h2off 并按同一 ldec 软停，h2max 是未识别横线的保护距离；CH2/CH5 连续压线 3 拍后进入弧线，并将当前航向记为相对角度 0，累计转过设定角度后回直线，分别使用直线 lra/lkd 与弧线 lcra/lckd，lcv 限制弧线速度',
+        columnsNote: 'gray=CH1~CH6 位图，yaw=航向角（网页据相邻样本显示偏航速率），lerr=滤波后巡线权重，(TL+TR)/2=当前基准速度，TL/TR=左右目标轮速，LV/RV=左右实测轮速',
+        expectation: '正常压线时 gray 不应长时间全 0；CH2/CH5 连续 3 拍后进入弧线，lerr 仅显示巡线修正，TL/TR 差速方向正确，LV/RV 轮速 MAE 较小，弧线基准速度受 lcv 限制',
     },
     ball: {
         label: '要求3摆球', mask: CH.bpos | CH.bref,
@@ -1894,6 +2037,16 @@ const SESSIONS = {
         structure: 'K230 球位 -> 梯形位置参考(bref) -> PD(bkp,bkd)+重力耦合(bgk) -> 摆杆倾角 -> 齿轮比(bgr)+零偏(bzo) -> 步进；要求3固定 O→+50→-50 mm，车体保持静止',
         columnsNote: 'bpos=K230 钢球实测位置mm，bref=BallBalance 内部梯形轨迹参考位置mm；两列在同一控制拍采样',
         expectation: '+50 mm 折返点与 -50 mm 保持点误差均不超过 10 mm，5 s 内到达 -50 mm 并连续稳定，曲线无明显过冲和持续振荡',
+    },
+    hold: {
+        label: '要求4保持O点', mask: CH.bpos | CH.bref,
+        ampVisible: false, timed: true, durDefault: 10, rate: 100,
+        excite: () => 'C5', stopCmd: 'C6', startReply: 'OK HOLD START',
+        stopReply: 'OK HOLD STOP',
+        params: ['bgr', 'bzo', 'bhl', 'bgk', 'bkd', 'bkp'],
+        structure: 'K230 球位 -> 目标恒为 O 的梯形位置参考(bref) -> PD(bkp,bkd)+重力耦合(bgk) -> 摆杆倾角 -> 齿轮比(bgr)+零偏(bzo) -> 步进；本步车体静止，车体加速度前馈固定为 0',
+        columnsNote: 'bpos=K230 钢球实测位置mm，bref=目标恒为 0 的梯形参考位置mm；两列在同一控制拍采样',
+        expectation: '钢球从任意位置放下都能收敛到 O 点：bref 平滑走到 0，bpos 跟随并稳定在 ±10 mm 内，无持续往复振荡；手拨扰动后能自动回到 O',
     },
 };
 
@@ -1983,20 +2136,21 @@ const TUNING_FOCUS = {
             start: { label: '① 离开起点', help: '配置起步后的巡航速度 h2cru、离开横线距离 h2clr 和提速斜率 lacc；修改后下一次 KEY1 启动生效。', configOnly: true },
             position: { label: '② 终点位置', help: '配置理论圈长 h2lap、横线识别启用距离 h2arm 和漏检保护距离 h2max；修改后下一次 KEY1 启动生效。', configOnly: true },
             finish: { label: '③ 减速停车', help: '配置提前减速距离 h2app、终点慢速 h2fin、横线后前移 h2off 和统一减速度 ldec；修改后下一次 KEY1 启动生效。', configOnly: true },
-            line: { label: '④ 比例 P', help: '只调 lra：决定最外侧压线时左右轮最大差速比例。' },
-            damping: { label: '⑤ 阻尼 D', help: '只调 lkd：抑制压线通道切换造成的反复摆动。' },
-            wheel: { label: '⑥ 轮速底环', help: '目标正确但实测跟不上时先检查左右轮 PI；若基础 PWM 就不对，应切到“轮速”任务重标前馈与静摩擦。' },
-            verify: { label: '⑦ 验证', help: '同时观察红外位图、未检线占比、权重误差和目标/实测轮速 MAE。' },
+            line: { label: '④ 直/弧比例 P', help: 'lra 用于直线，lcra 用于 CH2/CH5 连续压线 3 拍后的弧线。' },
+            damping: { label: '⑤ 直/弧阻尼 D', help: 'lkd 用于直线，lckd 用于弧线，抑制压线通道切换造成的反复摆动。' },
+            curveSpeed: { label: '⑥ 弧线速度', help: 'lcv 是确认弧线后的固定基准速度上限，不随 lerr 回中而提速。' },
+            wheel: { label: '⑦ 轮速底环', help: '目标正确但实测跟不上时先检查左右轮 PI；若基础 PWM 就不对，应切到“轮速”任务重标前馈与静摩擦。' },
+            verify: { label: '⑧ 验证', help: '同时观察 CH2/CH5、航向角、权重误差和目标/实测轮速 MAE。' },
         },
         sides: {
             main: {
-                label: '整车', series: ['lerr', 'TL', 'TR', 'LV', 'RV'],
-                mask: CH.lerr | CH.gray | CH.TL | CH.TR | CH.LV | CH.RV,
+                label: '整车', series: ['yaw', 'lerr', 'TL', 'TR', 'LV', 'RV'],
+                mask: CH.yaw | CH.lerr | CH.gray | CH.TL | CH.TR | CH.LV | CH.RV,
                 params: {
                     start: ['h2cru', 'h2clr', 'lacc'],
                     position: ['h2lap', 'h2arm', 'h2max'],
                     finish: ['h2app', 'h2fin', 'h2off', 'ldec'],
-                    line: ['lra'], damping: ['lkd'],
+                    line: ['lra', 'lcra'], damping: ['lkd', 'lckd'], curveSpeed: ['lcv'],
                     wheel: ['lwkp', 'lwki', 'rwkp', 'rwki'], verify: [],
                 },
             },
@@ -2023,6 +2177,47 @@ const TUNING_FOCUS = {
             },
         },
     },
+    /*
+     * 要求 4 与要求 3 共用 bgr/bzo/bhl/bgk/bkd/bkp——同一套摆杆物理量只该有
+     * 一处真值。所以这里不重复机械和视觉标定阶段，直接从「放球收敛」开始，
+     * 并假定要求 3 的前四步已经做过（阶段提示里写清楚了）。
+     */
+    hold: {
+        label: '要求4保持O点', defaultSide: 'main', defaultStage: 'converge',
+        stages: {
+            converge: {
+                label: '① 放球收敛',
+                help: '球放在 ±3~5 cm 处启动，先看 bpos 能不能单调回到 O。走不动就先加 bkp，冲过头就先加 bkd。',
+            },
+            damping: {
+                label: '② 阻尼 D',
+                help: '只调 bkd：压住过 O 点后的往复。要求 4 是长期保持，宁可慢一点也不要持续振荡。',
+            },
+            position: {
+                label: '③ 比例 P',
+                help: '只调 bkp：缩小稳态偏离。倾角长期顶到 ±6° 限位说明 bkp 过大或 bzo 没校准。',
+            },
+            disturb: {
+                label: '④ 抗扰',
+                help: '启动后用手把球拨到一侧再松手，看它是否自动回 O。指标里的「扰动恢复」就是这一下。',
+            },
+            verify: {
+                label: '⑥ 验证',
+                help: '任意位置放球启动，自动检查收敛时间、稳态误差与是否出现持续振荡。',
+            },
+        },
+        sides: {
+            main: {
+                label: '摆杆', series: ['bref', 'bpos'],
+                mask: CH.bpos | CH.bref,
+                params: {
+                    converge: ['bkp', 'bkd'], damping: ['bkd'],
+                    position: ['bkp'], disturb: [],
+                    feedforward: [], verify: [],
+                },
+            },
+        },
+    },
 };
 
 const PARAM_LABELS = {
@@ -2034,7 +2229,9 @@ const PARAM_LABELS = {
     rwkp: '右轮Kp', rwki: '右轮Ki', rwil: '右轮积分限',
     rwff: '右轮前馈 PWM/(mm/s)', rwsf: '右轮静摩擦PWM',
     skp: '直线航向Kp', skd: '直线航向Kd', sac: '直线加速度',
-    lra: '巡线比例 P（最大差速比）', lkd: '巡线阻尼 D（权重变化率）',
+    lra: '巡线直线比例 P（最大差速比）', lkd: '巡线直线阻尼 D（权重变化率）',
+    lcra: '巡线弧线比例 P（最大差速比）', lckd: '巡线弧线阻尼 D（权重变化率）',
+    lcv: '巡线弧线速度上限（mm/s）',
     lacc: '巡线统一加速度（mm/s²）', ldec: '巡线统一减速度（mm/s²）',
     h2cru: '要求2巡航速度（mm/s）', h2fin: '要求2终点慢速（mm/s）',
     h2clr: '离开起点距离（mm）', h2lap: '理论圈长（mm）',
@@ -2057,13 +2254,15 @@ const PARAM_GROUPS = {
     wil: '双轮批量兼容参数', wff: '双轮批量兼容参数',
     wsf: '双轮批量兼容参数',
     lra: '六路红外巡线', lkd: '六路红外巡线',
+    lcra: '六路红外巡线', lckd: '六路红外巡线', lcv: '六路红外巡线',
     lacc: '六路红外巡线', ldec: '六路红外巡线',
     h2cru: '要求2单圈巡线', h2fin: '要求2单圈巡线',
     h2clr: '要求2单圈巡线', h2lap: '要求2单圈巡线',
     h2app: '要求2单圈巡线', h2arm: '要求2单圈巡线',
     h2max: '要求2单圈巡线', h2off: '要求2单圈巡线',
-    bkp: '要求3摆球', bkd: '要求3摆球', bgk: '要求3摆球',
-    bhl: '要求3摆球', bgr: '要求3摆球', bzo: '要求3摆球',
+    bkp: '摆杆滚球（要求3/4共用）', bkd: '摆杆滚球（要求3/4共用）',
+    bgk: '摆杆滚球（要求3/4共用）', bhl: '摆杆滚球（要求3/4共用）',
+    bgr: '摆杆滚球（要求3/4共用）', bzo: '摆杆滚球（要求3/4共用）',
 };
 const PARAM_STORE_KEY = 'carDebugParamsV1';
 const RUN_STORE_KEY = 'carDebugRunsV1';
@@ -2077,7 +2276,7 @@ const PARAM_NUDGE_STEPS = {
     lwil: 5, rwil: 5,
     lwff: 0.002, rwff: 0.002,
     lwsf: 0.5, rwsf: 0.5,
-    lra: 0.01, lkd: 0.05, lacc: 10, ldec: 10,
+    lra: 0.01, lkd: 0.05, lcra: 0.01, lckd: 0.05, lcv: 10, lacc: 10, ldec: 10,
     h2cru: 10, h2fin: 10, h2clr: 10, h2lap: 10,
     h2app: 10, h2arm: 10, h2max: 10, h2off: 1,
     bkp: 0.01, bkd: 0.005, bgk: 2, bhl: 1, bgr: 0.1, bzo: 0.1,
@@ -3030,7 +3229,7 @@ function requestParameterWrite(entry, value, options = {}) {
     if (session) {
         const startSnapshotParams = new Set([
             'h2cru', 'h2fin', 'h2clr', 'h2lap', 'h2app', 'h2arm',
-            'h2max', 'h2off', 'lacc', 'ldec', 'lra', 'lkd',
+            'h2max', 'h2off', 'lacc', 'ldec', 'lra', 'lkd', 'lcra', 'lckd', 'lcv',
         ]);
         log(startSnapshotParams.has(entry.name) ?
             '当前巡线保持启动快照；本次写入仅影响下一次 N/KEY1 启动' :
@@ -3165,7 +3364,7 @@ function latestSample() {
     return parser.samples.length > 0 ? parser.samples[parser.samples.length - 1] : null;
 }
 
-function describeLineDetection(gray, error) {
+function describeLineDetection(gray) {
     if (gray === null) {
         return '—';
     }
@@ -3182,11 +3381,32 @@ function describeLineDetection(gray, error) {
     if (activeCount >= 3) {
         return '多路 / 横线';
     }
-    if (error === null) {
-        return '已检测';
+    if ((gray & 0x02) !== 0) return 'CH2 弧线入口';
+    if ((gray & 0x10) !== 0) return 'CH5 弧线入口';
+    return '已检测';
+}
+
+function estimateYawRateDps(samples) {
+    if (!Array.isArray(samples) || samples.length < 2) {
+        return null;
     }
-    return error < -0.25 ? '左侧压线' :
-        (error > 0.25 ? '右侧压线' : '居中');
+    const latest = samples[samples.length - 1];
+    if (!Number.isFinite(latest.ms) || !Number.isFinite(latest.yaw)) {
+        return null;
+    }
+    for (let index = samples.length - 2; index >= 0; index -= 1) {
+        const previous = samples[index];
+        const elapsedMs = latest.ms - previous.ms;
+        if (!Number.isFinite(previous.ms) || !Number.isFinite(previous.yaw)) {
+            continue;
+        }
+        if (elapsedMs <= 0 || elapsedMs > 200) {
+            continue;
+        }
+        const rate = (latest.yaw - previous.yaw) * 1000 / elapsedMs;
+        return Number.isFinite(rate) ? rate : null;
+    }
+    return null;
 }
 
 function renderLineRunConfigSummary() {
@@ -3256,7 +3476,9 @@ function renderLineMonitor() {
     const pair = (left, right) => left === null || right === null ?
         '— / —' : `${left.toFixed(1)} / ${right.toFixed(1)}`;
 
-    $('lineLiveState').textContent = describeLineDetection(gray, error);
+    const yawRateDps = estimateYawRateDps(parser.samples);
+
+    $('lineLiveState').textContent = describeLineDetection(gray);
     $('lineLiveError').textContent = error === null ? '—' : error.toFixed(2);
     $('lineLiveBase').textContent = baseSpeed === null ?
         '—' : baseSpeed.toFixed(1) + ' mm/s';
@@ -3264,9 +3486,17 @@ function renderLineMonitor() {
     $('lineLiveSpeeds').textContent = pair(speedL, speedR);
     $('lineLiveDelta').textContent = targetL === null || targetR === null ?
         '—' : (targetL - targetR).toFixed(1) + ' mm/s';
+    $('lineLiveYawRate').textContent = yawRateDps === null ?
+        '—' : yawRateDps.toFixed(1) + ' °/s';
 }
 
 function renderBallMonitor() {
+    const holdLoop = focusState.loop === 'hold';
+    const title = $('ballMonitorTitle');
+    if (title) {
+        title.textContent = holdLoop ?
+            '要求 4 · 任意位置 → 稳定在 O 点' : '要求 3 · O → +5 cm → -5 cm';
+    }
     const sample = latestSample();
     const position = sample && Number.isFinite(sample.bpos) ? sample.bpos : null;
     const reference = sample && Number.isFinite(sample.bref) ? sample.bref : null;
@@ -3283,10 +3513,16 @@ function renderBallMonitor() {
     let phase = '待机';
     if (position === null) {
         phase = '视觉未就绪';
-    } else if (session && session.loop === 'ball' && session.stopRequested) {
+    } else if (session && (session.loop === 'ball' || session.loop === 'hold') &&
+               session.stopRequested) {
         phase = reference !== null && Math.abs(reference) <= 1 ? '已回中' : '回中停止';
     } else if (reference === null) {
         phase = '等待摆球遥测';
+    } else if (session && session.loop === 'hold') {
+        /* 要求 4 的目标恒为 O，阶段只有「收敛中」和「保持」两种。 */
+        phase = Math.abs(position) <= 10 ?
+            (session.holdConvergedMs !== null ? '保持 O 点' : '接近 O 点') :
+            '收敛到 O 点';
     } else if (reference <= -45) {
         phase = referenceDelta < -0.2 ? '前往 -5 cm' : '保持 -5 cm';
     } else if (referenceDelta < -0.2) {
@@ -3588,7 +3824,8 @@ function renderFocusNavigation() {
 
     $('wheelSessionTools').style.display = focusState.loop === 'wheel' ? '' : 'none';
     $('wheelMap').style.display = focusState.loop === 'wheel' ? '' : 'none';
-    $('ballSessionTools').style.display = focusState.loop === 'ball' ? '' : 'none';
+    $('ballSessionTools').style.display =
+        (focusState.loop === 'ball' || focusState.loop === 'hold') ? '' : 'none';
     renderLineMonitor();
     renderBallMonitor();
     renderSessionParams();
@@ -3613,17 +3850,22 @@ function refreshSessionInputs(resetValues = true) {
         if (resetValues) $('sessAmp').value = p.ampDefault;
     }
     $('sessDurWrap').style.display = !configOnly && p.timed ? '' : 'none';
-    $('sessDurLabel').textContent = focusState.loop === 'ball' ? '记录上限s' : '时长s';
+    $('sessDurLabel').textContent =
+        (focusState.loop === 'ball' || focusState.loop === 'hold') ?
+            '记录上限s' : '时长s';
     if (p.timed && resetValues) {
         $('sessDur').value = p.durDefault;
     }
     $('btnSessStart').textContent = configOnly ? '写入后按 KEY1 启动' :
-        (focusState.loop === 'ball' ? '启动要求3（模拟 KEY2）' : '开始试验');
+        focusState.loop === 'ball' ? '启动要求3（模拟 KEY2）' :
+        focusState.loop === 'hold' ? '启动要求4（模拟 KEY3）' : '开始试验';
     $('btnSessStart').disabled = !writer || configOnly || Boolean(session) ||
         sessionPreparing;
     $('sessStatus').textContent = configOnly ?
         '本阶段只配置 Param；车辆运行中不切换，下一次按 KEY1 时整组快照生效。' :
-        '流程：改参数 → 开始试验 → 自动出指标 → 对比上一组。';
+        focusState.loop === 'hold' ?
+            '流程：把钢球放在任意位置 → 启动要求4 → 记满时长自动回中出指标。抗扰阶段在运行中用手拨球。' :
+            '流程：改参数 → 开始试验 → 自动出指标 → 对比上一组。';
     renderSessionParams();
 }
 
@@ -3785,6 +4027,7 @@ async function startSession() {
         sawActive: false, done: false, endTimer: null, stopTimer: null,
         guardTimer: null, stopFallbackTimer: null, finalizing: false,
         stopAcknowledged: false, ballStableSinceMs: null,
+        holdStableSinceMs: null, holdConvergedMs: null,
     };
     $('sessResult').style.display = 'none';
     $('btnSessStart').disabled = true;
@@ -3898,6 +4141,7 @@ function stopReplyMatcher(command) {
     if (command === 'W0') return (line) => line === 'OK W=0';
     if (command === 'N0') return (line) => line === 'OK N=0';
     if (command === 'C4') return (line) => line === 'OK BALL STOP';
+    if (command === 'C6') return (line) => line === 'OK HOLD STOP';
     return (line) => line === 'OK C=0';
 }
 
@@ -3912,7 +4156,9 @@ function sessionSampleCompletionState(activeSession, sample, toleranceDeg = 2) {
     if (!activeSession || !sample) {
         return false;
     }
-    if (activeSession.loop === 'ball') {
+    if (activeSession.loop === 'ball' || activeSession.loop === 'hold') {
+        /* 要求 4 的 bref 保持期间本来就在 0 附近，光看 bref 无法区分
+         * 「还在保持」和「已回中」，所以必须先等 C6 被确认。 */
         return activeSession.stopAcknowledged && Number.isFinite(sample.bref) &&
             Math.abs(sample.bref) <= 0.5;
     }
@@ -3982,8 +4228,9 @@ async function requestSessionStop(reason) {
                 stopSession('停车状态未确认', true);
             }
         }, 1600);
-        $('sessStatus').textContent = session.loop === 'ball' ?
-            `${reason}，C4 已确认，等待 bref 回中…` :
+        $('sessStatus').textContent =
+            (session.loop === 'ball' || session.loop === 'hold') ?
+            `${reason}，${session.preset.stopCmd} 已确认，等待 bref 回中…` :
             `${reason}，等待 IDLE/DONE 尾部数据…`;
         watchSession();
     } catch (err) {
@@ -4044,6 +4291,27 @@ function watchSession() {
             }
         } else {
             session.ballStableSinceMs = null;
+        }
+        return;
+    }
+    /*
+     * 要求 4 故意不做「稳住就自动收尾」：它要考察的正是长期保持和抗扰，
+     * 提前停掉就什么都测不到。这一轮由记录时长的定时器结束，中途只记录
+     * 首次收敛时刻用于状态显示。
+     */
+    if (session.loop === 'hold' && !session.stopRequested) {
+        const atO = s && Number.isFinite(s.ms) && Number.isFinite(s.bpos) &&
+            Math.abs(s.bpos) <= 10;
+        if (atO) {
+            if (session.holdStableSinceMs === null) {
+                session.holdStableSinceMs = s.ms;
+            } else if (session.holdConvergedMs === null &&
+                       s.ms - session.holdStableSinceMs >= 300) {
+                session.holdConvergedMs = session.holdStableSinceMs;
+                log('要求4：钢球已收敛到 O 点，继续观察保持与抗扰', 'ok');
+            }
+        } else {
+            session.holdStableSinceMs = null;
         }
         return;
     }
@@ -4278,7 +4546,8 @@ function abortSession() {
     if (!session) {
         return;
     }
-    if (session.loop === 'ball') {
+    if (session.loop === 'ball' || session.loop === 'hold') {
+        /* 摆杆任务的「结束」就是回中，不该走 emergencyStop 那条底盘急停路径。 */
         requestSessionStop('手动回中').catch((err) => {
             log('手动回中失败：' + err.message, 'err');
         });

@@ -1,5 +1,5 @@
-#ifndef ACCOMPLISH_26H_BALL_H
-#define ACCOMPLISH_26H_BALL_H
+#ifndef APPLICATION_CONTROL_BALL_SEQUENCE_H
+#define APPLICATION_CONTROL_BALL_SEQUENCE_H
 
 #include <stdint.h>
 
@@ -17,44 +17,44 @@
  */
 
 /* 题目的 ±5 cm 两个目标点。 */
-#define ACCOMPLISH_26H_BALL_TARGET_MM 50.0f
+#define BALL_SEQUENCE_TARGET_MM 50.0f
 
 /* 整个序列的超时保护；100 Hz 下 6 秒。超过即判失败并回中，不要让
  * 摆杆在失控状态下继续动。 */
-#define ACCOMPLISH_26H_BALL_TIMEOUT_TICKS 600U
+#define BALL_SEQUENCE_TIMEOUT_TICKS 600U
 
 typedef enum
 {
-    ACCOMPLISH_26H_BALL_STATE_READY = 0,
-    ACCOMPLISH_26H_BALL_STATE_TO_PLUS,
-    ACCOMPLISH_26H_BALL_STATE_TO_MINUS,
-    ACCOMPLISH_26H_BALL_STATE_HOLD_MINUS,
-    ACCOMPLISH_26H_BALL_STATE_FINISHED,
-    ACCOMPLISH_26H_BALL_STATE_ERROR
-} Accomplish26HBall_State_t;
+    BALL_SEQUENCE_STATE_READY = 0,
+    BALL_SEQUENCE_STATE_TO_PLUS,
+    BALL_SEQUENCE_STATE_TO_MINUS,
+    BALL_SEQUENCE_STATE_HOLD_MINUS,
+    BALL_SEQUENCE_STATE_FINISHED,
+    BALL_SEQUENCE_STATE_ERROR
+} BallSequence_State_t;
 
 typedef enum
 {
-    ACCOMPLISH_26H_BALL_ERROR_NONE = 0,
-    ACCOMPLISH_26H_BALL_ERROR_VISION,   /* 起步时看不到球，或中途丢失。 */
-    ACCOMPLISH_26H_BALL_ERROR_BALANCE,  /* 平衡控制器自身进入错误。 */
-    ACCOMPLISH_26H_BALL_ERROR_TIMEOUT
-} Accomplish26HBall_Error_t;
+    BALL_SEQUENCE_ERROR_NONE = 0,
+    BALL_SEQUENCE_ERROR_VISION,   /* 起步时看不到球，或中途丢失。 */
+    BALL_SEQUENCE_ERROR_BALANCE,  /* 平衡控制器自身进入错误。 */
+    BALL_SEQUENCE_ERROR_TIMEOUT
+} BallSequence_Error_t;
 
-void Accomplish26HBall_Init(void);
+void BallSequence_Init(void);
 
 /* 启动一轮 O -> +5 cm -> -5 cm 序列。钢球必须已被看到。 */
-uint8_t Accomplish26HBall_Start(void);
+uint8_t BallSequence_Start(void);
 
 /* 每个控制拍调用一次。 */
-void Accomplish26HBall_Update(float dt);
+void BallSequence_Update(float dt);
 
 /* 中止并让摆杆回中。 */
-void Accomplish26HBall_Stop(void);
+void BallSequence_Stop(void);
 
-Accomplish26HBall_State_t Accomplish26HBall_GetState(void);
-Accomplish26HBall_Error_t Accomplish26HBall_GetError(void);
+BallSequence_State_t BallSequence_GetState(void);
+BallSequence_Error_t BallSequence_GetError(void);
 /* 序列耗时，供 OLED 显示是否满足 5 s 要求。 */
-uint32_t Accomplish26HBall_GetElapsedTicks(void);
+uint32_t BallSequence_GetElapsedTicks(void);
 
 #endif

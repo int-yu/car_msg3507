@@ -1,8 +1,8 @@
-#include "Accomplish/26H_Ball.h"
+#include "Application/Control/BallSequence.h"
 #include "Application/Control/BallBalance.h"
 #include "tests/host/test_assert.h"
 
-/* ---- 26H_Ball 只依赖 BallBalance，这里给一个可控的桩 ---- */
+/* ---- BallSequence 只依赖 BallBalance，这里给一个可控的桩 ---- */
 static BallBalance_State_t s_balanceState;
 static BallBalance_Error_t s_balanceError;
 static BallBalance_Result_t s_startResult;
@@ -73,7 +73,7 @@ static void reset_fakes(void)
     s_startCount = 0U;
     s_stopCount = 0U;
     s_updateCount = 0U;
-    Accomplish26HBall_Init();
+    BallSequence_Init();
 }
 
 static void run_ticks(uint16_t ticks)
@@ -82,19 +82,19 @@ static void run_ticks(uint16_t ticks)
 
     for (tick = 0U; tick < ticks; tick++)
     {
-        Accomplish26HBall_Update(0.01f);
+        BallSequence_Update(0.01f);
     }
 }
 
 static void test_start_sets_plus_target(void)
 {
     reset_fakes();
-    CHECK(Accomplish26HBall_Start() != 0U);
+    CHECK(BallSequence_Start() != 0U);
 
     CHECK(s_startCount == 1U);
-    CHECK(Accomplish26HBall_GetState() ==
-          ACCOMPLISH_26H_BALL_STATE_TO_PLUS);
-    CHECK_NEAR(s_targetMM, ACCOMPLISH_26H_BALL_TARGET_MM, 0.001f);
+    CHECK(BallSequence_GetState() ==
+          BALL_SEQUENCE_STATE_TO_PLUS);
+    CHECK_NEAR(s_targetMM, BALL_SEQUENCE_TARGET_MM, 0.001f);
     /* 要求 3 是静止测试，前馈必须显式置零。 */
     CHECK_NEAR(s_carAccelerationMMps2, 0.0f, 0.001f);
 }
@@ -105,29 +105,29 @@ static void test_start_fails_without_vision(void)
     reset_fakes();
     s_startResult = BALL_BALANCE_RESULT_INVALID_ARGUMENT;
 
-    CHECK(Accomplish26HBall_Start() == 0U);
-    CHECK(Accomplish26HBall_GetState() ==
-          ACCOMPLISH_26H_BALL_STATE_ERROR);
-    CHECK(Accomplish26HBall_GetError() ==
-          ACCOMPLISH_26H_BALL_ERROR_VISION);
+    CHECK(BallSequence_Start() == 0U);
+    CHECK(BallSequence_GetState() ==
+          BALL_SEQUENCE_STATE_ERROR);
+    CHECK(BallSequence_GetError() ==
+          BALL_SEQUENCE_ERROR_VISION);
 }
 
 /* 到达 +5 cm 并稳定后才折返，不能一擦边就换目标。 */
 static void test_reverses_only_after_stable_at_plus(void)
 {
     reset_fakes();
-    CHECK(Accomplish26HBall_Start() != 0U);
+    CHECK(BallSequence_Start() != 0U);
 
     run_ticks(50U);
-    CHECK(Accomplish26HBall_GetState() ==
-          ACCOMPLISH_26H_BALL_STATE_TO_PLUS);
-    CHECK_NEAR(s_targetMM, ACCOMPLISH_26H_BALL_TARGET_MM, 0.001f);
+    CHECK(BallSequence_GetState() ==
+          BALL_SEQUENCE_STATE_TO_PLUS);
+    CHECK_NEAR(s_targetMM, BALL_SEQUENCE_TARGET_MM, 0.001f);
 
     s_stable = 1U;
-    Accomplish26HBall_Update(0.01f);
-    CHECK(Accomplish26HBall_GetState() ==
-          ACCOMPLISH_26H_BALL_STATE_TO_MINUS);
-    CHECK_NEAR(s_targetMM, -ACCOMPLISH_26H_BALL_TARGET_MM, 0.001f);
+    BallSequence_Update(0.01f);
+    CHECK(BallSequence_GetState() ==
+          BALL_SEQUENCE_STATE_TO_MINUS);
+    CHECK_NEAR(s_targetMM, -BALL_SEQUENCE_TARGET_MM, 0.001f);
 }
 
 /* 到 -5 cm 后要继续保持闭环：停控摆杆回中，球就滚走了。 */
@@ -136,53 +136,53 @@ static void test_holds_closed_loop_at_minus(void)
     uint16_t updatesBefore;
 
     reset_fakes();
-    CHECK(Accomplish26HBall_Start() != 0U);
+    CHECK(BallSequence_Start() != 0U);
     s_stable = 1U;
-    Accomplish26HBall_Update(0.01f);
-    CHECK(Accomplish26HBall_GetState() ==
-          ACCOMPLISH_26H_BALL_STATE_TO_MINUS);
+    BallSequence_Update(0.01f);
+    CHECK(BallSequence_GetState() ==
+          BALL_SEQUENCE_STATE_TO_MINUS);
 
     s_stable = 1U;
-    Accomplish26HBall_Update(0.01f);
-    CHECK(Accomplish26HBall_GetState() ==
-          ACCOMPLISH_26H_BALL_STATE_HOLD_MINUS);
+    BallSequence_Update(0.01f);
+    CHECK(BallSequence_GetState() ==
+          BALL_SEQUENCE_STATE_HOLD_MINUS);
 
     updatesBefore = s_updateCount;
     run_ticks(20U);
     CHECK(s_updateCount > updatesBefore);
     CHECK(s_stopCount == 0U);
-    CHECK_NEAR(s_targetMM, -ACCOMPLISH_26H_BALL_TARGET_MM, 0.001f);
+    CHECK_NEAR(s_targetMM, -BALL_SEQUENCE_TARGET_MM, 0.001f);
 }
 
 /* 中途丢视觉要停控回中并报错。 */
 static void test_vision_loss_aborts(void)
 {
     reset_fakes();
-    CHECK(Accomplish26HBall_Start() != 0U);
+    CHECK(BallSequence_Start() != 0U);
     run_ticks(10U);
 
     s_balanceState = BALL_BALANCE_STATE_ERROR;
     s_balanceError = BALL_BALANCE_ERROR_VISION_LOST;
-    Accomplish26HBall_Update(0.01f);
+    BallSequence_Update(0.01f);
 
-    CHECK(Accomplish26HBall_GetState() ==
-          ACCOMPLISH_26H_BALL_STATE_ERROR);
-    CHECK(Accomplish26HBall_GetError() ==
-          ACCOMPLISH_26H_BALL_ERROR_VISION);
+    CHECK(BallSequence_GetState() ==
+          BALL_SEQUENCE_STATE_ERROR);
+    CHECK(BallSequence_GetError() ==
+          BALL_SEQUENCE_ERROR_VISION);
     CHECK(s_stopCount == 1U);
 }
 
 static void test_timeout_aborts_and_recenters(void)
 {
     reset_fakes();
-    CHECK(Accomplish26HBall_Start() != 0U);
+    CHECK(BallSequence_Start() != 0U);
 
-    run_ticks(ACCOMPLISH_26H_BALL_TIMEOUT_TICKS);
+    run_ticks(BALL_SEQUENCE_TIMEOUT_TICKS);
 
-    CHECK(Accomplish26HBall_GetState() ==
-          ACCOMPLISH_26H_BALL_STATE_ERROR);
-    CHECK(Accomplish26HBall_GetError() ==
-          ACCOMPLISH_26H_BALL_ERROR_TIMEOUT);
+    CHECK(BallSequence_GetState() ==
+          BALL_SEQUENCE_STATE_ERROR);
+    CHECK(BallSequence_GetError() ==
+          BALL_SEQUENCE_ERROR_TIMEOUT);
     CHECK(s_stopCount == 1U);
 }
 
@@ -190,14 +190,14 @@ static void test_timeout_aborts_and_recenters(void)
 static void test_elapsed_ticks_track_the_sequence(void)
 {
     reset_fakes();
-    CHECK(Accomplish26HBall_Start() != 0U);
-    CHECK(Accomplish26HBall_GetElapsedTicks() == 0U);
+    CHECK(BallSequence_Start() != 0U);
+    CHECK(BallSequence_GetElapsedTicks() == 0U);
 
     run_ticks(120U);
-    CHECK(Accomplish26HBall_GetElapsedTicks() == 120U);
+    CHECK(BallSequence_GetElapsedTicks() == 120U);
 
     /* 500 拍即题目的 5 s 上限，正常序列应远早于此完成。 */
-    CHECK(Accomplish26HBall_GetElapsedTicks() < 500U);
+    CHECK(BallSequence_GetElapsedTicks() < 500U);
 }
 
 static void test_update_before_start_does_nothing(void)
@@ -206,8 +206,8 @@ static void test_update_before_start_does_nothing(void)
     run_ticks(10U);
 
     CHECK(s_updateCount == 0U);
-    CHECK(Accomplish26HBall_GetState() ==
-          ACCOMPLISH_26H_BALL_STATE_READY);
+    CHECK(BallSequence_GetState() ==
+          BALL_SEQUENCE_STATE_READY);
 }
 
 int main(void)

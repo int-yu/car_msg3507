@@ -121,6 +121,9 @@ PARAM_VAR_APPLY_ACCESSORS(StraightKd, MotionStraight_TuneHeadingKd,
 PARAM_VAR_ACCESSORS(StraightAcceleration, MotionStraight_TuneAccelerationMMps2)
 PARAM_VAR_ACCESSORS(LineRatio, MotionLine_TuneMaxAdjustRatio)
 PARAM_VAR_ACCESSORS(LineWeightKd, MotionLine_TuneWeightKd)
+PARAM_VAR_ACCESSORS(LineCurveRatio, MotionLine_TuneCurveMaxAdjustRatio)
+PARAM_VAR_ACCESSORS(LineCurveWeightKd, MotionLine_TuneCurveWeightKd)
+PARAM_VAR_ACCESSORS(LineCurveSpeed, MotionLine_TuneCurveSpeedMMps)
 PARAM_VAR_ACCESSORS(LaneKp, MotionLane_TuneKp)
 PARAM_VAR_ACCESSORS(LaneKdYaw, MotionLane_TuneKdYaw)
 PARAM_VAR_ACCESSORS(LaneRatio, MotionLane_TuneMaxAdjustRatio)
@@ -151,6 +154,8 @@ PARAM_VAR_ACCESSORS(BallGravity, BallBalance_TuneGravityCoupling)
 PARAM_VAR_ACCESSORS(BallHalfLength, BallSensor_TuneHalfLengthMM)
 PARAM_VAR_ACCESSORS(BeamGearRatio, BeamActuator_TuneGearRatio)
 PARAM_VAR_ACCESSORS(BeamZeroOffset, BeamActuator_TuneZeroOffsetDeg)
+/* 要求 4 保持 O 点：前馈比例现在恒作用在 0 上（车静止），A→B 直线接进来
+ * 后才真正起作用，做成可调免去为调前馈强度重新烧录。 */
 
 /* 陀螺仪尺度因子保存在 Heading 内部，经既有接口读写。 */
 static float Param_GetGyroScale(void) { return Heading_GetScale(); }
@@ -229,6 +234,14 @@ static const Param_Entry_t s_params[] = {
       10.0f, 5000.0f },
     { "ldec", Param_GetLineDeceleration, Param_SetLineDeceleration,
       10.0f, 5000.0f },
+    /* 要求 4 保持 O 点，追加在表尾，保持既有 id 不变。增益仍用 bkp/bkd。 */
+    /* 弧线 PID 和限速，追加在表尾；MotionLine_Start() 才会快照。 */
+    { "lcra", Param_GetLineCurveRatio, Param_SetLineCurveRatio,
+      0.01f, 1.0f },
+    { "lckd", Param_GetLineCurveWeightKd, Param_SetLineCurveWeightKd,
+      0.0f, 100.0f },
+    { "lcv", Param_GetLineCurveSpeed, Param_SetLineCurveSpeed,
+      20.0f, 1000.0f },
 };
 
 #define PARAM_COUNT (sizeof(s_params) / sizeof(s_params[0]))

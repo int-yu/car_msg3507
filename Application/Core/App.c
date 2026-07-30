@@ -3,7 +3,8 @@
 #include "Application/Comms/CarLink.h"
 #include "Application/Comms/K230Link.h"
 #include "Application/Core/CarRole.h"
-#include "Accomplish/26H_Ball.h"
+#include "Application/Control/BallSequence.h"
+#include "Application/Control/BallHold.h"
 #include "Application/Control/BallSensor.h"
 #include "Application/Control/BeamActuator.h"
 #include "Application/Control/MotionManager.h"
@@ -244,8 +245,10 @@ uint8_t App_Update(App_UpdateContext_t *context)
         MotionManager_Stop();
         Motor_StopAll();
         /* 摆杆闭环必须和步进一起停：否则任务层会继续往一个已急停的
-         * 步进写倾角，解除急停后摆杆会突然跳到那个累积的目标。 */
-        Accomplish26HBall_Stop();
+         * 步进写倾角，解除急停后摆杆会突然跳到那个累积的目标。
+         * 要求 3 和要求 4 都要停——只停一个，另一个会继续写倾角。 */
+        BallSequence_Stop();
+        BallHold_Stop();
         Stepper_EmergencyStop();
         /* (void)Gimbal_Disable();  云台已停用 */
     }

@@ -14,6 +14,8 @@ const param = read('Application/Debug/Param.c');
 const display = read('Application/Debug/DebugDisplay.c');
 const displayHeader = read('Application/Debug/DebugDisplay.h');
 const readme = read('README.md');
+const ball4 = read('Application/Control/BallHold.c');
+const ball4Header = read('Application/Control/BallHold.h');
 
 assert.match(readme, /H 题要求 2/,
     'README 必须标明当前 26H 是要求2单圈巡线');
@@ -32,6 +34,20 @@ assert.match(main, /Accomplish26H_Update\(&updateContext\);/,
     'main.c must update 26H after a valid App update');
 assert.doesNotMatch(main, /Accomplish\/25H\.h|Mission_Init\(|Mission_Update\(/,
     'the 26H entry must not launch the legacy 25H Mission');
+assert.match(main, /MAIN_HOLD_START_SIGNAL\s+5U/,
+    'C5 must be reserved for requirement 4 O-point hold start');
+assert.match(main, /MAIN_HOLD_STOP_SIGNAL\s+6U/,
+    'C6 must be reserved for requirement 4 O-point hold stop');
+assert.match(main, /holdStartRequested[\s\S]*?Main_ReportHoldStart\(\);/,
+    'C5 must invoke the requirement 4 start path');
+assert.match(main, /if \(holdStopRequested != 0U\)[\s\S]*?BallHold_Stop\(\);/,
+    'C6 must stop the requirement 4 balance task');
+assert.ok(ball4.includes('BallBalance_SetTarget(BALL_HOLD_TARGET_MM)'),
+    'requirement 4 must use its fixed O-point target');
+assert.ok(ball4.includes('BallBalance_SetCarAcceleration(0.0f)'),
+    'stationary O-point hold must not apply chassis feedforward');
+assert.doesNotMatch(ball4Header, /TuneFeedforward|TuneConvergeTimeout/,
+    'requirement 4 must not publish runtime tuning variables');
 
 for (const required of [
     '#include "Application/State/Heading.h"',
@@ -95,14 +111,21 @@ assert.ok(line.includes('MOTION_LINE_MAX_ADJUST_RATE_MMPS2'),
     'MotionLine must limit correction-rate steps');
 assert.ok(line.includes('MotionLine_SnapshotTunings()'),
     'MotionLine must snapshot acceleration/deceleration at Start');
-assert.doesNotMatch(line, /Heading_GetYawRate|Application\/State\/Heading\.h/,
-    'H2 line tracking must rely on infrared rather than the IMU');
+assert.match(line, /Heading_GetYaw|Application\/State\/Heading\.h/,
+    'MotionLine must use MPU6050 yaw to measure the relative curve angle');
+assert.ok(line.includes('MOTION_LINE_CURVE_TRIGGER_MASK'),
+    'MotionLine must use CH2/CH5 as the curve-entry signal');
+assert.ok(line.includes('MOTION_LINE_CURVE_EXIT_ANGLE_DEG') &&
+          line.includes('curveEntryYawDeg'),
+    'MotionLine must exit a curve after the configured relative yaw angle');
+assert.ok(line.includes('MotionLine_TuneCurveSpeedMMps'),
+    'MotionLine must snapshot the curve speed limit');
 
 assert.ok(param.includes('"h2off"'),
     'K parameter table must expose the H2 parking-offset calibration');
 for (const name of [
     'h2cru', 'h2fin', 'h2clr', 'h2lap', 'h2app', 'h2arm', 'h2max',
-    'lacc', 'ldec',
+    'lacc', 'ldec', 'lcra', 'lckd', 'lcv',
 ]) {
     assert.ok(param.includes(`{ "${name}"`),
         `K parameter table must append ${name}`);

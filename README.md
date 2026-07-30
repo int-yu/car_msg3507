@@ -86,7 +86,7 @@
 
 ### 3.2 100 Hz 主循环与 26H 单圈巡线
 
-当前加载 `Accomplish/26H.c` 的独立控制器，实现 H 题要求 2。KEY1 在 READY、完成或错误后按下时清零累计 Tick，启动平滑巡线；先确认已离开 A 点横向启停线，跑满最小圈长且进入终点慢速段后，才允许把该标志识别为终点。正常巡线只使用六路红外：速度、差速和入弯限速都由低通后的红外位置误差连续生成，不使用 MPU6050 参与循迹。预计回 A 前，巡线基准速度从 650 mm/s 平滑降至 300 mm/s；任意三路黑线同时压到 A 点横线并连续确认 3 帧后，继续巡线到可标定的停车偏移，再平滑降至零并确认双轮低速 100 ms 后自动冻结时间。未在 20.00 s 内完成停车会冻结计时并以失败软停。**KEY1+KEY2 同时按下**为物理急停：立即合成 `C0` 停车，并优先冻结当前计时，不能触发新的计时轮次。计时使用 100 Hz 整数系统节拍，分辨率为 10 ms。
+当前加载 `Accomplish/26H.c` 的独立控制器，实现 H 题要求 2。KEY1 在 READY、完成或错误后按下时清零累计 Tick，启动平滑巡线；先确认已离开 A 点横向启停线，跑满最小圈长且进入终点慢速段后，才允许把该标志识别为终点。正常巡线的左右差速仍由六路红外权重 P/D 连续生成；CH2 或 CH5 连续压线 3 拍后直接切到弧线 P/D 和 `lcv` 速度上限，并将当前 MPU6050 偏航角记为相对角度零点；相对转角达到 `MOTION_LINE_CURVE_EXIT_ANGLE_DEG` 后回直线 P/D。弧线速度不依据红外偏差回中心重新提速。预计回 A 前，巡线基准速度从 650 mm/s 平滑降至 300 mm/s；任意三路黑线同时压到 A 点横线并连续确认 3 帧后，继续巡线到可标定的停车偏移，再平滑降至零并确认双轮低速 100 ms 后自动冻结时间。未在 20.00 s 内完成停车会冻结计时并以失败软停。**KEY1+KEY2 同时按下**为物理急停：立即合成 `C0` 停车，并优先冻结当前计时，不能触发新的计时轮次。计时使用 100 Hz 整数系统节拍，分辨率为 10 ms。
 
 题面 A 点是一条垂直于环线、长 5 cm 的黑色启停线，停车误差按车身指定测试点相对于该线中心的距离判定，而不是红外条的位置。`K30`（`h2off`，单位 mm）控制“首次确认横线后，继续巡线多少距离再开始软停”；其初值为 0，必须在实车上标定。车停在基准线之前就增大 `K30`，停过基准线就减小它；完成标定后把稳定值写回 `ACCOMPLISH_26H_FINISH_ROLLOUT_MM`。
 
@@ -96,7 +96,7 @@
 
 **KEY2 单独按下**启动要求 3：钢球从摆杆中心点 O 运行到 +5 cm，到位确认后折返到 -5 cm 并持续保持。要求 3 与要求 2 是两个独立测试项，不会同时进行，因此摆球不驱动底盘、单圈巡线也不驱动摆杆；KEY1+KEY2 的物理急停会同时停掉两者。
 
-分四层，每层只做一件事：`BallSensor` 把 K230 的 TARGET 千分比换算成以 O 为原点的毫米位置并估计滚动速度；`BallBalance` 用梯形速度轨迹加 PD 和车体加速度前馈算出摆杆倾角；`BeamActuator` 把倾角换算成步进的绝对角度；`Accomplish/26H_Ball` 只管 O→+5→-5 的序列、到位确认和超时保护。控制增益全部以摆杆倾角为单位，传动比和零点只出现在 `BeamActuator` 一处，因此换执行器或改齿轮比都不必重调增益。
+分四层，每层只做一件事：`BallSensor` 把 K230 的 TARGET 千分比换算成以 O 为原点的毫米位置并估计滚动速度；`BallBalance` 用梯形速度轨迹加 PD 和车体加速度前馈算出摆杆倾角；`BeamActuator` 把倾角换算成步进的绝对角度；`Application/Control/BallSequence` 只管 O→+5→-5 的序列、到位确认和超时保护。控制增益全部以摆杆倾角为单位，传动比和零点只出现在 `BeamActuator` 一处，因此换执行器或改齿轮比都不必重调增益。
 
 三处容易踩的坑已在实现中处理：其一，目标位置绝不能直接阶跃送进 PD——50 mm 阶跃会命令约 12 度倾角，远超摆杆可用行程，钢球会被打到挡片，所以必须经轨迹发生器平滑；其二，钢球速度按 TARGET 帧间实际时间估计而不是控制拍 dt，相机约 25 fps 而控制环 100 Hz，除错会把速度高估约 4 倍，且同一帧重复读时不做差分；其三，视觉失效超过 100 ms 立即回中报错，绝不拿冻结的球位继续闭环——钢球是双积分对象，倾角会锁死并让球一路加速滚到挡片。
 
@@ -131,7 +131,7 @@ int main(void)
 Heading -> Odometry -> 六路红外 I2C -> Stepper -> 按键边沿 -> CarLink -> K230Link
         -> BallSensor（须在 K230Link 之后）-> BluetoothDebug
         -> C0 全局停车（同时停摆杆闭环）-> MotionManager -> K230 ACK -> Beep -> OLED
-        -> Accomplish26H_Update -> Accomplish26HBall_Update -> BeamActuator_Update
+        -> Accomplish26H_Update -> BallSequence_Update -> BeamActuator_Update
 ```
 
 `BallSensor_Update()` 必须排在 `K230Link_Update()` 之后，钢球位置来自本拍刚解析的 TARGET 帧；`BeamActuator_Update()` 必须排在任务层之后，让本拍算出的倾角当拍下发给步进。
@@ -314,8 +314,11 @@ Heading -> Odometry -> Gimbal -> Key -> BluetoothDebug
 | 43 | `h2max` | `Accomplish26H_TuneMaxLapDistanceMM` | mm | 1000~25000 |
 | 44 | `lacc` | `MotionLine_TuneAccelerationMMps2` | mm/s² | 10~5000 |
 | 45 | `ldec` | `MotionLine_TuneDecelerationMMps2` | mm/s² | 10~5000 |
+| 46 | `lcra` | `MotionLine_TuneCurveMaxAdjustRatio` | 比例 | 0.01~1 |
+| 47 | `lckd` | `MotionLine_TuneCurveWeightKd` | mm/s 每 权重/s | 0~100 |
+| 48 | `lcv` | `MotionLine_TuneCurveSpeedMMps` | mm/s | 20~1000 |
 
-id 一经发布不得重排，新增参数只能在尾部追加。K1~K5 为旧上位机保留：写入会同时覆盖左右轮，读取返回两侧当前值的平均数；新调参应使用 K17~K26 分别设置左右轮。基础前馈公式为 `PWMbase = speed×ff + sign(speed)×sf`，再叠加该轮 PI 与上层 trim，最终夹到 ±1000。K37~K45 与 `h2off`、`lra`、`lkd` 都在下一次 KEY1/N 启动时快照，当前运行中写入不会切换本圈参数；`ldec` 沿用 MotionLine 现有统一减速度，同时负责终点降速和最终软停，不增加额外状态机配置。`gsc` 由 `E1`→原地转 N 圈→`Y<n>` 标定流程自动写入；`cpm` 建议用网页里程标定向导。
+id 一经发布不得重排，新增参数只能在尾部追加。K1~K5 为旧上位机保留：写入会同时覆盖左右轮，读取返回两侧当前值的平均数；新调参应使用 K17~K26 分别设置左右轮。基础前馈公式为 `PWMbase = speed×ff + sign(speed)×sf`，再叠加该轮 PI 与上层 trim，最终夹到 ±1000。K37~K48 与 `h2off`、`lra`、`lkd` 都在下一次 KEY1/N 启动时快照，当前运行中写入不会切换本圈参数；`lcra/lckd` 是确认弧线后的 P/D，`lcv` 是确认弧线后的固定速度上限，弧线内不因红外偏差回中心重新提速。`ldec` 沿用 MotionLine 现有统一减速度，同时负责终点降速和最终软停，不增加额外状态机配置。`gsc` 由 `E1`→原地转 N 圈→`Y<n>` 标定流程自动写入；`cpm` 建议用网页里程标定向导。
 
 K31~K36 是要求 3 摆球的标定量，**全部为未实测的初值**，必须按下面顺序在实车上标定，每轮只改一个：先 `bgr`（实测齿轮比）和 `bzo`（摆杆水平零点），再 `bhl`（钢球放 0/±25/±50 mm 处读数反推半杆长），然后 `bgk`（给固定倾角、量钢球加速度反推重力耦合系数），最后才是 `bkd`（压过冲）和 `bkp`。**不要加积分项**：钢球是双积分对象，加 I 极易失稳；静摩擦死区应靠加大 `bkd` 解决。
 
@@ -455,7 +458,7 @@ OLED 默认显示 26H 单圈计时、六路红外 CH1~CH6、四个按键、左�
 | `Application/Mission/Mission.c/.h` | 通用任务执行层 | 校验并执行静态状态图、回调和有序转换 |
 | `Accomplish/25E.c/.h` | 题目状态图 | 25E 参数、状态、回调和转换表 |
 | `Accomplish/26H.c/.h` | 当前题目控制器 | KEY1 启动单圈巡线、A 点终点软停、100 Hz 整数计时和组合急停冻结 |
-| `Accomplish/26H_Ball.c/.h` | 要求 3 摆球序列 | KEY2 启动 O→+5cm→-5cm、到位确认后折返、超时与视觉失效保护 |
+| `Application/Control/BallSequence.c/.h` | 要求 3 摆球序列 | KEY2 启动 O→+5cm→-5cm、到位确认后折返、超时与视觉失效保护 |
 | `Accomplish/25H.c/.h` | 保留题目状态图 | KEY1 启动的巡线、150 mm 直行和连续绝对左转循环 |
 | `Accomplish/Brushless_Motor_Test.c/.h` | 可选测试状态图 | F32C 双轴多圈位置循环测试；当前未加载 |
 | `状态机.md` | 使用说明 | 新建 Accomplish 状态图的编写流程 |
@@ -526,7 +529,7 @@ uint8_t TestApp_Update(App_UpdateContext_t *context); /* 更新测试通道并�
 | `Application/Mission/Mission.c/.h` | 定义状态图公共类型，校验题目状态图并执行每拍最多一次的状态转换 |
 | `Accomplish/25E.c/.h` | 保存 25E 参数和状态图：每轮绝对目标在上一目标上增加 180°；当前未由 main 加载 |
 | `Accomplish/26H.c/.h` | 当前由 main 加载；保存单圈巡线状态、终点判定、软停确认和 100 Hz 累计 Tick |
-| `Accomplish/26H_Ball.c/.h` | 当前由 main 加载；要求 3 的摆球序列状态、到位折返判定和超时保护，只驱动摆杆不碰底盘 |
+| `Application/Control/BallSequence.c/.h` | 当前由 main 加载；要求 3 的摆球序列状态、到位折返判定和超时保护，只驱动摆杆不碰底盘 |
 | `Accomplish/25H.c/.h` | 保留 25H 参数和状态图：KEY1 启动巡线，左侧双黑线后直行 150 mm、固定时长零速保持，绝对左转目标每轮减少 90°并循环；当前未由 main 加载 |
 | `Accomplish/Test.c/.h` | 独立刹车测试状态图：KEY2 启动定距直行、短暂刹车并返回等待；需要测试时才在 main.c 临时加载 |
 | `Application/Comms/K230Link.c/.h` | 解析 `AA 55` 二进制帧和 CRC8，执行 READY/READY_ACK 双向握手，保存最新 TARGET |

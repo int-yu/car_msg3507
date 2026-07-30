@@ -1,5 +1,6 @@
 #include "Application/Control/MotionLine.h"
 #include "Application/Control/MotionWheel.h"
+#include "Application/State/Heading.h"
 #include "Hardware/Sensors/Graydetect.h"
 #include <math.h>
 
@@ -14,19 +15,28 @@ typedef struct
     float decelerationMMps2;
     float maxAdjustRatio;
     float weightKd;
+    float curveMaxAdjustRatio;
+    float curveWeightKd;
+    float curveSpeedMMps;
     float lineError;
     float filteredWeight;
     float previousWeight;
     float speedAdjustMMps;
+    float curveEntryYawDeg;
     float lastLeftSpeedMMps;
     float lastRightSpeedMMps;
     uint16_t lostTicks;
+    uint8_t curveEntryTicks;
+    MotionLine_PathState_t pathState;
     uint8_t configured;
 } MotionLine_Context_t;
 
 /* Param 写入的是下一次启动值；Start 时校验并快照到 s_context。 */
 float MotionLine_TuneMaxAdjustRatio = MOTION_LINE_MAX_ADJUST_RATIO;
 float MotionLine_TuneWeightKd = 1.0f;
+float MotionLine_TuneCurveMaxAdjustRatio = MOTION_LINE_MAX_ADJUST_RATIO;
+float MotionLine_TuneCurveWeightKd = 1.0f;
+float MotionLine_TuneCurveSpeedMMps = MOTION_LINE_MAX_SPEED_MMPS;
 float MotionLine_TuneAccelerationMMps2 = MOTION_LINE_ACCELERATION_MMPS2;
 float MotionLine_TuneDecelerationMMps2 = MOTION_LINE_DECELERATION_MMPS2;
 
@@ -51,6 +61,8 @@ static uint8_t MotionLine_ParametersAreValid(void)
         (MOTION_LINE_WEIGHT_FILTER_ALPHA <= 0.0f) ||
         (MOTION_LINE_WEIGHT_FILTER_ALPHA > 1.0f) ||
         (MOTION_LINE_MAX_ADJUST_RATE_MMPS2 <= 0.0f) ||
+        (MOTION_LINE_CURVE_TRIGGER_MASK == 0U) ||
+        (MOTION_LINE_CURVE_ENTRY_CONFIRM_TICKS == 0U) ||
         (MOTION_LINE_OUTER_WEIGHT <= 0) ||
         (MOTION_LINE_INNER_WEIGHT <= 0) ||
         (MOTION_LINE_INNER_WEIGHT >= MOTION_LINE_OUTER_WEIGHT) ||
@@ -66,6 +78,9 @@ static uint8_t MotionLine_TuningsAreValid(void)
 {
     if ((!isfinite(MotionLine_TuneMaxAdjustRatio)) ||
         (!isfinite(MotionLine_TuneWeightKd)) ||
+        (!isfinite(MotionLine_TuneCurveMaxAdjustRatio)) ||
+        (!isfinite(MotionLine_TuneCurveWeightKd)) ||
+        (!isfinite(MotionLine_TuneCurveSpeedMMps)) ||
         (!isfinite(MotionLine_TuneAccelerationMMps2)) ||
         (!isfinite(MotionLine_TuneDecelerationMMps2)))
     {
@@ -75,6 +90,11 @@ static uint8_t MotionLine_TuningsAreValid(void)
     if ((MotionLine_TuneMaxAdjustRatio <= 0.0f) ||
         (MotionLine_TuneMaxAdjustRatio > 1.0f) ||
         (MotionLine_TuneWeightKd < 0.0f) ||
+        (MotionLine_TuneCurveMaxAdjustRatio <= 0.0f) ||
+        (MotionLine_TuneCurveMaxAdjustRatio > 1.0f) ||
+        (MotionLine_TuneCurveWeightKd < 0.0f) ||
+        (MotionLine_TuneCurveSpeedMMps <= 0.0f) ||
+        (MotionLine_TuneCurveSpeedMMps > MOTION_LINE_MAX_SPEED_MMPS) ||
         (MotionLine_TuneAccelerationMMps2 <= 0.0f) ||
         (MotionLine_TuneDecelerationMMps2 <= 0.0f))
     {
@@ -94,6 +114,9 @@ static uint8_t MotionLine_SnapshotTunings(void)
     s_context.decelerationMMps2 = MotionLine_TuneDecelerationMMps2;
     s_context.maxAdjustRatio = MotionLine_TuneMaxAdjustRatio;
     s_context.weightKd = MotionLine_TuneWeightKd;
+    s_context.curveMaxAdjustRatio = MotionLine_TuneCurveMaxAdjustRatio;
+    s_context.curveWeightKd = MotionLine_TuneCurveWeightKd;
+    s_context.curveSpeedMMps = MotionLine_TuneCurveSpeedMMps;
     return 1U;
 }
 
@@ -122,9 +145,12 @@ static void MotionLine_ResetControl(void)
     s_context.filteredWeight = 0.0f;
     s_context.previousWeight = 0.0f;
     s_context.speedAdjustMMps = 0.0f;
+    s_context.curveEntryYawDeg = 0.0f;
     s_context.lastLeftSpeedMMps = 0.0f;
     s_context.lastRightSpeedMMps = 0.0f;
     s_context.lostTicks = 0U;
+    s_context.curveEntryTicks = 0U;
+    s_context.pathState = MOTION_LINE_PATH_STRAIGHT;
 }
 
 static void MotionLine_SetError(MotionLine_Error_t error)
@@ -185,6 +211,13 @@ static float MotionLine_GetCurveTargetSpeed(float weight)
     float normalizedWeight = fabsf(weight) /
                              (float)MOTION_LINE_OUTER_WEIGHT;
 
+    if (s_context.pathState == MOTION_LINE_PATH_CURVE)
+    {
+        /* 弧线速度由已确认的状态和 lcv 决定，不能因压线回中又提速。 */
+        return (s_context.requestedSpeedMMps < s_context.curveSpeedMMps) ?
+            s_context.requestedSpeedMMps : s_context.curveSpeedMMps;
+    }
+
     if (normalizedWeight > 1.0f)
     {
         normalizedWeight = 1.0f;
@@ -193,6 +226,58 @@ static float MotionLine_GetCurveTargetSpeed(float weight)
                   (1.0f - MOTION_LINE_CURVE_MIN_SPEED_RATIO) *
                   normalizedWeight;
     return s_context.requestedSpeedMMps * errorCurveRatio;
+}
+
+static uint8_t MotionLine_AddSaturatingTick(uint8_t value)
+{
+    return (value < UINT8_MAX) ? (uint8_t)(value + 1U) : value;
+}
+
+/* CH2/CH5 连续压线后进入弧线 PID，并记录入口航向为相对零点。
+ * 仅相对航向累计达到退出角度才回直线，避免弧线内红外回中时来回切换。 */
+static void MotionLine_UpdatePathState(uint8_t grayState)
+{
+    uint8_t headingReady = Heading_IsReady();
+    float yawDeg = 0.0f;
+
+    if (headingReady != 0U)
+    {
+        yawDeg = Heading_GetYaw();
+        if (!isfinite(yawDeg))
+        {
+            headingReady = 0U;
+        }
+    }
+
+    if (s_context.pathState == MOTION_LINE_PATH_CURVE)
+    {
+        s_context.curveEntryTicks = 0U;
+        if ((headingReady != 0U) &&
+            (fabsf(yawDeg - s_context.curveEntryYawDeg) >=
+             MOTION_LINE_CURVE_EXIT_ANGLE_DEG))
+        {
+            s_context.pathState = MOTION_LINE_PATH_STRAIGHT;
+        }
+        return;
+    }
+
+    if (((grayState & MOTION_LINE_CURVE_TRIGGER_MASK) != 0U) &&
+        (headingReady != 0U))
+    {
+        s_context.curveEntryTicks =
+            MotionLine_AddSaturatingTick(s_context.curveEntryTicks);
+        if (s_context.curveEntryTicks >=
+            MOTION_LINE_CURVE_ENTRY_CONFIRM_TICKS)
+        {
+            s_context.pathState = MOTION_LINE_PATH_CURVE;
+            s_context.curveEntryYawDeg = yawDeg;
+            s_context.curveEntryTicks = 0U;
+        }
+    }
+    else
+    {
+        s_context.curveEntryTicks = 0U;
+    }
 }
 
 static float MotionLine_UpdateProfileSpeed(float targetSpeedMMps, float dt)
@@ -217,9 +302,13 @@ static uint8_t MotionLine_CalculateTargetSpeeds(
     uint8_t grayState = Graydetect_GetState();
     float rawWeight;
     float weight;
+    float maxAdjustRatio;
+    float weightKd;
     float requestedAdjustMMps;
     float targetSpeedMMps;
     float speedAdjustMMps;
+
+    MotionLine_UpdatePathState(grayState);
 
     if (grayState == 0U)
     {
@@ -251,11 +340,15 @@ static uint8_t MotionLine_CalculateTargetSpeeds(
 
     /* 权重达到正负 6 时，速度增减比例等于最大调整比例；
      * 微分项对权重跳变（压线切换瞬间）施加一次性阻尼，默认 0 不生效。 */
+    maxAdjustRatio = (s_context.pathState == MOTION_LINE_PATH_CURVE) ?
+        s_context.curveMaxAdjustRatio : s_context.maxAdjustRatio;
+    weightKd = (s_context.pathState == MOTION_LINE_PATH_CURVE) ?
+        s_context.curveWeightKd : s_context.weightKd;
     requestedAdjustMMps = s_context.profileSpeedMMps *
-                           s_context.maxAdjustRatio *
+                           maxAdjustRatio *
                            (weight /
                             (float)MOTION_LINE_OUTER_WEIGHT);
-    requestedAdjustMMps += s_context.weightKd *
+    requestedAdjustMMps += weightKd *
                            ((weight - s_context.previousWeight) / dt);
     s_context.previousWeight = weight;
 
@@ -445,6 +538,11 @@ MotionLine_Error_t MotionLine_GetError(void)
 float MotionLine_GetLineError(void)
 {
     return s_context.lineError;
+}
+
+MotionLine_PathState_t MotionLine_GetPathState(void)
+{
+    return s_context.pathState;
 }
 
 float MotionLine_GetRequestedSpeedMMps(void)
