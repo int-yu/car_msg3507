@@ -32,11 +32,7 @@ static uint8_t Main26H_HasSignal(const App_UpdateContext_t *context,
 
 static uint8_t Main26H_BallIsActive(void)
 {
-    BallSequence_State_t state = BallSequence_GetState();
-
-    return ((state == BALL_SEQUENCE_STATE_TO_PLUS) ||
-            (state == BALL_SEQUENCE_STATE_TO_MINUS) ||
-            (state == BALL_SEQUENCE_STATE_HOLD_MINUS)) ? 1U : 0U;
+    return BallSequence_IsActive();
 }
 
 static uint8_t Main26H_ReportBallStart(void)
@@ -52,7 +48,7 @@ static uint8_t Main26H_ReportBallStart(void)
         Serial1_SendString("ERR BALL BUSY\r\n");
         return 0U;
     }
-    if (BallSequence_Start() == 0U)
+    if (BallSequence_Start(BALL_SEQUENCE_DEFAULT_TARGET_MM) == 0U)
     {
         Serial1_SendString("ERR BALL VISION\r\n");
         return 0U;

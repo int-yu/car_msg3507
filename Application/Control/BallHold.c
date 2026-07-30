@@ -24,14 +24,6 @@ static void BallHold_Fail(BallHold_Error_t error)
     s_context.state = BALL_HOLD_STATE_ERROR;
 }
 
-/*
- * 车体加速度前馈。钢球在加速的小车上受惯性力，BallBalance 需要它来算出
- * theta_ff 抵消。这里必须用 MotionLine 的规划加速度而不是编码器差分：
- * 差分噪声会直接乘进摆杆倾角，钢球会抖到没法看。
- *
- * 小车静止（含底盘空闲）时 MotionLine 的规划加速度就是 0，所以要求 4 的
- * 静止这一步不受影响；A→B 直线接进来后这条路径自动生效，不必再改代码。
- */
 void BallHold_Init(void)
 {
     s_context.state = BALL_HOLD_STATE_READY;
@@ -45,25 +37,13 @@ void BallHold_Init(void)
 
 uint8_t BallHold_Start(void)
 {
-    if (BallBalance_Start() != BALL_BALANCE_RESULT_OK)
+    if (BallBalance_Start(BALL_HOLD_TARGET_MM) != BALL_BALANCE_RESULT_OK)
     {
         s_context.error = BALL_HOLD_ERROR_VISION;
         s_context.state = BALL_HOLD_STATE_ERROR;
         return 0U;
     }
-    /*
-     * 目标恒为 O。BallBalance_Start() 已把轨迹参考对齐到钢球当前位置，
-     * 因此这里设 O 之后轨迹会从「球现在在哪」平滑走到 O——任意初始位置
-     * 都不会在第一拍产生大阶跃。
-     */
-    if (BallBalance_SetTarget(BALL_HOLD_TARGET_MM) !=
-        BALL_BALANCE_RESULT_OK)
-    {
-        BallHold_Fail(BALL_HOLD_ERROR_BALANCE);
-        return 0U;
-    }
 
-    BallBalance_SetCarAcceleration(0.0f);
     s_context.feedforwardMMps2 = 0.0f;
     s_context.elapsedTicks = 0U;
     s_context.convergeTicks = 0U;
@@ -80,8 +60,6 @@ void BallHold_Update(float dt)
         return;
     }
 
-    /* 前馈必须在闭环计算之前更新，本拍的车体加速度当拍就参与倾角。 */
-    BallBalance_SetCarAcceleration(0.0f);
     s_context.feedforwardMMps2 = 0.0f;
     BallBalance_Update(dt);
 

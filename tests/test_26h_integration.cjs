@@ -49,10 +49,10 @@ assert.match(fullMain, /holdStartRequested[\s\S]*?Main26H_ReportHoldStart\(\);/,
     'C5 must invoke the requirement 4 start path');
 assert.match(fullMain, /if \(holdStopRequested != 0U\)[\s\S]*?BallHold_Stop\(\);/,
     'C6 must stop the requirement 4 balance task');
-assert.ok(ball4.includes('BallBalance_SetTarget(BALL_HOLD_TARGET_MM)'),
-    'requirement 4 must use its fixed O-point target');
-assert.ok(ball4.includes('BallBalance_SetCarAcceleration(0.0f)'),
-    'stationary O-point hold must not apply chassis feedforward');
+assert.ok(ball4.includes('BallBalance_Start(BALL_HOLD_TARGET_MM)'),
+    'requirement 4 must start the PID controller with its fixed O-point target');
+assert.doesNotMatch(ball4, /BallBalance_SetCarAcceleration/,
+    'PID-only ball hold must not apply chassis feedforward');
 assert.doesNotMatch(ball4Header, /TuneFeedforward|TuneConvergeTimeout/,
     'requirement 4 must not publish runtime tuning variables');
 

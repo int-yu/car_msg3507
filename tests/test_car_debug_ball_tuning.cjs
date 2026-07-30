@@ -74,7 +74,7 @@ for (const required of [
     assert.ok(html.includes(required), `car_debug.html missing ${required}`);
 }
 
-for (const name of ['bgr', 'bzo', 'bhl', 'bgk', 'bkd', 'bkp']) {
+for (const name of ['bgr', 'bzo', 'bhl', 'bki', 'bkd', 'bkp']) {
     assert.ok(html.includes(`${name}:`),
         `ball parameter metadata missing ${name}`);
 }
@@ -85,15 +85,14 @@ assert.match(param,
 for (const required of [
     "if (p.startReply)",
     "if (command === 'C4') return (line) => line === 'OK BALL STOP'",
-    "s.bref <= -45 && Math.abs(s.bpos + 50) <= 5",
-    "s.ms - session.ballStableSinceMs >= 150",
+    "if (session.loop === 'ball' && !session.stopRequested)",
     "Math.abs(sample.bref) <= 0.5",
 ]) {
     assert.ok(html.includes(required), `ball session lifecycle missing ${required}`);
 }
 
 assert.match(html,
-    /ball:\s*\{[^]*geometry:[^]*sensor:[^]*model:[^]*damping:[^]*position:[^]*verify:/,
+    /ball:\s*\{[^]*geometry:[^]*sensor:[^]*position:[^]*damping:[^]*integral:[^]*verify:/,
     'ball focus stages must follow the physical calibration order');
 assert.match(readme, /`C3`[^\n]*要求 3[^\n]*KEY2/,
     'README must document C3 as the remote KEY2/requirement-3 start');
@@ -108,21 +107,20 @@ const computeBallMetrics = new Function(
     `${html.slice(metricsStart, metricsEnd)}\nreturn computeBallMetrics;`)();
 const metrics = computeBallMetrics([
     { ms: 0, bref: 0, bpos: 0 },
-    { ms: 100, bref: 10, bpos: 9 },
-    { ms: 500, bref: 50, bpos: 54 },
-    { ms: 600, bref: 48, bpos: 52 },
-    { ms: 900, bref: 0, bpos: -4 },
-    { ms: 1300, bref: -48, bpos: -60 },
-    { ms: 1400, bref: -50, bpos: -52 },
-    { ms: 1550, bref: -50, bpos: -50 },
+    { ms: 100, bref: 0, bpos: 22 },
+    { ms: 200, bref: 0, bpos: 14 },
+    { ms: 300, bref: 0, bpos: 8 },
+    { ms: 450, bref: 0, bpos: 4 },
+    { ms: 600, bref: 0, bpos: 3 },
+    { ms: 700, bref: 0, bpos: 2 },
+    { ms: 900, bref: 0, bpos: 1 },
 ]);
 assert.ok(metrics, 'requirement-3 metrics should be available');
-assert.equal(metrics.plusTimeMs, 400);
-assert.equal(metrics.plusOvershootMM, 4);
-assert.equal(metrics.minusOvershootMM, 10,
-    'negative peak must include samples after the +5 cm turn');
-assert.equal(metrics.minusTimeMs, 1450);
-assert.ok(metrics.trackingRmsMM > 4,
-    'tracking RMS must include both halves of the trajectory');
+assert.equal(metrics.targetMM, 0);
+assert.equal(metrics.convergeMs, 300);
+assert.equal(metrics.maxAbsErrorMM, 22);
+assert.ok(metrics.steadyRmsMM <= 5,
+    'steady RMS must describe target-hold error');
+assert.equal(metrics.pass, true);
 
 console.log('car_debug requirement-3 ball tuning contract passed');

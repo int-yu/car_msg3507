@@ -590,16 +590,16 @@ kbd {
         </div>
         <div id="ballSessionTools" class="ball-session-tools" style="display:none">
             <div class="ball-monitor-head">
-                <b id="ballMonitorTitle">要求 3 · O → +5 cm → -5 cm</b>
-                <span class="hint">实测与内部梯形参考同拍</span>
+                <b id="ballMonitorTitle">要求 3 · PID 保持目标位置</b>
+                <span class="hint">实测与目标参考同拍</span>
             </div>
             <div class="ball-track">
-                <span>-5 cm</span>
+                <span>-50 mm</span>
                 <div class="ball-track-rail">
                     <i class="ball-marker reference" data-ball-marker="reference"></i>
                     <i class="ball-marker position" data-ball-marker="position"></i>
                 </div>
-                <span>+5 cm</span>
+                <span>+50 mm</span>
             </div>
             <div class="ball-track-legend">
                 <span class="ball-track-key">钢球实测</span>
@@ -756,12 +756,12 @@ kbd {
                 <button type="button" id="btnBallOpenTuning">打开调参</button>
             </div>
             <div class="ball-track">
-                <span>-5 cm</span>
+                <span>-50 mm</span>
                 <div class="ball-track-rail">
                     <i class="ball-marker reference" data-ball-marker="reference"></i>
                     <i class="ball-marker position" data-ball-marker="position"></i>
                 </div>
-                <span>+5 cm</span>
+                <span>+50 mm</span>
             </div>
             <div class="ball-live-grid">
                 <span class="ball-live"><small>阶段</small><b data-ball-field="phase">待机</b></span>
@@ -769,7 +769,7 @@ kbd {
                 <span class="ball-live"><small>轨迹参考</small><b data-ball-field="reference">—</b></span>
                 <span class="ball-live"><small>跟踪误差</small><b data-ball-field="error">—</b></span>
             </div>
-            <p class="hint">要求3：C3 启动，到 -5 cm 稳定或满 5 秒后 C4 回中。要求4：钢球放在任意位置后 C5 启动收敛到 O 点，记满时长后 C6 回中。标定顺序 bgr/bzo → bhl → bgk → bkd → bkp，两个要求共用。</p>
+            <p class="hint">要求3：C3 启动 PID 保持目标位置，当前固件默认目标为 O 点 0 mm，C4 回中停止。标定顺序 bgr/bzo → bhl → bkp/bkd，bki 默认 0，确认无明显稳态误差后再少量加入。</p>
         </div>
 
         <div class="panel" id="videoDrivePanel">
@@ -1532,7 +1532,7 @@ function computeLineMetrics(samples) {
     };
 }
 
-/* 要求 3 指标：在 +50 mm 折返和 -50 mm 保持两处检查误差与总耗时。 */
+/* Ball hold metrics: target error, convergence time and steady error. */
 function computeBallMetrics(samples) {
     const values = samples.filter((s) =>
         Number.isFinite(s.ms) && Number.isFinite(s.bpos) &&
@@ -1541,73 +1541,66 @@ function computeBallMetrics(samples) {
         return null;
     }
 
-    const startIndex = values.findIndex((s) => Math.abs(s.bref) >= 2);
-    if (startIndex < 0) {
-        return null;
-    }
-    const startMs = values[startIndex].ms;
-    let turnIndex = -1;
-    let trackingSumSq = 0;
-    let trackingCount = 0;
-    let plusPeak = -Infinity;
-    let minusPeak = Infinity;
+    const TOL_MM = 10;
+    const STABLE_MS = 300;
+    const startMs = values[0].ms;
+    const targetMM = values[values.length - 1].bref;
+    let stableStartMs = null;
+    let convergeMs = null;
+    let errorSumSq = 0;
+    let errorCount = 0;
+    let maxAbsErrorMM = 0;
 
-    for (let i = startIndex; i < values.length; i += 1) {
+    for (let i = 0; i < values.length; i += 1) {
         const sample = values[i];
         const error = sample.bpos - sample.bref;
-        trackingSumSq += error * error;
-        trackingCount += 1;
-        if (sample.bpos > plusPeak) plusPeak = sample.bpos;
-        if (sample.bpos < minusPeak) minusPeak = sample.bpos;
-        if (turnIndex < 0 && i > startIndex && values[i - 1].bref >= 45 &&
-            sample.bref < values[i - 1].bref - 0.2) {
-            turnIndex = i - 1;
-        }
-    }
+        const absError = Math.abs(error);
+        errorSumSq += error * error;
+        errorCount += 1;
+        if (absError > maxAbsErrorMM) maxAbsErrorMM = absError;
 
-    const plusTimeMs = turnIndex >= 0 ? values[turnIndex].ms - startMs : null;
-    const plusErrorMM = turnIndex >= 0 ?
-        Math.abs(values[turnIndex].bpos - 50) : null;
-    let stableStartMs = null;
-    let minusTimeMs = null;
-    const minusSamples = [];
-
-    for (let i = Math.max(startIndex, turnIndex + 1); i < values.length; i += 1) {
-        const sample = values[i];
-        if (sample.bref > -45) {
-            continue;
-        }
-        minusSamples.push(sample);
-        if (Math.abs(sample.bpos + 50) <= 5) {
-            if (stableStartMs === null) stableStartMs = sample.ms;
-            if (sample.ms - stableStartMs >= 150 && minusTimeMs === null) {
-                minusTimeMs = sample.ms - startMs;
+        if (absError <= TOL_MM) {
+            if (stableStartMs === null) {
+                stableStartMs = sample.ms;
+            } else if (convergeMs === null &&
+                       sample.ms - stableStartMs >= STABLE_MS) {
+                convergeMs = stableStartMs - startMs;
             }
         } else {
             stableStartMs = null;
         }
     }
 
-    const tail = minusSamples.slice(-Math.min(8, minusSamples.length));
-    const minusErrorMM = tail.length > 0 ?
-        tail.reduce((sum, sample) => sum + Math.abs(sample.bpos + 50), 0) /
-            tail.length : null;
-    const trackingRmsMM = trackingCount > 0 ?
-        Math.sqrt(trackingSumSq / trackingCount) : null;
-    const pass = plusErrorMM !== null && minusErrorMM !== null &&
-        minusTimeMs !== null && plusErrorMM <= 10 && minusErrorMM <= 10 &&
-        minusTimeMs <= 5000;
+    const steadyFromMs = convergeMs !== null ?
+        startMs + convergeMs : values[values.length - 1].ms - 1000;
+    const steady = values.filter((s) => s.ms >= steadyFromMs);
+    let steadySumSq = 0;
+    let steadyMaxAbs = 0;
+    let steadySum = 0;
+    for (const sample of steady) {
+        const error = sample.bpos - sample.bref;
+        const absError = Math.abs(error);
+        steadySumSq += error * error;
+        steadySum += error;
+        if (absError > steadyMaxAbs) steadyMaxAbs = absError;
+    }
+
+    const trackingRmsMM = errorCount > 0 ?
+        Math.sqrt(errorSumSq / errorCount) : null;
+    const steadyRmsMM = steady.length > 0 ?
+        Math.sqrt(steadySumSq / steady.length) : null;
+    const steadyBiasMM = steady.length > 0 ? steadySum / steady.length : null;
+    const pass = convergeMs !== null && steadyMaxAbs <= TOL_MM &&
+        steadyRmsMM !== null && steadyRmsMM <= TOL_MM;
 
     return {
-        plusTimeMs,
-        plusErrorMM,
-        plusOvershootMM: Number.isFinite(plusPeak) ?
-            Math.max(0, plusPeak - 50) : null,
-        minusTimeMs,
-        minusErrorMM,
-        minusOvershootMM: Number.isFinite(minusPeak) ?
-            Math.max(0, -50 - minusPeak) : null,
+        targetMM,
+        convergeMs,
+        maxAbsErrorMM,
         trackingRmsMM,
+        steadyRmsMM,
+        steadyMaxAbsMM: steady.length > 0 ? steadyMaxAbs : null,
+        steadyBiasMM,
         pass,
     };
 }
@@ -1706,7 +1699,7 @@ function computeHoldMetrics(samples) {
         }
     }
 
-    /* 跟踪误差：球跟不跟得上梯形参考，用来区分「参考没动」和「球没跟上」。 */
+    /* Tracking error against the active target/reference. */
     let trackingSumSq = 0;
     for (const sample of values) {
         const error = sample.bpos - sample.bref;
@@ -1811,9 +1804,9 @@ function describeRunMetrics(loop, metrics, focusSide = 'both') {
     }
     if (loop === 'ball') {
         const mm = (value) => value === null ? '—' : value.toFixed(1) + 'mm';
-        return `+5cm 到位${ms(metrics.plusTimeMs)} 误差${mm(metrics.plusErrorMM)}` +
-               `；-5cm 稳定${ms(metrics.minusTimeMs)} 末端误差${mm(metrics.minusErrorMM)}` +
-               `；跟踪RMS ${mm(metrics.trackingRmsMM)}` +
+        return `目标${mm(metrics.targetMM)} 收敛${ms(metrics.convergeMs)}` +
+               `；稳态RMS ${mm(metrics.steadyRmsMM)} 最大${mm(metrics.steadyMaxAbsMM)}` +
+               `；全程RMS ${mm(metrics.trackingRmsMM)}` +
                `；${metrics.pass ? '要求3达标' : '要求3未达标'}`;
     }
     if (loop === 'hold') {
@@ -2033,19 +2026,19 @@ const SESSIONS = {
         fixedAmp: 50, ampVisible: false, timed: true, durDefault: 5, rate: 100,
         excite: () => 'C3', stopCmd: 'C4', startReply: 'OK BALL START',
         stopReply: 'OK BALL STOP',
-        params: ['bgr', 'bzo', 'bhl', 'bgk', 'bkd', 'bkp'],
-        structure: 'K230 球位 -> 梯形位置参考(bref) -> PD(bkp,bkd)+重力耦合(bgk) -> 摆杆倾角 -> 齿轮比(bgr)+零偏(bzo) -> 步进；要求3固定 O→+50→-50 mm，车体保持静止',
-        columnsNote: 'bpos=K230 钢球实测位置mm，bref=BallBalance 内部梯形轨迹参考位置mm；两列在同一控制拍采样',
-        expectation: '+50 mm 折返点与 -50 mm 保持点误差均不超过 10 mm，5 s 内到达 -50 mm 并连续稳定，曲线无明显过冲和持续振荡',
+        params: ['bgr', 'bzo', 'bhl', 'bkp', 'bkd', 'bki'],
+        structure: 'K230 球位 -> PID(bkp,bki,bkd) -> 摆杆倾角 -> 齿轮比(bgr)+零偏(bzo) -> 步进；C3 当前默认保持 O 点 0 mm，不使用前馈',
+        columnsNote: 'bpos=K230 钢球实测位置mm，bref=BallBalance 当前目标位置mm；两列在同一控制拍采样',
+        expectation: '钢球稳定在目标位置 ±10 mm 内，曲线无明显过冲和持续振荡；bki 默认 0，先用 bkp/bkd 跑稳',
     },
     hold: {
         label: '要求4保持O点', mask: CH.bpos | CH.bref,
         ampVisible: false, timed: true, durDefault: 10, rate: 100,
         excite: () => 'C5', stopCmd: 'C6', startReply: 'OK HOLD START',
         stopReply: 'OK HOLD STOP',
-        params: ['bgr', 'bzo', 'bhl', 'bgk', 'bkd', 'bkp'],
-        structure: 'K230 球位 -> 目标恒为 O 的梯形位置参考(bref) -> PD(bkp,bkd)+重力耦合(bgk) -> 摆杆倾角 -> 齿轮比(bgr)+零偏(bzo) -> 步进；本步车体静止，车体加速度前馈固定为 0',
-        columnsNote: 'bpos=K230 钢球实测位置mm，bref=目标恒为 0 的梯形参考位置mm；两列在同一控制拍采样',
+        params: ['bgr', 'bzo', 'bhl', 'bkp', 'bkd', 'bki'],
+        structure: 'K230 球位 -> 目标恒为 O 的 PID(bkp,bki,bkd) -> 摆杆倾角 -> 齿轮比(bgr)+零偏(bzo) -> 步进；本步车体静止，不使用前馈',
+        columnsNote: 'bpos=K230 钢球实测位置mm，bref=目标恒为 0 mm；两列在同一控制拍采样',
         expectation: '钢球从任意位置放下都能收敛到 O 点：bref 平滑走到 0，bpos 跟随并稳定在 ±10 mm 内，无持续往复振荡；手拨扰动后能自动回到 O',
     },
 };
@@ -2161,24 +2154,25 @@ const TUNING_FOCUS = {
         stages: {
             geometry: { label: '① 机械标定', help: '先调 bgr / bzo：确认传动比与水平零点，摆杆上电必须水平。' },
             sensor: { label: '② 视觉标定', help: '只调 bhl：把钢球放在已知刻度，校准 K230 千分比到毫米。' },
-            model: { label: '③ 重力模型', help: '只调 bgk：固定小倾角，按实测球加速度校准重力耦合。' },
-            damping: { label: '④ 阻尼 D', help: '先调 bkd 压住过冲和往复，不要加入积分项。' },
-            position: { label: '⑤ 比例 P', help: '最后调 bkp 缩短跟踪误差，避免倾角长期顶到限位。' },
-            verify: { label: '⑥ 验证', help: '固定 O→+5→-5，自动检查两个点的误差与 5 秒总时间。' },
+            position: { label: '③ 比例 P', help: '先调 bkp，让钢球能朝目标方向回收，避免倾角长期顶到限位。' },
+            damping: { label: '④ 阻尼 D', help: '再调 bkd 压住过冲和往复。' },
+            integral: { label: '⑤ 积分 I', help: 'bki 默认 0；只有确认存在稳定偏差且 P/D 已经调顺后，再小量加入。' },
+            verify: { label: '⑥ 验证', help: '固定目标位置，自动检查稳态误差、RMS 和收敛时间。' },
         },
         sides: {
             main: {
                 label: '摆杆', series: ['bref', 'bpos'],
                 mask: CH.bpos | CH.bref,
                 params: {
-                    geometry: ['bgr', 'bzo'], sensor: ['bhl'], model: ['bgk'],
-                    damping: ['bkd'], position: ['bkp'], verify: [],
+                    geometry: ['bgr', 'bzo'], sensor: ['bhl'],
+                    position: ['bkp'], damping: ['bkd'],
+                    integral: ['bki'], verify: [],
                 },
             },
         },
     },
     /*
-     * 要求 4 与要求 3 共用 bgr/bzo/bhl/bgk/bkd/bkp——同一套摆杆物理量只该有
+     * 要求 4 与要求 3 共用 bgr/bzo/bhl/bkp/bkd/bki——同一套摆杆物理量只该有
      * 一处真值。所以这里不重复机械和视觉标定阶段，直接从「放球收敛」开始，
      * 并假定要求 3 的前四步已经做过（阶段提示里写清楚了）。
      */
@@ -2240,7 +2234,7 @@ const PARAM_LABELS = {
     nvx: '转向最高速', nvn: '转向最低速', nsa: '转向减速角', ntl: '到角容差',
     gsc: '陀螺尺度', cpm: '编码计数/mm',
     bkp: '摆球比例 Kp（度/mm）', bkd: '摆球阻尼 Kd（度/(mm/s)）',
-    bgk: '重力耦合（(mm/s²)/度）', bhl: '视觉半杆长（mm）',
+    bki: '摆球积分 Ki（度/(mm·s)）', bhl: '视觉半杆长（mm）',
     bgr: '摆杆传动比', bzo: '摆杆水平零偏（度）',
 };
 const PARAM_GROUPS = {
@@ -2261,7 +2255,7 @@ const PARAM_GROUPS = {
     h2app: '要求2单圈巡线', h2arm: '要求2单圈巡线',
     h2max: '要求2单圈巡线', h2off: '要求2单圈巡线',
     bkp: '摆杆滚球（要求3/4共用）', bkd: '摆杆滚球（要求3/4共用）',
-    bgk: '摆杆滚球（要求3/4共用）', bhl: '摆杆滚球（要求3/4共用）',
+    bki: '摆杆滚球（要求3/4共用）', bhl: '摆杆滚球（要求3/4共用）',
     bgr: '摆杆滚球（要求3/4共用）', bzo: '摆杆滚球（要求3/4共用）',
 };
 const PARAM_STORE_KEY = 'carDebugParamsV1';
@@ -2279,7 +2273,7 @@ const PARAM_NUDGE_STEPS = {
     lra: 0.01, lkd: 0.05, lcv: 10, lch: 100, lacc: 10, ldec: 10,
     h2cru: 10, h2fin: 10, h2clr: 10, h2lap: 10,
     h2app: 10, h2arm: 10, h2max: 10, h2off: 1,
-    bkp: 0.01, bkd: 0.005, bgk: 2, bhl: 1, bgr: 0.1, bzo: 0.1,
+    bkp: 0.01, bkd: 0.005, bki: 0.001, bhl: 1, bgr: 0.1, bzo: 0.1,
 };
 
 let port = null;
@@ -3495,7 +3489,7 @@ function renderBallMonitor() {
     const title = $('ballMonitorTitle');
     if (title) {
         title.textContent = holdLoop ?
-            '要求 4 · 任意位置 → 稳定在 O 点' : '要求 3 · O → +5 cm → -5 cm';
+            '要求 4 · 任意位置 → 稳定在 O 点' : '要求 3 · PID 保持目标位置';
     }
     const sample = latestSample();
     const position = sample && Number.isFinite(sample.bpos) ? sample.bpos : null;
@@ -3523,16 +3517,9 @@ function renderBallMonitor() {
         phase = Math.abs(position) <= 10 ?
             (session.holdConvergedMs !== null ? '保持 O 点' : '接近 O 点') :
             '收敛到 O 点';
-    } else if (reference <= -45) {
-        phase = referenceDelta < -0.2 ? '前往 -5 cm' : '保持 -5 cm';
-    } else if (referenceDelta < -0.2) {
-        phase = reference >= 35 ? '折返' : '前往 -5 cm';
-    } else if (reference >= 45) {
-        phase = '等待 +5 cm 稳定';
-    } else if (referenceDelta > 0.2 || reference > 2) {
-        phase = '前往 +5 cm';
     } else if (session && session.loop === 'ball') {
-        phase = '从 O 点起步';
+        phase = Math.abs(position - reference) <= 10 ?
+            '保持目标' : '收敛到目标';
     }
 
     const values = {
@@ -4279,19 +4266,6 @@ function watchSession() {
     }
     const s = latestSample();
     if (session.loop === 'ball' && !session.stopRequested) {
-        const atMinus = s && Number.isFinite(s.ms) && Number.isFinite(s.bref) &&
-            Number.isFinite(s.bpos) && s.bref <= -45 && Math.abs(s.bpos + 50) <= 5;
-        if (atMinus) {
-            if (session.ballStableSinceMs === null) {
-                session.ballStableSinceMs = s.ms;
-            } else if (s.ms - session.ballStableSinceMs >= 150) {
-                requestSessionStop('要求3：-5 cm 已稳定').catch((err) => {
-                    log('要求3自动回中失败：' + err.message, 'err');
-                });
-            }
-        } else {
-            session.ballStableSinceMs = null;
-        }
         return;
     }
     /*
