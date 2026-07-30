@@ -2,7 +2,7 @@
 #define APPLICATION_COMMS_CAR_LINK_H
 
 /*
- * 主从对等链路协议源码。当前硬件配置已将 PB6/PB7 分配给步进 DIR/EN，
+ * 主从对等链路协议源码。当前 SysConfig 未实例化 UART1，
  * 因此 Serial2 是无物理 UART 的停用桩；恢复 HC05/UART1 后可继续使用本协议。
  *
  * 帧格式与 K230Link 完全同源（已在本工程验证过的范式）：

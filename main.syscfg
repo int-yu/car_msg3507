@@ -13,11 +13,11 @@ const Board   = scripting.addModule("/ti/driverlib/Board");
 const GPIO    = scripting.addModule("/ti/driverlib/GPIO", {}, false);
 const GPIO1   = GPIO.addInstance();
 const GPIO2   = GPIO.addInstance();
-const GPIO3   = GPIO.addInstance();
 const GPIO4   = GPIO.addInstance();
 const GPIO5   = GPIO.addInstance();
 const GPIO6   = GPIO.addInstance();
 const GPIO7   = GPIO.addInstance();
+const GPIO8   = GPIO.addInstance();
 const CAPTURE = scripting.addModule("/ti/driverlib/CAPTURE", {}, false);
 const CAPTURE1 = CAPTURE.addInstance();
 const I2C     = scripting.addModule("/ti/driverlib/I2C", {}, false);
@@ -55,9 +55,9 @@ GPIO1.associatedPins[5].pin.$assign  = "PB0";
 GPIO1.associatedPins[6].$name        = "MOTOR_BIN2";
 GPIO1.associatedPins[6].pin.$assign  = "PB1";
 GPIO1.associatedPins[7].$name        = "STEPPER_DIR";
-GPIO1.associatedPins[7].pin.$assign  = "PB6";
+GPIO1.associatedPins[7].pin.$assign  = "PB9";
 GPIO1.associatedPins[8].$name        = "STEPPER_EN";
-GPIO1.associatedPins[8].pin.$assign  = "PB7";
+GPIO1.associatedPins[8].pin.$assign  = "PB12";
 
 GPIO2.$name                         = "MPU_GPIO";
 GPIO2.associatedPins.create(2);
@@ -67,33 +67,6 @@ GPIO2.associatedPins[0].pin.$assign = "PB2";
 GPIO2.associatedPins[1].$name       = "SDA";
 GPIO2.associatedPins[1].direction   = "INPUT";
 GPIO2.associatedPins[1].pin.$assign = "PB3";
-
-GPIO3.$name                         = "GRAY_INPUTS";
-GPIO3.associatedPins.create(8);
-GPIO3.associatedPins[0].$name       = "CH0";
-GPIO3.associatedPins[0].direction   = "INPUT";
-GPIO3.associatedPins[0].pin.$assign = "PA29";
-GPIO3.associatedPins[1].$name       = "CH1";
-GPIO3.associatedPins[1].direction   = "INPUT";
-GPIO3.associatedPins[1].pin.$assign = "PB26";
-GPIO3.associatedPins[2].$name       = "CH2";
-GPIO3.associatedPins[2].direction   = "INPUT";
-GPIO3.associatedPins[2].pin.$assign = "PA13";
-GPIO3.associatedPins[3].$name       = "CH3";
-GPIO3.associatedPins[3].direction   = "INPUT";
-GPIO3.associatedPins[3].pin.$assign = "PB9";
-GPIO3.associatedPins[4].$name       = "CH4";
-GPIO3.associatedPins[4].direction   = "INPUT";
-GPIO3.associatedPins[4].pin.$assign = "PB8";
-GPIO3.associatedPins[5].$name       = "CH5";
-GPIO3.associatedPins[5].direction   = "INPUT";
-GPIO3.associatedPins[5].pin.$assign = "PB13";
-GPIO3.associatedPins[6].$name       = "CH6";
-GPIO3.associatedPins[6].direction   = "INPUT";
-GPIO3.associatedPins[6].pin.$assign = "PB12";
-GPIO3.associatedPins[7].$name       = "CH7";
-GPIO3.associatedPins[7].direction   = "INPUT";
-GPIO3.associatedPins[7].pin.$assign = "PB5";
 
 GPIO4.$name                         = "BUTTON_INPUTS";
 GPIO4.associatedPins.create(4);
@@ -145,20 +118,35 @@ GPIO6.associatedPins.create(1);
 GPIO6.associatedPins[0].$name               = "A";
 GPIO6.associatedPins[0].direction           = "INPUT";
 GPIO6.associatedPins[0].internalResistor    = "PULL_UP";
-GPIO6.associatedPins[0].interruptEn         = true;
+/* 步进运行时目前停用；启用 STEPPER_ENABLED 后由 Encoder_InitStepper()
+ * 显式打开双边沿中断，避免未接编码器时占用 GPIOA GROUP1。 */
+GPIO6.associatedPins[0].interruptEn         = false;
 GPIO6.associatedPins[0].polarity            = "RISE_FALL";
 GPIO6.associatedPins[0].assignedPortSegment = "Lower";
-GPIO6.associatedPins[0].pin.$assign         = "PA8";
+GPIO6.associatedPins[0].pin.$assign         = "PA13";
 
-GPIO7.$name                                 = "STEPPER_ENCODER_B";
-GPIO7.associatedPins.create(1);
-GPIO7.associatedPins[0].$name               = "B";
-GPIO7.associatedPins[0].direction           = "INPUT";
-GPIO7.associatedPins[0].internalResistor    = "PULL_UP";
-GPIO7.associatedPins[0].interruptEn         = true;
-GPIO7.associatedPins[0].polarity            = "RISE_FALL";
-GPIO7.associatedPins[0].assignedPortSegment = "Upper";
-GPIO7.associatedPins[0].pin.$assign         = "PA25";
+/* 六路红外学习模块：教程定义 +5V/GND/SDA/SCL；现有线束中 PA25= SDA、
+ * PA14 = SCL。该芯片没有把 PA25 复用为硬件 I2C SDA，因此此组供软件
+ * I2C 开漏驱动使用。步进新映射在 PB8/PB9/PB12、PA13/PA29、PB13，
+ * 与本通信线无重叠。 */
+GPIO7.$name                         = "LINE_FOLLOWER_I2C";
+GPIO7.associatedPins.create(2);
+GPIO7.associatedPins[0].$name       = "LINE_SDA";
+GPIO7.associatedPins[0].direction   = "INPUT";
+GPIO7.associatedPins[0].pin.$assign = "PA25";
+GPIO7.associatedPins[1].$name       = "LINE_SCL";
+GPIO7.associatedPins[1].direction   = "INPUT";
+GPIO7.associatedPins[1].pin.$assign = "PA14";
+
+GPIO8.$name                                 = "STEPPER_ENCODER_B";
+GPIO8.associatedPins.create(1);
+GPIO8.associatedPins[0].$name               = "B";
+GPIO8.associatedPins[0].direction           = "INPUT";
+GPIO8.associatedPins[0].internalResistor    = "PULL_UP";
+GPIO8.associatedPins[0].interruptEn         = false;
+GPIO8.associatedPins[0].polarity            = "RISE_FALL";
+GPIO8.associatedPins[0].assignedPortSegment = "Upper";
+GPIO8.associatedPins[0].pin.$assign         = "PA29";
 
 CAPTURE1.$name                      = "STEPPER_ABS_CAPTURE";
 CAPTURE1.ccIndex                    = 0;
@@ -167,7 +155,7 @@ CAPTURE1.timerClkPrescale           = 1;
 CAPTURE1.timerPeriod                = "16.384 ms";
 CAPTURE1.interrupts                 = ["CC1_DN","ZERO"];
 CAPTURE1.peripheral.$assign         = "TIMG12";
-CAPTURE1.peripheral.ccp0Pin.$assign = "PA14";
+CAPTURE1.peripheral.ccp0Pin.$assign = "PB13";
 CAPTURE1.ccp0PinConfig.$name        = "ti_driverlib_gpio_GPIOPinGeneric12";
 
 I2C1.$name                             = "OLED_I2C";
@@ -232,7 +220,7 @@ PWM3.timerCount                         = 62500;
 PWM3.enableRepeatCounter                = true;
 PWM3.repeatCounter                      = 1;
 PWM3.peripheral.$assign                 = "TIMA0";
-PWM3.peripheral.ccp0Pin.$assign         = "PA0";
+PWM3.peripheral.ccp0Pin.$assign         = "PB8";
 PWM3.PWM_CHANNEL_0.$name                = "STEPPER_ST";
 PWM3.PWM_CHANNEL_0.dutyCycle            = 50;
 PWM3.ccp0PinConfig.$name                = "ti_driverlib_gpio_GPIOPinGeneric13";

@@ -7,21 +7,22 @@
 #include "Application/State/Odometry.h"
 #include "Hardware/Board/Key.h"
 #include "Hardware/Display/OLED.h"
-#include "Hardware/Motor/Stepper.h"
 #include "Hardware/Sensors/Graydetect.h"
 #include "System/Tick.h"
 
 static uint8_t s_refreshTicks;
 
-static void DebugDisplay_ShowGrayState(uint8_t state)
+static void DebugDisplay_ShowLineFollowerState(uint8_t state, uint8_t online)
 {
     uint8_t index;
 
-    OLED_ShowString(0, 8, "GRAY:", OLED_6X8);
+    OLED_ShowString(0, 8, "IR:", OLED_6X8);
     for (index = 0U; index < GRAY_CHANNEL_COUNT; index++)
     {
-        OLED_ShowChar((int16_t)(30 + index * OLED_6X8), 8,
-                      ((state >> index) & 1U) != 0U ? '1' : '0',
+        OLED_ShowChar((int16_t)(18 + index * OLED_6X8), 8,
+                      (online != 0U) ?
+                          ((((state >> index) & 1U) != 0U) ? '1' : '0') :
+                          '-',
                       OLED_6X8);
     }
 }
@@ -53,7 +54,12 @@ static void DebugDisplay_ShowMotionState(void)
 {
     MotionManager_Mode_t mode = MotionManager_GetMode();
 
-    if ((MotionManager_GetError() != MOTION_MANAGER_ERROR_NONE) ||
+    if (Accomplish26H_GetState() == ACCOMPLISH_26H_STATE_ERROR)
+    {
+        OLED_Printf(0, 56, OLED_6X8, "H:E%u",
+                    (unsigned)Accomplish26H_GetError());
+    }
+    else if ((MotionManager_GetError() != MOTION_MANAGER_ERROR_NONE) ||
         (Mission_GetStatus() == MISSION_STATUS_ERROR))
     {
         OLED_ShowString(0, 56, "M:ERROR", OLED_6X8);
@@ -159,8 +165,8 @@ static void DebugDisplay_ShowElapsedTime(void)
 void DebugDisplay_Update(uint8_t elapsedTicks)
 {
     uint8_t grayState;
+    uint8_t lineFollowerOnline;
     uint8_t keyMask;
-    Stepper_Status_t stepperStatus;
 
     if ((uint16_t)s_refreshTicks + elapsedTicks <
         DEBUG_DISPLAY_REFRESH_TICKS)
@@ -171,6 +177,7 @@ void DebugDisplay_Update(uint8_t elapsedTicks)
     s_refreshTicks = 0U;
 
     grayState = Graydetect_GetState();
+    lineFollowerOnline = Graydetect_IsOnline();
     keyMask = Key_GetPressedMask();
 
     OLED_Clear();
@@ -179,19 +186,14 @@ void DebugDisplay_Update(uint8_t elapsedTicks)
         OLED_Update();
         return;
     }
-    Stepper_GetStatus(&stepperStatus);
-
     DebugDisplay_ShowElapsedTime();
 
-    DebugDisplay_ShowGrayState(grayState);
+    DebugDisplay_ShowLineFollowerState(grayState, lineFollowerOnline);
     DebugDisplay_ShowKeyState(keyMask);
     DebugDisplay_ShowMotionValue(24, "LD:", Odometry_GetDistanceLMM(), "mm");
-    OLED_ShowString(0, 32, "EC:", OLED_6X8);
-    OLED_ShowSignedNum(
-        18, 32, stepperStatus.encoderCounts, 10U, OLED_6X8);
+    DebugDisplay_ShowMotionValue(32, "LV:", Odometry_GetSpeedL(), "mm/s");
     DebugDisplay_ShowMotionValue(40, "RD:", Odometry_GetDistanceRMM(), "mm");
-    DebugDisplay_ShowMotionValue(
-        48, "EA:", stepperStatus.multiTurnAngleDeg, "deg");
+    DebugDisplay_ShowMotionValue(48, "RV:", Odometry_GetSpeedR(), "mm/s");
 
     DebugDisplay_ShowMotionState();
     OLED_Update();

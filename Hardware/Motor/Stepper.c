@@ -1,5 +1,7 @@
 #include "Hardware/Motor/Stepper.h"
 
+#if STEPPER_ENABLED
+
 #include "Hardware/Motor/EncoderStepper.h"
 #include "ti_msp_dl_config.h"
 
@@ -882,3 +884,79 @@ void STEPPER_ABS_CAPTURE_INST_IRQHandler(void)
             break;
     }
 }
+
+#else
+
+/* 新步进引脚完成前的安全桩：所有调用均不触碰旧 PA25/PA14。 */
+void Stepper_Init(void) {}
+
+void Stepper_Update(uint8_t elapsedTicks)
+{
+    (void)elapsedTicks;
+}
+
+Stepper_Result_t Stepper_Enable(bool enable)
+{
+    (void)enable;
+    return STEPPER_RESULT_DISABLED;
+}
+
+Stepper_Result_t Stepper_MoveBySteps(
+    int32_t steps, const Stepper_Profile_t *profile)
+{
+    (void)steps;
+    (void)profile;
+    return STEPPER_RESULT_DISABLED;
+}
+
+Stepper_Result_t Stepper_MoveToSteps(
+    int32_t target, const Stepper_Profile_t *profile)
+{
+    (void)target;
+    (void)profile;
+    return STEPPER_RESULT_DISABLED;
+}
+
+Stepper_Result_t Stepper_MoveByAngle(
+    float degrees, const Stepper_Profile_t *profile)
+{
+    (void)degrees;
+    (void)profile;
+    return STEPPER_RESULT_DISABLED;
+}
+
+Stepper_Result_t Stepper_MoveToAngle(
+    float degrees, const Stepper_Profile_t *profile)
+{
+    (void)degrees;
+    (void)profile;
+    return STEPPER_RESULT_DISABLED;
+}
+
+void Stepper_Stop(void) {}
+
+void Stepper_EmergencyStop(void) {}
+
+Stepper_Result_t Stepper_SetCurrentPosition(float degrees)
+{
+    (void)degrees;
+    return STEPPER_RESULT_DISABLED;
+}
+
+bool Stepper_IsBusy(void)
+{
+    return false;
+}
+
+void Stepper_GetStatus(Stepper_Status_t *status)
+{
+    Stepper_Status_t disabledStatus = {0};
+
+    if (status != 0)
+    {
+        disabledStatus.state = STEPPER_STATE_DISABLED;
+        *status = disabledStatus;
+    }
+}
+
+#endif

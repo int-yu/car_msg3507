@@ -20,9 +20,9 @@
 #include "ti_msp_dl_config.h"
 #include <stddef.h>
 
-/* KEY1 在按键位图中是 bit0（Mission 用它启动任务）；KEY2 是 bit1，
- * 在这里作为车载物理急停，与远端 C0 等价。 */
-#define APP_STOP_KEY_MASK 0x02U
+/* KEY1 是 bit0，KEY2 是 bit1。两键同时按下才是车载物理急停，
+ * 与远端 C0 等价；KEY2 单独按下保留给任务自行使用。 */
+#define APP_STOP_KEY_CHORD_MASK (0x01U | 0x02U)
 
 static uint8_t s_previousKeyMask;
 static MotionManager_Error_t s_previousMotionError;
@@ -198,8 +198,10 @@ uint8_t App_Update(App_UpdateContext_t *context)
 
     Heading_Update(context->dt);
     Odometry_Update(elapsedTicks);
+    /* 六路红外 I2C 只在这里采样一次；巡线、任务、OLED 和遥测随后读取同一帧缓存。 */
+    Graydetect_Update();
     Stepper_Update(elapsedTicks);
-    /* 云台 F32C 仍停用；Serial2 的 PB6/PB7 已改作步进 DIR/EN。 */
+    /* 云台 F32C 仍停用；步进资源已迁移到独立的新引脚，Serial2 仍无硬件实例。 */
     /* Gimbal_Update(context->dt); */
 
     keyMask = Key_GetPressedMask();
@@ -216,9 +218,11 @@ uint8_t App_Update(App_UpdateContext_t *context)
     context->hasBluetoothSignal =
         BluetoothDebug_PopSignal(&context->bluetoothSignal);
 
-    /* KEY2 车载物理急停：合成一条 C0 停车信号，让 App 与 Mission 走同一套
-     * 全局停车 + 复位到等待的流程，效果与远端 C0 完全一致。 */
-    if ((context->pressedEdges & APP_STOP_KEY_MASK) != 0U)
+    /* KEY1+KEY2 车载物理急停：只在组合刚形成时合成一次 C0，避免按住时
+     * 每拍重复发事件。Accomplish26H 随后根据 pressedKeys 冻结计时。 */
+    if ((((context->pressedKeys & APP_STOP_KEY_CHORD_MASK) ==
+          APP_STOP_KEY_CHORD_MASK)) &&
+        ((context->pressedEdges & APP_STOP_KEY_CHORD_MASK) != 0U))
     {
         context->hasBluetoothSignal = 1U;
         context->bluetoothSignal = 0U;

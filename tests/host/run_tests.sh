@@ -32,6 +32,14 @@ gcc $CFLAGS \
     -o "$OUT/test_26h.exe"
 "$OUT/test_26h.exe"
 
+echo "--- test_motionline ---"
+gcc $CFLAGS \
+    "$ROOT/tests/host/test_motionline.c" \
+    "$ROOT/Application/Control/MotionLine.c" \
+    -lm \
+    -o "$OUT/test_motionline.exe"
+"$OUT/test_motionline.exe"
+
 if [ -f "$ROOT/tests/host/test_motionlane.c" ]; then
     echo "--- test_motionlane ---"
     gcc $CFLAGS \

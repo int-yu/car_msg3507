@@ -1,4 +1,5 @@
 #include "Application/Debug/Param.h"
+#include "Accomplish/26H.h"
 #include "Application/Control/MotionLane.h"
 #include "Application/Control/MotionLine.h"
 #include "Application/Control/MotionStraight.h"
@@ -125,6 +126,7 @@ PARAM_VAR_ACCESSORS(NavMinSpeed, Nav_TuneMinTurnSpeedMMps)
 PARAM_VAR_ACCESSORS(NavSlowdownAngle, Nav_TuneSlowdownAngleDeg)
 PARAM_VAR_ACCESSORS(NavTolerance, Nav_TuneAngleToleranceDeg)
 PARAM_VAR_ACCESSORS(CountsPerMM, Odometry_CountsPerMM)
+PARAM_VAR_ACCESSORS(H2FinishRollout, Accomplish26H_TuneFinishRolloutMM)
 
 /* 陀螺仪尺度因子保存在 Heading 内部，经既有接口读写。 */
 static float Param_GetGyroScale(void) { return Heading_GetScale(); }
@@ -173,6 +175,8 @@ static const Param_Entry_t s_params[] = {
     { "vkp", Param_GetLaneKp, Param_SetLaneKp, 0.0f, 5.0f },
     { "vkd", Param_GetLaneKdYaw, Param_SetLaneKdYaw, 0.0f, 10.0f },
     { "vra", Param_GetLaneRatio, Param_SetLaneRatio, 0.05f, 1.0f },
+    { "h2off", Param_GetH2FinishRollout, Param_SetH2FinishRollout,
+      0.0f, 300.0f },
 };
 
 #define PARAM_COUNT (sizeof(s_params) / sizeof(s_params[0]))

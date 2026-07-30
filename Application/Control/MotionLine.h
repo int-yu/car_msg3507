@@ -3,12 +3,17 @@
 
 #include <stdint.h>
 
-/* 主车八路、从车五路灰度巡线参数：灰度返回 1 表示检测到黑线。 */
-#define MOTION_LINE_OUTER_WEIGHT        6       /* 左右最外侧灰度权重的绝对值。 */
-#define MOTION_LINE_INNER_WEIGHT        3       /* 左右内侧灰度权重的绝对值。 */
-#define MOTION_LINE_MAX_ADJUST_RATIO    0.2f    /* 最外侧压线时，每侧增减当前速度的比例。 */
-#define MOTION_LINE_MAX_SPEED_MMPS      1000.0f /* MotionLine_Start() 允许的巡线速度上限。 */
-#define MOTION_LINE_LOST_CONFIRM_TICKS  50U     /* 连续全白 50 个控制节拍后确认丢线。 */
+/* 六路红外巡线参数：状态位为 1 表示检测到已学习的黑线目标色。 */
+#define MOTION_LINE_OUTER_WEIGHT          6       /* 最外侧通道的权重绝对值。 */
+#define MOTION_LINE_INNER_WEIGHT          3       /* 内侧通道的权重绝对值。 */
+#define MOTION_LINE_MAX_ADJUST_RATIO      0.2f    /* 最外侧压线时，每侧增减当前速度的比例。 */
+#define MOTION_LINE_MAX_SPEED_MMPS        1000.0f /* MotionLine_Start() 允许的巡线速度上限。 */
+#define MOTION_LINE_ACCELERATION_MMPS2    300.0f  /* 启动/提速斜坡；避免目标速度突变。 */
+#define MOTION_LINE_DECELERATION_MMPS2    360.0f  /* 降速/停车斜坡；低于急停的安全减速度。 */
+#define MOTION_LINE_CURVE_MIN_SPEED_RATIO 0.68f   /* 最外侧压线时的最低巡线速度比例。 */
+#define MOTION_LINE_WEIGHT_FILTER_ALPHA   0.25f   /* 六路离散位置的一阶低通系数（约 40 ms）。 */
+#define MOTION_LINE_MAX_ADJUST_RATE_MMPS2 1200.0f /* 左右差速修正的最大变化率。 */
+#define MOTION_LINE_LOST_CONFIRM_TICKS    8U      /* 连续全白 80 ms 后确认丢线。 */
 
 /* 运行时可调参数：上电恢复默认值，由 K 命令经 Param 模块读写，写入即生效。
  * TuneWeightKd 是权重变化率阻尼（mm/s 每 权重单位/s），默认 0 时行为与
@@ -42,6 +47,9 @@ typedef enum
 MotionLine_Result_t MotionLine_Init(void);
 /* 持续巡线，直到调用 MotionLine_Stop() 或确认丢线。 */
 MotionLine_Result_t MotionLine_Start(float speedMMps);
+/* 运行中平滑修改基准速度；speed=0 会按减速度斜坡停车并进入 FINISHED。 */
+MotionLine_Result_t MotionLine_SetSpeed(float speedMMps);
+MotionLine_Result_t MotionLine_RequestStop(void);
 void MotionLine_Update(float dt);
 void MotionLine_Stop(void);
 
@@ -51,5 +59,7 @@ uint8_t MotionLine_IsFinished(void);
 MotionLine_State_t MotionLine_GetState(void);
 MotionLine_Error_t MotionLine_GetError(void);
 float MotionLine_GetLineError(void);
+float MotionLine_GetRequestedSpeedMMps(void);
+float MotionLine_GetProfileSpeedMMps(void);
 
 #endif

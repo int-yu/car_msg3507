@@ -56,6 +56,9 @@ MotionManager_Result_t MotionManager_StartForward(
 MotionManager_Result_t MotionManager_StartBackward(
     uint32_t distanceMM, float speedMMps, float endSpeedMMps);
 MotionManager_Result_t MotionManager_StartLine(float speedMMps);
+/* 仅在巡线模式中平滑修改速度或请求软停，不抢占当前巡线控制器。 */
+MotionManager_Result_t MotionManager_SetLineSpeed(float speedMMps);
+MotionManager_Result_t MotionManager_RequestLineStop(void);
 /* 视觉巡道。K230 未握手时不要调用——MotionLane 会立刻判丢失并结束。 */
 MotionManager_Result_t MotionManager_StartLane(float speedMMps);
 MotionManager_Result_t MotionManager_TurnTo(

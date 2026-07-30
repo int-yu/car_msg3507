@@ -1,5 +1,101 @@
 #include "Accomplish/26H.h"
+#include "Application/Control/MotionManager.h"
+#include "Hardware/Sensors/Graydetect.h"
 #include "tests/host/test_assert.h"
+
+static uint8_t s_lineOnline;
+static uint8_t s_lineState;
+static float s_distanceMM;
+static float s_speedLMMps;
+static float s_speedRMMps;
+static MotionManager_Mode_t s_motionMode;
+static MotionManager_Error_t s_motionError;
+static uint8_t s_motionBusy;
+static uint8_t s_motionFinished;
+static MotionManager_Result_t s_startResult;
+static uint16_t s_startLineCount;
+static uint16_t s_setSpeedCount;
+static uint16_t s_requestStopCount;
+static uint16_t s_stopCount;
+static float s_lastLineSpeedMMps;
+
+/* ---- 26H 状态机使用的最小宿主桩 ---- */
+uint8_t Graydetect_IsOnline(void) { return s_lineOnline; }
+uint8_t Graydetect_GetState(void) { return s_lineState; }
+
+float Odometry_GetDistanceMM(void) { return s_distanceMM; }
+float Odometry_GetSpeedL(void) { return s_speedLMMps; }
+float Odometry_GetSpeedR(void) { return s_speedRMMps; }
+
+MotionManager_Result_t MotionManager_StartLine(float speedMMps)
+{
+    (void)speedMMps;
+    s_startLineCount++;
+    if (s_startResult == MOTION_MANAGER_RESULT_OK)
+    {
+        s_motionMode = MOTION_MANAGER_MODE_LINE;
+        s_motionBusy = 1U;
+        s_motionFinished = 0U;
+        s_motionError = MOTION_MANAGER_ERROR_NONE;
+    }
+    return s_startResult;
+}
+
+MotionManager_Result_t MotionManager_SetLineSpeed(float speedMMps)
+{
+    if (s_motionMode != MOTION_MANAGER_MODE_LINE)
+    {
+        return MOTION_MANAGER_RESULT_START_FAILED;
+    }
+    s_setSpeedCount++;
+    s_lastLineSpeedMMps = speedMMps;
+    return MOTION_MANAGER_RESULT_OK;
+}
+
+MotionManager_Result_t MotionManager_RequestLineStop(void)
+{
+    if (s_motionMode != MOTION_MANAGER_MODE_LINE)
+    {
+        return MOTION_MANAGER_RESULT_START_FAILED;
+    }
+    s_requestStopCount++;
+    return MOTION_MANAGER_RESULT_OK;
+}
+
+void MotionManager_Stop(void)
+{
+    s_stopCount++;
+    s_motionMode = MOTION_MANAGER_MODE_IDLE;
+    s_motionBusy = 0U;
+    s_motionFinished = 0U;
+    s_motionError = MOTION_MANAGER_ERROR_NONE;
+}
+
+uint8_t MotionManager_IsBusy(void) { return s_motionBusy; }
+uint8_t MotionManager_IsFinished(void) { return s_motionFinished; }
+MotionManager_Mode_t MotionManager_GetMode(void) { return s_motionMode; }
+MotionManager_Error_t MotionManager_GetError(void) { return s_motionError; }
+
+static void reset_fakes(void)
+{
+    s_lineOnline = 1U;
+    s_lineState = 0x03U;
+    s_distanceMM = 0.0f;
+    s_speedLMMps = 0.0f;
+    s_speedRMMps = 0.0f;
+    s_motionMode = MOTION_MANAGER_MODE_IDLE;
+    s_motionError = MOTION_MANAGER_ERROR_NONE;
+    s_motionBusy = 0U;
+    s_motionFinished = 0U;
+    s_startResult = MOTION_MANAGER_RESULT_OK;
+    s_startLineCount = 0U;
+    s_setSpeedCount = 0U;
+    s_requestStopCount = 0U;
+    s_stopCount = 0U;
+    s_lastLineSpeedMMps = 0.0f;
+    Accomplish26H_TuneFinishRolloutMM =
+        ACCOMPLISH_26H_FINISH_ROLLOUT_MM;
+}
 
 static App_UpdateContext_t make_context(
     uint8_t elapsedTicks, uint8_t pressedEdges)
@@ -11,126 +107,228 @@ static App_UpdateContext_t make_context(
     return context;
 }
 
-static void test_init_is_stopped_at_zero(void)
+static void start_one_lap(void)
 {
+    App_UpdateContext_t context = make_context(
+        1U, ACCOMPLISH_26H_START_STOP_KEY_MASK);
+
+    Accomplish26H_Update(&context);
+}
+
+static void leave_start_line(void)
+{
+    App_UpdateContext_t context = make_context(3U, 0U);
+
+    s_distanceMM = ACCOMPLISH_26H_START_CLEAR_DISTANCE_MM;
+    s_lineState = 0x03U;
+    Accomplish26H_Update(&context);
+}
+
+static void test_init_is_ready_at_zero(void)
+{
+    reset_fakes();
     Accomplish26H_Init();
+    CHECK(Accomplish26H_GetState() == ACCOMPLISH_26H_STATE_READY);
+    CHECK(Accomplish26H_GetError() == ACCOMPLISH_26H_ERROR_NONE);
     CHECK(Accomplish26H_IsTiming() == 0U);
     CHECK(Accomplish26H_GetElapsedTicks() == 0U);
 }
 
-static void test_first_key_edge_starts_without_counting_old_ticks(void)
+static void test_key1_starts_line_and_timer(void)
 {
-    App_UpdateContext_t context = make_context(
-        9U, ACCOMPLISH_26H_START_STOP_KEY_MASK);
-
+    reset_fakes();
     Accomplish26H_Init();
-    Accomplish26H_Update(&context);
+    start_one_lap();
+
+    CHECK(s_startLineCount == 1U);
+    CHECK(Accomplish26H_GetState() ==
+          ACCOMPLISH_26H_STATE_LEAVING_START);
     CHECK(Accomplish26H_IsTiming() != 0U);
     CHECK(Accomplish26H_GetElapsedTicks() == 0U);
 }
 
-static void test_running_timer_accumulates_all_elapsed_ticks(void)
+static void test_start_line_is_left_before_finish_is_armed(void)
 {
-    App_UpdateContext_t context = make_context(
-        1U, ACCOMPLISH_26H_START_STOP_KEY_MASK);
-
+    reset_fakes();
     Accomplish26H_Init();
-    Accomplish26H_Update(&context);
-    context = make_context(1U, 0U);
-    Accomplish26H_Update(&context);
-    context = make_context(37U, 0U);
-    Accomplish26H_Update(&context);
-    CHECK(Accomplish26H_GetElapsedTicks() == 38U);
+    start_one_lap();
+    leave_start_line();
+
+    CHECK(Accomplish26H_GetState() == ACCOMPLISH_26H_STATE_RUNNING);
+    CHECK(Accomplish26H_GetElapsedTicks() == 3U);
 }
 
-static void test_held_key_without_new_edge_does_not_toggle(void)
+static void test_finish_approach_slows_before_marker(void)
 {
-    App_UpdateContext_t context = make_context(
-        1U, ACCOMPLISH_26H_START_STOP_KEY_MASK);
+    App_UpdateContext_t context = make_context(1U, 0U);
 
+    reset_fakes();
     Accomplish26H_Init();
+    start_one_lap();
+    leave_start_line();
+
+    s_distanceMM = ACCOMPLISH_26H_NOMINAL_LAP_DISTANCE_MM -
+                   ACCOMPLISH_26H_FINISH_APPROACH_DISTANCE_MM;
     Accomplish26H_Update(&context);
-    context = make_context(5U, 0U);
-    context.pressedKeys = ACCOMPLISH_26H_START_STOP_KEY_MASK;
+    CHECK(s_setSpeedCount == 1U);
+    CHECK_NEAR(s_lastLineSpeedMMps,
+               ACCOMPLISH_26H_FINISH_CRAWL_SPEED_MMPS, 0.001f);
+}
+
+static void test_marker_soft_stops_then_settles_before_freezing_time(void)
+{
+    App_UpdateContext_t context = make_context(1U, 0U);
+
+    reset_fakes();
+    Accomplish26H_Init();
+    start_one_lap();
+    leave_start_line();
+
+    s_distanceMM = ACCOMPLISH_26H_NOMINAL_LAP_DISTANCE_MM;
+    s_lineState = 0x3FU;
     Accomplish26H_Update(&context);
+    CHECK(Accomplish26H_GetState() == ACCOMPLISH_26H_STATE_RUNNING);
+
+    Accomplish26H_Update(&context);
+    CHECK(Accomplish26H_GetState() == ACCOMPLISH_26H_STATE_RUNNING);
+
+    Accomplish26H_Update(&context);
+    CHECK(Accomplish26H_GetState() ==
+          ACCOMPLISH_26H_STATE_FINISH_ROLLOUT);
+
+    Accomplish26H_Update(&context);
+    CHECK(s_requestStopCount == 1U);
+    CHECK(Accomplish26H_GetState() ==
+          ACCOMPLISH_26H_STATE_SOFT_STOP);
+
+    s_motionBusy = 0U;
+    s_motionFinished = 1U;
+    Accomplish26H_Update(&context);
+    CHECK(Accomplish26H_GetState() ==
+          ACCOMPLISH_26H_STATE_SETTLING);
     CHECK(Accomplish26H_IsTiming() != 0U);
-    CHECK(Accomplish26H_GetElapsedTicks() == 5U);
-}
 
-static void test_second_key_edge_stops_and_freezes(void)
-{
-    App_UpdateContext_t context = make_context(
-        9U, ACCOMPLISH_26H_START_STOP_KEY_MASK);
-
-    Accomplish26H_Init();
+    context = make_context(ACCOMPLISH_26H_SETTLE_CONFIRM_TICKS, 0U);
     Accomplish26H_Update(&context);
-    context = make_context(8U, ACCOMPLISH_26H_START_STOP_KEY_MASK);
-    Accomplish26H_Update(&context);
+    CHECK(Accomplish26H_GetState() ==
+          ACCOMPLISH_26H_STATE_FINISHED);
     CHECK(Accomplish26H_IsTiming() == 0U);
-    CHECK(Accomplish26H_GetElapsedTicks() == 8U);
-
-    context = make_context(255U, 0U);
-    Accomplish26H_Update(&context);
-    CHECK(Accomplish26H_GetElapsedTicks() == 8U);
+    CHECK(Accomplish26H_GetError() == ACCOMPLISH_26H_ERROR_NONE);
 }
 
-static void test_later_key_edge_resets_and_starts_new_run(void)
+static void test_marker_requires_three_consecutive_six_channel_samples(void)
 {
-    App_UpdateContext_t context = make_context(
-        1U, ACCOMPLISH_26H_START_STOP_KEY_MASK);
+    App_UpdateContext_t context = make_context(1U, 0U);
 
+    reset_fakes();
     Accomplish26H_Init();
+    start_one_lap();
+    leave_start_line();
+
+    s_distanceMM = ACCOMPLISH_26H_NOMINAL_LAP_DISTANCE_MM;
+    s_lineState = 0x3FU;
     Accomplish26H_Update(&context);
-    context = make_context(42U, 0U);
     Accomplish26H_Update(&context);
-    context = make_context(1U, ACCOMPLISH_26H_START_STOP_KEY_MASK);
+    CHECK(Accomplish26H_GetState() == ACCOMPLISH_26H_STATE_RUNNING);
+
+    s_lineState = 0x03U;
     Accomplish26H_Update(&context);
-    context = make_context(7U, ACCOMPLISH_26H_START_STOP_KEY_MASK);
+    CHECK(Accomplish26H_GetState() == ACCOMPLISH_26H_STATE_RUNNING);
+
+    s_lineState = 0x3FU;
     Accomplish26H_Update(&context);
-    CHECK(Accomplish26H_IsTiming() != 0U);
-    CHECK(Accomplish26H_GetElapsedTicks() == 0U);
+    Accomplish26H_Update(&context);
+    Accomplish26H_Update(&context);
+    CHECK(Accomplish26H_GetState() ==
+          ACCOMPLISH_26H_STATE_FINISH_ROLLOUT);
 }
 
-static void test_null_context_does_not_change_state(void)
+static void test_marker_is_ignored_before_finish_approach(void)
 {
+    App_UpdateContext_t context = make_context(1U, 0U);
+
+    reset_fakes();
     Accomplish26H_Init();
-    Accomplish26H_Update(NULL);
-    CHECK(Accomplish26H_IsTiming() == 0U);
-    CHECK(Accomplish26H_GetElapsedTicks() == 0U);
+    start_one_lap();
+    leave_start_line();
+
+    s_distanceMM = ACCOMPLISH_26H_FINISH_MARKER_ARM_DISTANCE_MM - 1.0f;
+    s_lineState = 0x3FU;
+    Accomplish26H_Update(&context);
+    Accomplish26H_Update(&context);
+    Accomplish26H_Update(&context);
+    CHECK(Accomplish26H_GetState() == ACCOMPLISH_26H_STATE_RUNNING);
 }
 
-static void test_tick_counter_saturates_instead_of_wrapping(void)
+static void test_time_limit_freezes_timer_and_soft_stops(void)
 {
-    App_UpdateContext_t context = make_context(
-        1U, ACCOMPLISH_26H_START_STOP_KEY_MASK);
-    uint32_t updateIndex;
+    App_UpdateContext_t context = make_context(250U, 0U);
+    uint8_t index;
 
+    reset_fakes();
     Accomplish26H_Init();
-    Accomplish26H_Update(&context);
-    context = make_context(UINT8_MAX, 0U);
-    for (updateIndex = 0U;
-         updateIndex < (UINT32_MAX / UINT8_MAX);
-         updateIndex++)
+    start_one_lap();
+    leave_start_line();
+
+    for (index = 0U; index < 8U; index++)
     {
         Accomplish26H_Update(&context);
     }
-    CHECK(Accomplish26H_GetElapsedTicks() == UINT32_MAX);
 
-    context = make_context(1U, 0U);
+    CHECK(Accomplish26H_GetState() == ACCOMPLISH_26H_STATE_SOFT_STOP);
+    CHECK(Accomplish26H_GetError() == ACCOMPLISH_26H_ERROR_TIME_LIMIT);
+    CHECK(Accomplish26H_IsTiming() == 0U);
+    CHECK(s_requestStopCount == 1U);
+}
+
+static void test_sensor_offline_stops_without_blind_run(void)
+{
+    App_UpdateContext_t context = make_context(1U, 0U);
+
+    reset_fakes();
+    Accomplish26H_Init();
+    start_one_lap();
+    s_lineOnline = 0U;
     Accomplish26H_Update(&context);
-    CHECK(Accomplish26H_GetElapsedTicks() == UINT32_MAX);
+
+    CHECK(s_stopCount == 1U);
+    CHECK(Accomplish26H_GetState() == ACCOMPLISH_26H_STATE_ERROR);
+    CHECK(Accomplish26H_GetError() ==
+          ACCOMPLISH_26H_ERROR_SENSOR_OFFLINE);
+    CHECK(Accomplish26H_IsTiming() == 0U);
+}
+
+static void test_key_chord_stops_and_freezes(void)
+{
+    App_UpdateContext_t context;
+
+    reset_fakes();
+    Accomplish26H_Init();
+    start_one_lap();
+    context = make_context(9U, ACCOMPLISH_26H_EMERGENCY_STOP_KEY_MASK);
+    context.pressedKeys = ACCOMPLISH_26H_EMERGENCY_STOP_KEY_MASK;
+    Accomplish26H_Update(&context);
+
+    CHECK(s_stopCount == 1U);
+    CHECK(Accomplish26H_GetState() == ACCOMPLISH_26H_STATE_ERROR);
+    CHECK(Accomplish26H_GetError() ==
+          ACCOMPLISH_26H_ERROR_EMERGENCY_STOP);
+    CHECK(Accomplish26H_IsTiming() == 0U);
+    CHECK(Accomplish26H_GetElapsedTicks() == 0U);
 }
 
 int main(void)
 {
-    test_init_is_stopped_at_zero();
-    test_first_key_edge_starts_without_counting_old_ticks();
-    test_running_timer_accumulates_all_elapsed_ticks();
-    test_held_key_without_new_edge_does_not_toggle();
-    test_second_key_edge_stops_and_freezes();
-    test_later_key_edge_resets_and_starts_new_run();
-    test_null_context_does_not_change_state();
-    test_tick_counter_saturates_instead_of_wrapping();
+    test_init_is_ready_at_zero();
+    test_key1_starts_line_and_timer();
+    test_start_line_is_left_before_finish_is_armed();
+    test_finish_approach_slows_before_marker();
+    test_marker_soft_stops_then_settles_before_freezing_time();
+    test_marker_requires_three_consecutive_six_channel_samples();
+    test_marker_is_ignored_before_finish_approach();
+    test_time_limit_freezes_timer_and_soft_stops();
+    test_sensor_offline_stops_without_blind_run();
+    test_key_chord_stops_and_freezes();
 
     if (s_failures == 0)
     {

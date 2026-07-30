@@ -241,6 +241,53 @@ MotionManager_Result_t MotionManager_StartLine(float speedMMps)
         result, MOTION_MANAGER_MODE_LINE, MOTION_MANAGER_ERROR_LINE);
 }
 
+MotionManager_Result_t MotionManager_SetLineSpeed(float speedMMps)
+{
+    MotionLine_Result_t result;
+
+    if (s_context.configured == 0U)
+    {
+        return MOTION_MANAGER_RESULT_NOT_CONFIGURED;
+    }
+    if (s_context.mode != MOTION_MANAGER_MODE_LINE)
+    {
+        return MOTION_MANAGER_RESULT_START_FAILED;
+    }
+
+    result = MotionLine_SetSpeed(speedMMps);
+    if (result == MOTION_LINE_RESULT_OK)
+    {
+        return MOTION_MANAGER_RESULT_OK;
+    }
+    if (result == MOTION_LINE_RESULT_INVALID_ARGUMENT)
+    {
+        return MOTION_MANAGER_RESULT_INVALID_ARGUMENT;
+    }
+    if (result == MOTION_LINE_RESULT_NOT_CONFIGURED)
+    {
+        return MOTION_MANAGER_RESULT_NOT_CONFIGURED;
+    }
+    return MOTION_MANAGER_RESULT_START_FAILED;
+}
+
+MotionManager_Result_t MotionManager_RequestLineStop(void)
+{
+    MotionLine_Result_t result;
+
+    if (s_context.configured == 0U)
+    {
+        return MOTION_MANAGER_RESULT_NOT_CONFIGURED;
+    }
+    if (s_context.mode != MOTION_MANAGER_MODE_LINE)
+    {
+        return MOTION_MANAGER_RESULT_START_FAILED;
+    }
+
+    result = MotionLine_RequestStop();
+    return (result == MOTION_LINE_RESULT_OK) ?
+        MOTION_MANAGER_RESULT_OK : MOTION_MANAGER_RESULT_START_FAILED;
+}
+
 MotionManager_Result_t MotionManager_StartLane(float speedMMps)
 {
     MotionManager_Result_t result;

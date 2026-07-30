@@ -7,9 +7,12 @@ typedef struct
 {
     MotionLine_State_t state;
     MotionLine_Error_t error;
-    float cruiseSpeedMMps;
+    float requestedSpeedMMps;
+    float profileSpeedMMps;
     float lineError;
+    float filteredWeight;
     float previousWeight;
+    float speedAdjustMMps;
     float lastLeftSpeedMMps;
     float lastRightSpeedMMps;
     uint16_t lostTicks;
@@ -28,7 +31,12 @@ static MotionLine_Context_t s_context = {
 static uint8_t MotionLine_ParametersAreValid(void)
 {
     if ((!isfinite(MOTION_LINE_MAX_SPEED_MMPS)) ||
-        (!isfinite(MOTION_LINE_MAX_ADJUST_RATIO)))
+        (!isfinite(MOTION_LINE_MAX_ADJUST_RATIO)) ||
+        (!isfinite(MOTION_LINE_ACCELERATION_MMPS2)) ||
+        (!isfinite(MOTION_LINE_DECELERATION_MMPS2)) ||
+        (!isfinite(MOTION_LINE_CURVE_MIN_SPEED_RATIO)) ||
+        (!isfinite(MOTION_LINE_WEIGHT_FILTER_ALPHA)) ||
+        (!isfinite(MOTION_LINE_MAX_ADJUST_RATE_MMPS2)))
     {
         return 0U;
     }
@@ -36,6 +44,13 @@ static uint8_t MotionLine_ParametersAreValid(void)
     if ((MOTION_LINE_MAX_SPEED_MMPS <= 0.0f) ||
         (MOTION_LINE_MAX_ADJUST_RATIO <= 0.0f) ||
         (MOTION_LINE_MAX_ADJUST_RATIO > 1.0f) ||
+        (MOTION_LINE_ACCELERATION_MMPS2 <= 0.0f) ||
+        (MOTION_LINE_DECELERATION_MMPS2 <= 0.0f) ||
+        (MOTION_LINE_CURVE_MIN_SPEED_RATIO <= 0.0f) ||
+        (MOTION_LINE_CURVE_MIN_SPEED_RATIO > 1.0f) ||
+        (MOTION_LINE_WEIGHT_FILTER_ALPHA <= 0.0f) ||
+        (MOTION_LINE_WEIGHT_FILTER_ALPHA > 1.0f) ||
+        (MOTION_LINE_MAX_ADJUST_RATE_MMPS2 <= 0.0f) ||
         (MOTION_LINE_OUTER_WEIGHT <= 0) ||
         (MOTION_LINE_INNER_WEIGHT <= 0) ||
         (MOTION_LINE_INNER_WEIGHT >= MOTION_LINE_OUTER_WEIGHT) ||
@@ -47,11 +62,30 @@ static uint8_t MotionLine_ParametersAreValid(void)
     return 1U;
 }
 
+static float MotionLine_Approach(
+    float current, float target, float maximumStep)
+{
+    if (current < target)
+    {
+        current += maximumStep;
+        return (current > target) ? target : current;
+    }
+    if (current > target)
+    {
+        current -= maximumStep;
+        return (current < target) ? target : current;
+    }
+    return current;
+}
+
 static void MotionLine_ResetControl(void)
 {
-    s_context.cruiseSpeedMMps = 0.0f;
+    s_context.requestedSpeedMMps = 0.0f;
+    s_context.profileSpeedMMps = 0.0f;
     s_context.lineError = 0.0f;
+    s_context.filteredWeight = 0.0f;
     s_context.previousWeight = 0.0f;
+    s_context.speedAdjustMMps = 0.0f;
     s_context.lastLeftSpeedMMps = 0.0f;
     s_context.lastRightSpeedMMps = 0.0f;
     s_context.lostTicks = 0U;
@@ -65,16 +99,20 @@ static void MotionLine_SetError(MotionLine_Error_t error)
     s_context.state = MOTION_LINE_STATE_ERROR;
 }
 
-/* 位图从左到右为 bit0~bit(N-1)，灰度返回 1 表示检测到黑线。 */
-#if CAR_IS_MASTER
+/*
+ * 教程协议为 bit0=CH1 ... bit5=CH6。俯视传感器（探头朝前）时 CH1 在
+ * 右侧、CH6 在左侧，因此 bit0 的正权重表示车应向右修正；安装翻面时只需
+ * 修改 Graydetect.h 的 GRAYDETECT_CHANNEL1_IS_RIGHT。
+ */
+#if GRAYDETECT_CHANNEL1_IS_RIGHT
 static const int8_t s_grayWeight[GRAY_CHANNEL_COUNT] = {
-    -MOTION_LINE_OUTER_WEIGHT, -4, -MOTION_LINE_INNER_WEIGHT, -1,
-     1, MOTION_LINE_INNER_WEIGHT, 4, MOTION_LINE_OUTER_WEIGHT
+     MOTION_LINE_OUTER_WEIGHT, 4, MOTION_LINE_INNER_WEIGHT,
+    -MOTION_LINE_INNER_WEIGHT, -4, -MOTION_LINE_OUTER_WEIGHT
 };
 #else
 static const int8_t s_grayWeight[GRAY_CHANNEL_COUNT] = {
-    -MOTION_LINE_OUTER_WEIGHT, -MOTION_LINE_INNER_WEIGHT, 0,
-     MOTION_LINE_INNER_WEIGHT, MOTION_LINE_OUTER_WEIGHT
+    -MOTION_LINE_OUTER_WEIGHT, -4, -MOTION_LINE_INNER_WEIGHT,
+     MOTION_LINE_INNER_WEIGHT, 4, MOTION_LINE_OUTER_WEIGHT
 };
 #endif
 
@@ -104,11 +142,41 @@ static int8_t MotionLine_GetWeight(uint8_t grayState)
     return (int8_t)weight;
 }
 
+static float MotionLine_GetCurveTargetSpeed(float weight)
+{
+    float errorCurveRatio;
+    float normalizedWeight = fabsf(weight) /
+                             (float)MOTION_LINE_OUTER_WEIGHT;
+
+    if (normalizedWeight > 1.0f)
+    {
+        normalizedWeight = 1.0f;
+    }
+    errorCurveRatio = 1.0f -
+                  (1.0f - MOTION_LINE_CURVE_MIN_SPEED_RATIO) *
+                  normalizedWeight;
+    return s_context.requestedSpeedMMps * errorCurveRatio;
+}
+
+static float MotionLine_UpdateProfileSpeed(float targetSpeedMMps, float dt)
+{
+    float maximumStep = (targetSpeedMMps > s_context.profileSpeedMMps) ?
+        (MOTION_LINE_ACCELERATION_MMPS2 * dt) :
+        (MOTION_LINE_DECELERATION_MMPS2 * dt);
+
+    s_context.profileSpeedMMps = MotionLine_Approach(
+        s_context.profileSpeedMMps, targetSpeedMMps, maximumStep);
+    return s_context.profileSpeedMMps;
+}
+
 static uint8_t MotionLine_CalculateTargetSpeeds(
     float *leftSpeedMMps, float *rightSpeedMMps, float dt)
 {
     uint8_t grayState = Graydetect_GetState();
+    float rawWeight;
     float weight;
+    float requestedAdjustMMps;
+    float targetSpeedMMps;
     float speedAdjustMMps;
 
     if (grayState == 0U)
@@ -122,38 +190,51 @@ static uint8_t MotionLine_CalculateTargetSpeeds(
             return 0U;
         }
 
-        /* 短暂丢线时保持上一拍的左右轮目标速度。 */
-        *leftSpeedMMps = s_context.lastLeftSpeedMMps;
-        *rightSpeedMMps = s_context.lastRightSpeedMMps;
-        return 1U;
+        /* 短暂丢线时沿用最近一次偏差，但仍按新的速度斜坡减速/提速。 */
+        rawWeight = s_context.filteredWeight;
+    }
+    else
+    {
+        s_context.lostTicks = 0U;
+        rawWeight = (float)MotionLine_GetWeight(grayState);
     }
 
-    s_context.lostTicks = 0U;
-    weight = (float)MotionLine_GetWeight(grayState);
+    s_context.filteredWeight += MOTION_LINE_WEIGHT_FILTER_ALPHA *
+        (rawWeight - s_context.filteredWeight);
+    weight = s_context.filteredWeight;
     s_context.lineError = weight;
+
+    targetSpeedMMps = MotionLine_GetCurveTargetSpeed(weight);
+    (void)MotionLine_UpdateProfileSpeed(targetSpeedMMps, dt);
 
     /* 权重达到正负 6 时，速度增减比例等于最大调整比例；
      * 微分项对权重跳变（压线切换瞬间）施加一次性阻尼，默认 0 不生效。 */
-    speedAdjustMMps = s_context.cruiseSpeedMMps *
-                      MotionLine_TuneMaxAdjustRatio *
-                      (weight / (float)MOTION_LINE_OUTER_WEIGHT);
-    speedAdjustMMps += MotionLine_TuneWeightKd *
-                       ((weight - s_context.previousWeight) / dt);
+    requestedAdjustMMps = s_context.profileSpeedMMps *
+                           MotionLine_TuneMaxAdjustRatio *
+                           (weight /
+                            (float)MOTION_LINE_OUTER_WEIGHT);
+    requestedAdjustMMps += MotionLine_TuneWeightKd *
+                           ((weight - s_context.previousWeight) / dt);
     s_context.previousWeight = weight;
 
+    speedAdjustMMps = MotionLine_Approach(
+        s_context.speedAdjustMMps, requestedAdjustMMps,
+        MOTION_LINE_MAX_ADJUST_RATE_MMPS2 * dt);
+
     /* 阻尼过强时不允许反向超过巡航速度，防止单轮猛烈倒转。 */
-    if (speedAdjustMMps > s_context.cruiseSpeedMMps)
+    if (speedAdjustMMps > s_context.profileSpeedMMps)
     {
-        speedAdjustMMps = s_context.cruiseSpeedMMps;
+        speedAdjustMMps = s_context.profileSpeedMMps;
     }
-    else if (speedAdjustMMps < -s_context.cruiseSpeedMMps)
+    else if (speedAdjustMMps < -s_context.profileSpeedMMps)
     {
-        speedAdjustMMps = -s_context.cruiseSpeedMMps;
+        speedAdjustMMps = -s_context.profileSpeedMMps;
     }
+    s_context.speedAdjustMMps = speedAdjustMMps;
 
     /* 左侧压线：左轮减速、右轮加速；右侧压线时相反。 */
-    *leftSpeedMMps = s_context.cruiseSpeedMMps + speedAdjustMMps;
-    *rightSpeedMMps = s_context.cruiseSpeedMMps - speedAdjustMMps;
+    *leftSpeedMMps = s_context.profileSpeedMMps + speedAdjustMMps;
+    *rightSpeedMMps = s_context.profileSpeedMMps - speedAdjustMMps;
     s_context.lastLeftSpeedMMps = *leftSpeedMMps;
     s_context.lastRightSpeedMMps = *rightSpeedMMps;
     return 1U;
@@ -208,12 +289,38 @@ MotionLine_Result_t MotionLine_Start(float speedMMps)
 
     MotionWheel_Stop();
     MotionLine_ResetControl();
-    s_context.cruiseSpeedMMps =
+    s_context.requestedSpeedMMps =
         (speedMMps > MOTION_LINE_MAX_SPEED_MMPS) ?
             MOTION_LINE_MAX_SPEED_MMPS : speedMMps;
     s_context.error = MOTION_LINE_ERROR_NONE;
     s_context.state = MOTION_LINE_STATE_RUNNING;
     return MOTION_LINE_RESULT_OK;
+}
+
+MotionLine_Result_t MotionLine_SetSpeed(float speedMMps)
+{
+    if (s_context.configured == 0U)
+    {
+        return MOTION_LINE_RESULT_NOT_CONFIGURED;
+    }
+    if (MotionLine_IsBusy() == 0U)
+    {
+        return MOTION_LINE_RESULT_BUSY;
+    }
+    if ((!isfinite(speedMMps)) || (speedMMps < 0.0f))
+    {
+        return MOTION_LINE_RESULT_INVALID_ARGUMENT;
+    }
+
+    s_context.requestedSpeedMMps =
+        (speedMMps > MOTION_LINE_MAX_SPEED_MMPS) ?
+            MOTION_LINE_MAX_SPEED_MMPS : speedMMps;
+    return MOTION_LINE_RESULT_OK;
+}
+
+MotionLine_Result_t MotionLine_RequestStop(void)
+{
+    return MotionLine_SetSpeed(0.0f);
 }
 
 void MotionLine_Update(float dt)
@@ -234,6 +341,15 @@ void MotionLine_Update(float dt)
             &leftSpeedMMps, &rightSpeedMMps, dt) == 0U)
     {
         /* 25E 等流程把确认丢线作为巡线任务的正常结束条件。 */
+        MotionWheel_Stop();
+        s_context.error = MOTION_LINE_ERROR_NONE;
+        s_context.state = MOTION_LINE_STATE_FINISHED;
+        return;
+    }
+    if ((s_context.requestedSpeedMMps <= 0.001f) &&
+        (s_context.profileSpeedMMps <= 0.001f))
+    {
+        /* 速度斜坡已平滑归零；上层可在下一拍接管短暂主动刹车。 */
         MotionWheel_Stop();
         s_context.error = MOTION_LINE_ERROR_NONE;
         s_context.state = MOTION_LINE_STATE_FINISHED;
@@ -282,4 +398,14 @@ MotionLine_Error_t MotionLine_GetError(void)
 float MotionLine_GetLineError(void)
 {
     return s_context.lineError;
+}
+
+float MotionLine_GetRequestedSpeedMMps(void)
+{
+    return s_context.requestedSpeedMMps;
+}
+
+float MotionLine_GetProfileSpeedMMps(void)
+{
+    return s_context.profileSpeedMMps;
 }

@@ -1,5 +1,6 @@
 #include "Hardware/Motor/Encoder.h"
 #include "Hardware/Motor/EncoderStepper.h"
+#include "Hardware/Motor/Stepper.h"
 #include "ti_msp_dl_config.h"
 
 #define LEFT_ENCODER_SIGN  (-1)
@@ -11,11 +12,15 @@
 
 static volatile int32_t s_leftCount;
 static volatile int32_t s_rightCount;
+#if STEPPER_ENABLED
 static volatile int32_t s_stepperCount;
 static volatile uint32_t s_stepperTransitionErrors;
+#endif
 static uint8_t s_leftState;
 static uint8_t s_rightState;
+#if STEPPER_ENABLED
 static uint8_t s_stepperState;
+#endif
 
 static const int8_t s_quadratureDelta[16] = {
      0, -1,  1,  0,
@@ -59,6 +64,7 @@ void Encoder_Init(void)
 
 void Encoder_InitStepper(void)
 {
+#if STEPPER_ENABLED
     DL_GPIO_initDigitalInputFeatures(STEPPER_ENCODER_A_A_IOMUX,
         DL_GPIO_INVERSION_DISABLE, DL_GPIO_RESISTOR_PULL_UP,
         DL_GPIO_HYSTERESIS_DISABLE, DL_GPIO_WAKEUP_DISABLE);
@@ -66,9 +72,9 @@ void Encoder_InitStepper(void)
         DL_GPIO_INVERSION_DISABLE, DL_GPIO_RESISTOR_PULL_UP,
         DL_GPIO_HYSTERESIS_DISABLE, DL_GPIO_WAKEUP_DISABLE);
     DL_GPIO_setLowerPinsPolarity(
-        STEPPER_ENCODER_A_PORT, DL_GPIO_PIN_8_EDGE_RISE_FALL);
+        STEPPER_ENCODER_A_PORT, DL_GPIO_PIN_13_EDGE_RISE_FALL);
     DL_GPIO_setUpperPinsPolarity(
-        STEPPER_ENCODER_B_PORT, DL_GPIO_PIN_25_EDGE_RISE_FALL);
+        STEPPER_ENCODER_B_PORT, DL_GPIO_PIN_29_EDGE_RISE_FALL);
 
     s_stepperCount = 0;
     s_stepperTransitionErrors = 0U;
@@ -87,6 +93,7 @@ void Encoder_InitStepper(void)
         STEPPER_ENCODER_B_PORT, STEPPER_ENCODER_B_B_PIN);
     NVIC_ClearPendingIRQ(GPIOA_INT_IRQn);
     NVIC_EnableIRQ(GPIOA_INT_IRQn);
+#endif
 }
 
 int16_t Encoder_Get(uint8_t n)
@@ -104,6 +111,7 @@ int16_t Encoder_Get(uint8_t n)
 
 int32_t Encoder_GetStepperCount(void)
 {
+#if STEPPER_ENABLED
     int32_t count;
     uint32_t primask = __get_PRIMASK();
 
@@ -111,19 +119,27 @@ int32_t Encoder_GetStepperCount(void)
     count = s_stepperCount;
     __set_PRIMASK(primask);
     return count;
+#else
+    return 0;
+#endif
 }
 
 void Encoder_SetStepperCount(int32_t count)
 {
+#if STEPPER_ENABLED
     uint32_t primask = __get_PRIMASK();
 
     __disable_irq();
     s_stepperCount = count;
     __set_PRIMASK(primask);
+#else
+    (void)count;
+#endif
 }
 
 uint32_t Encoder_GetStepperTransitionErrors(void)
 {
+#if STEPPER_ENABLED
     uint32_t errors;
     uint32_t primask = __get_PRIMASK();
 
@@ -131,6 +147,9 @@ uint32_t Encoder_GetStepperTransitionErrors(void)
     errors = s_stepperTransitionErrors;
     __set_PRIMASK(primask);
     return errors;
+#else
+    return 0U;
+#endif
 }
 
 /*
@@ -149,14 +168,18 @@ void GROUP1_IRQHandler(void)
     const uint32_t wheelMask =
         ENCODER_INPUTS_LEFT_A_PIN | ENCODER_INPUTS_LEFT_B_PIN |
         ENCODER_INPUTS_RIGHT_A_PIN | ENCODER_INPUTS_RIGHT_B_PIN;
-    const uint32_t handledGpioAMask =
-        wheelMask | STEPPER_ENCODER_A_A_PIN | STEPPER_ENCODER_B_B_PIN;
     uint32_t wheelPending = DL_GPIO_getEnabledInterruptStatus(
         ENCODER_INPUTS_PORT, wheelMask);
+#if STEPPER_ENABLED
+    const uint32_t handledGpioAMask =
+        wheelMask | STEPPER_ENCODER_A_A_PIN | STEPPER_ENCODER_B_B_PIN;
     uint32_t stepperAPending = DL_GPIO_getEnabledInterruptStatus(
         STEPPER_ENCODER_A_PORT, STEPPER_ENCODER_A_A_PIN);
     uint32_t stepperBPending = DL_GPIO_getEnabledInterruptStatus(
         STEPPER_ENCODER_B_PORT, STEPPER_ENCODER_B_B_PIN);
+#else
+    const uint32_t handledGpioAMask = wheelMask;
+#endif
 
     if ((wheelPending &
          (ENCODER_INPUTS_LEFT_A_PIN | ENCODER_INPUTS_LEFT_B_PIN)) != 0U)
@@ -182,6 +205,7 @@ void GROUP1_IRQHandler(void)
             s_quadratureDelta[(s_rightState << 2) | next]);
         s_rightState = next;
     }
+#if STEPPER_ENABLED
     if ((stepperAPending | stepperBPending) != 0U)
     {
         uint8_t next = Encoder_ReadState(
@@ -202,14 +226,17 @@ void GROUP1_IRQHandler(void)
         }
         s_stepperState = next;
     }
+#endif
     DL_GPIO_clearInterruptStatus(
         ENCODER_INPUTS_PORT, wheelPending & wheelMask);
+#if STEPPER_ENABLED
     DL_GPIO_clearInterruptStatus(
         STEPPER_ENCODER_A_PORT,
         stepperAPending & STEPPER_ENCODER_A_A_PIN);
     DL_GPIO_clearInterruptStatus(
         STEPPER_ENCODER_B_PORT,
         stepperBPending & STEPPER_ENCODER_B_B_PIN);
+#endif
 
     /* 兜底：清掉本组其余已使能的挂起中断（GPIOA 非编码器引脚 + 整个 GPIOB），
      * 避免将来新增的中断源在这里清不掉而把中断线永久拉住。 */
