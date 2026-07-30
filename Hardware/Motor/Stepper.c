@@ -497,6 +497,108 @@ static Stepper_Result_t Stepper_StartMove(
     return STEPPER_RESULT_OK;
 }
 
+/*
+ * 连续跟踪一个每拍都在变的目标。与 Stepper_StartMove 的一次性语义并存：
+ * 运动中重设目标不返回 BUSY，而是就地改写 s_targetSteps。
+ *
+ * 重新规划是免费的：ISR 的 Stepper_CompleteSegment() 在每个段边界都会
+ * 重读 s_targetSteps 并据此决定加速、匀速还是减速，段长为一个控制拍
+ * (STEPPER_CONTROL_HZ)，所以新目标最迟在一段之后生效，且全程遵守
+ * s_profile 的加速度限制，不会出现步率跳变。
+ *
+ * 反向必须绕道：直接翻转 DIR 会在电机仍有转速时改变方向而丢步。这里
+ * 把目标暂时钉在"按当前速度刹停所需的位置"，让既有的减速逻辑把速度
+ * 收到零；停稳后处于 READY，下一拍的调用会走正常启动路径反向。
+ */
+static Stepper_Result_t Stepper_TrackTo(
+    int32_t target, const Stepper_Profile_t *profile)
+{
+    uint32_t primask;
+    int32_t brakingSteps;
+    int32_t brakingTarget;
+
+    if ((profile != NULL) && (!Stepper_ProfileIsValid(profile)))
+    {
+        return STEPPER_RESULT_INVALID_ARGUMENT;
+    }
+
+    primask = __get_PRIMASK();
+    __disable_irq();
+
+    if (!s_enabled)
+    {
+        __set_PRIMASK(primask);
+        return STEPPER_RESULT_DISABLED;
+    }
+    if (!s_ready)
+    {
+        __set_PRIMASK(primask);
+        return STEPPER_RESULT_NOT_READY;
+    }
+    if (profile != NULL)
+    {
+        s_profile = *profile;
+    }
+
+    /* 空闲时等同于启动一次新运动；不能在这里直接改目标就返回，否则
+     * 定时器没跑起来，脉冲永远不会发出。 */
+    if ((s_state != STEPPER_STATE_MOVING) &&
+        (s_state != STEPPER_STATE_STOPPING))
+    {
+        if (target == s_emittedSteps)
+        {
+            s_targetSteps = target;
+            __set_PRIMASK(primask);
+            return STEPPER_RESULT_OK;
+        }
+        s_targetSteps = target;
+        s_direction = (target > s_emittedSteps) ? 1 : -1;
+        s_currentRateHz = s_profile.startStepRateHz;
+        s_stopRequested = false;
+        s_state = STEPPER_STATE_MOVING;
+        Stepper_SetDirection(s_direction);
+        Stepper_StartSegment();
+        __set_PRIMASK(primask);
+        return STEPPER_RESULT_OK;
+    }
+
+    /* 运动中：新目标在当前前进方向的前方时直接改写即可。 */
+    if (((s_direction > 0) && (target >= s_emittedSteps)) ||
+        ((s_direction < 0) && (target <= s_emittedSteps)))
+    {
+        s_targetSteps = target;
+        s_stopRequested = false;
+        __set_PRIMASK(primask);
+        return STEPPER_RESULT_OK;
+    }
+
+    /* 反向：先按当前速度刹停，别翻 DIR。 */
+    brakingSteps = (int32_t)Stepper_BrakingDistance(s_currentRateHz);
+    brakingTarget = s_emittedSteps + ((int32_t)s_direction * brakingSteps);
+    s_targetSteps = brakingTarget;
+    s_stopRequested = false;
+    __set_PRIMASK(primask);
+    return STEPPER_RESULT_OK;
+}
+
+Stepper_Result_t Stepper_TrackToSteps(
+    int32_t target, const Stepper_Profile_t *profile)
+{
+    return Stepper_TrackTo(target, profile);
+}
+
+Stepper_Result_t Stepper_TrackToAngle(
+    float degrees, const Stepper_Profile_t *profile)
+{
+    int32_t steps;
+
+    if (!Stepper_DegreesToSteps(degrees, &steps))
+    {
+        return STEPPER_RESULT_INVALID_ARGUMENT;
+    }
+    return Stepper_TrackTo(steps, profile);
+}
+
 void Stepper_Init(void)
 {
     const uint32_t primask = __get_PRIMASK();
@@ -969,6 +1071,22 @@ Stepper_Result_t Stepper_MoveByAngle(
 }
 
 Stepper_Result_t Stepper_MoveToAngle(
+    float degrees, const Stepper_Profile_t *profile)
+{
+    (void)degrees;
+    (void)profile;
+    return STEPPER_RESULT_DISABLED;
+}
+
+Stepper_Result_t Stepper_TrackToSteps(
+    int32_t target, const Stepper_Profile_t *profile)
+{
+    (void)target;
+    (void)profile;
+    return STEPPER_RESULT_DISABLED;
+}
+
+Stepper_Result_t Stepper_TrackToAngle(
     float degrees, const Stepper_Profile_t *profile)
 {
     (void)degrees;

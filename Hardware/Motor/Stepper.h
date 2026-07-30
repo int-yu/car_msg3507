@@ -113,6 +113,20 @@ Stepper_Result_t Stepper_MoveByAngle(
 Stepper_Result_t Stepper_MoveToAngle(
     float degrees, const Stepper_Profile_t *profile);
 
+/*
+ * 连续跟踪一个不断变化的绝对目标：运动中重设目标不返回 BUSY，而是让
+ * 既有的梯形速度规划就地重新规划。供每拍更新目标的闭环使用（摆杆平衡
+ * 每 10 ms 算一个新倾角）。上面的 MoveTo/MoveBy 保持一次性语义不变，
+ * 两套并存，不要混用同一次运动。
+ *
+ * profile 传 NULL 表示沿用上一次的规划参数。反向重设目标时会先按加速度
+ * 限制减速到零再反向，不会直接翻转 DIR。
+ */
+Stepper_Result_t Stepper_TrackToSteps(
+    int32_t target, const Stepper_Profile_t *profile);
+Stepper_Result_t Stepper_TrackToAngle(
+    float degrees, const Stepper_Profile_t *profile);
+
 /* Requests trapezoidal deceleration to a stop. EN remains active. */
 void Stepper_Stop(void);
 
