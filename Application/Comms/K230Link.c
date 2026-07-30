@@ -145,6 +145,7 @@ static void K230Link_HandleFrame(void)
             (uint16_t)s_parser.payload[3] |
             ((uint16_t)s_parser.payload[4] << 8U));
         s_target.sequence = s_parser.sequence;
+        s_target.ageTicks = 0U;
         s_hasTarget = 1U;
     }
     else if ((s_parser.type == K230_LINK_MESSAGE_LANE) &&
@@ -275,6 +276,7 @@ void K230Link_Init(void)
     s_target.offsetX = 0;
     s_target.offsetY = 0;
     s_target.sequence = 0U;
+    s_target.ageTicks = 0U;
     s_hasTarget = 0U;
     (void)memset(&s_lane, 0, sizeof(s_lane));
     s_hasLane = 0U;
@@ -316,6 +318,14 @@ void K230Link_Update(uint8_t elapsedTicks)
 
         s_lane.ageTicks = (age >= K230_LINK_LANE_TIMEOUT_TICKS) ?
             (uint8_t)K230_LINK_LANE_TIMEOUT_TICKS : (uint8_t)age;
+    }
+
+    if (s_hasTarget != 0U)
+    {
+        uint16_t age = (uint16_t)s_target.ageTicks + elapsedTicks;
+
+        s_target.ageTicks = (age >= K230_LINK_TARGET_TIMEOUT_TICKS) ?
+            (uint8_t)K230_LINK_TARGET_TIMEOUT_TICKS : (uint8_t)age;
     }
 
     if (s_readyAcknowledged == 0U)
@@ -363,7 +373,8 @@ uint8_t K230Link_IsReady(void)
 
 uint8_t K230Link_GetTarget(K230Link_Target_t *target)
 {
-    if ((target == NULL) || (s_hasTarget == 0U))
+    if ((target == NULL) || (s_hasTarget == 0U) ||
+        (s_target.ageTicks >= K230_LINK_TARGET_TIMEOUT_TICKS))
     {
         return 0U;
     }

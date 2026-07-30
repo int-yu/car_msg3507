@@ -168,6 +168,102 @@ static void test_new_frame_refreshes_age(void)
     CHECK(lane.sequence == 0x25U);
 }
 
+/* TARGET 承载钢球位置。钢球平衡是双积分对象，拿冻结的球位算 PD 会让
+ * 倾角锁死、球一路加速滚到挡片，所以它和 LANE 一样必须有新鲜度。 */
+static void BuildTargetPayload(
+    uint8_t *payload, uint8_t valid, int16_t x, int16_t y)
+{
+    payload[0] = valid;
+    PutI16(payload, 1U, x);
+    PutI16(payload, 3U, y);
+}
+
+static void test_target_frame_is_decoded(void)
+{
+    uint8_t payload[5];
+    K230Link_Target_t target;
+
+    Setup();
+    BuildTargetPayload(payload, 1U, 400, -120);
+    FeedFrame(K230_LINK_MESSAGE_TARGET, 0x31U, payload, 5U);
+    K230Link_Update(1U);
+
+    CHECK(K230Link_GetTarget(&target) == 1U);
+    CHECK(target.valid == 1U);
+    CHECK(target.offsetX == 400);
+    CHECK(target.offsetY == -120);
+    CHECK(target.sequence == 0x31U);
+    /* Update() 先解析再累加年龄，所以同拍解析的帧出来就是 1 拍，不是 0。 */
+    CHECK(target.ageTicks == 1U);
+}
+
+static void test_target_goes_stale_after_timeout(void)
+{
+    uint8_t payload[5];
+    K230Link_Target_t target;
+    uint8_t tick;
+
+    Setup();
+    BuildTargetPayload(payload, 1U, 250, 0);
+    FeedFrame(K230_LINK_MESSAGE_TARGET, 0x32U, payload, 5U);
+    K230Link_Update(1U);
+    CHECK(K230Link_GetTarget(&target) == 1U);
+
+    for (tick = 0U; tick < K230_LINK_TARGET_TIMEOUT_TICKS; tick++)
+    {
+        K230Link_Update(1U);
+    }
+    CHECK(K230Link_GetTarget(&target) == 0U);
+}
+
+static void test_new_target_frame_refreshes_age(void)
+{
+    uint8_t payload[5];
+    K230Link_Target_t target;
+    uint8_t tick;
+
+    Setup();
+    BuildTargetPayload(payload, 1U, 250, 0);
+    FeedFrame(K230_LINK_MESSAGE_TARGET, 0x33U, payload, 5U);
+    K230Link_Update(1U);
+
+    for (tick = 0U; tick < K230_LINK_TARGET_TIMEOUT_TICKS - 2U; tick++)
+    {
+        K230Link_Update(1U);
+    }
+    BuildTargetPayload(payload, 1U, -300, 40);
+    FeedFrame(K230_LINK_MESSAGE_TARGET, 0x34U, payload, 5U);
+    K230Link_Update(1U);
+
+    CHECK(K230Link_GetTarget(&target) == 1U);
+    CHECK(target.sequence == 0x34U);
+    CHECK(target.offsetX == -300);
+    CHECK(target.ageTicks == 1U);
+}
+
+/* 超时后不写调用方缓冲：调用方必须靠返回值判失效，而不是读到旧值。 */
+static void test_stale_target_does_not_overwrite_caller(void)
+{
+    uint8_t payload[5];
+    K230Link_Target_t target;
+    uint8_t tick;
+
+    Setup();
+    BuildTargetPayload(payload, 1U, 777, 0);
+    FeedFrame(K230_LINK_MESSAGE_TARGET, 0x35U, payload, 5U);
+    K230Link_Update(1U);
+    CHECK(K230Link_GetTarget(&target) == 1U);
+
+    for (tick = 0U; tick < K230_LINK_TARGET_TIMEOUT_TICKS; tick++)
+    {
+        K230Link_Update(1U);
+    }
+
+    target.offsetX = 12345;
+    CHECK(K230Link_GetTarget(&target) == 0U);
+    CHECK(target.offsetX == 12345);
+}
+
 static void test_bad_crc_is_rejected(void)
 {
     uint8_t frame[19];
@@ -220,6 +316,10 @@ int main(void)
     test_sentinel_band_is_marked_invalid();
     test_lane_goes_stale_after_timeout();
     test_new_frame_refreshes_age();
+    test_target_frame_is_decoded();
+    test_target_goes_stale_after_timeout();
+    test_new_target_frame_refreshes_age();
+    test_stale_target_does_not_overwrite_caller();
     test_bad_crc_is_rejected();
     test_wrong_length_is_rejected();
     test_lane_before_handshake_is_ignored();

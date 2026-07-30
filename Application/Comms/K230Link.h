@@ -17,6 +17,11 @@
 #define K230_LINK_MESSAGE_TARGET         0x10U
 #define K230_LINK_MESSAGE_LANE           0x13U
 
+/* TARGET 的新鲜度上限：100 Hz 下 200 ms。钢球平衡是双积分对象，拿冻结
+ * 的球位算 PD 会让倾角锁死、球一路加速滚到挡片，因此比 LANE 的 300 ms
+ * 更紧。BallBalance 另有一道更严的判据，两者层次不同。 */
+#define K230_LINK_TARGET_TIMEOUT_TICKS   20U
+
 /* LANE 的 PAYLOAD：valid:u8 | b0..b4:int16_LE | confidence:u8。
  * b0 最近、b4 最远，单位是千分比（相对画面宽度），符号与 TARGET 一致：
  * 画面中心 - 车道中心，车道偏右时为负。 */
@@ -47,6 +52,7 @@ typedef struct
     int16_t offsetX;
     int16_t offsetY;
     uint8_t sequence;
+    uint8_t ageTicks;    /* 距最近一帧的控制拍数，饱和在超时阈值。 */
 } K230Link_Target_t;
 
 typedef struct
@@ -62,6 +68,8 @@ typedef struct
 void K230Link_Init(void);
 void K230Link_Update(uint8_t elapsedTicks);
 uint8_t K230Link_IsReady(void);
+/* 从未收到或已超时返回 0，此时不写 *target。调用方必须按视觉失效处理，
+ * 绝不能把上一帧的球位当成当前有效数据继续做闭环。 */
 uint8_t K230Link_GetTarget(K230Link_Target_t *target);
 /* 从未收到或已超时返回 0，此时不写 *lane。调用方必须按视觉失效处理，
  * 绝不能把上一帧的偏差当成当前有效数据继续用。 */
