@@ -94,6 +94,14 @@ assert.ok(display.includes('"T:%lu.%02lus"'),
     'OLED first row must show seconds and centiseconds');
 assert.ok(display.includes('"IR:"'),
     'OLED must render the six-channel infrared state');
+assert.match(display, /#include "Hardware\/Motor\/Stepper\.h"/,
+    'OLED must include the stepper status interface');
+assert.ok(display.includes('Stepper_GetStatus(&stepperStatus);'),
+    'OLED must read the stepper status');
+assert.ok(display.includes('"EC:"') && display.includes('encoderCounts'),
+    'OLED must retain the historical stepper encoder-count row');
+assert.ok(display.includes('"EA:"') && display.includes('multiTurnAngleDeg'),
+    'OLED must retain the historical stepper angle row');
 assert.ok(display.includes('Accomplish26H_GetState()'),
     'OLED must expose a 26H task error');
 assert.ok(displayHeader.includes('DebugDisplay_ShowHeadingCalibration'),

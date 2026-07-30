@@ -7,6 +7,7 @@
 #include "Application/State/Odometry.h"
 #include "Hardware/Board/Key.h"
 #include "Hardware/Display/OLED.h"
+#include "Hardware/Motor/Stepper.h"
 #include "Hardware/Sensors/Graydetect.h"
 #include "System/Tick.h"
 
@@ -167,6 +168,7 @@ void DebugDisplay_Update(uint8_t elapsedTicks)
     uint8_t grayState;
     uint8_t lineFollowerOnline;
     uint8_t keyMask;
+    Stepper_Status_t stepperStatus;
 
     if ((uint16_t)s_refreshTicks + elapsedTicks <
         DEBUG_DISPLAY_REFRESH_TICKS)
@@ -186,14 +188,18 @@ void DebugDisplay_Update(uint8_t elapsedTicks)
         OLED_Update();
         return;
     }
+    Stepper_GetStatus(&stepperStatus);
     DebugDisplay_ShowElapsedTime();
 
     DebugDisplay_ShowLineFollowerState(grayState, lineFollowerOnline);
     DebugDisplay_ShowKeyState(keyMask);
     DebugDisplay_ShowMotionValue(24, "LD:", Odometry_GetDistanceLMM(), "mm");
-    DebugDisplay_ShowMotionValue(32, "LV:", Odometry_GetSpeedL(), "mm/s");
+    OLED_ShowString(0, 32, "EC:", OLED_6X8);
+    OLED_ShowSignedNum(
+        18, 32, stepperStatus.encoderCounts, 10U, OLED_6X8);
     DebugDisplay_ShowMotionValue(40, "RD:", Odometry_GetDistanceRMM(), "mm");
-    DebugDisplay_ShowMotionValue(48, "RV:", Odometry_GetSpeedR(), "mm/s");
+    DebugDisplay_ShowMotionValue(
+        48, "EA:", stepperStatus.multiTurnAngleDeg, "deg");
 
     DebugDisplay_ShowMotionState();
     OLED_Update();
