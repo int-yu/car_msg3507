@@ -4,7 +4,7 @@
 #include <stdint.h>
 
 /*
- * 二进制遥测帧编码。协议规范见 docs/superpowers/specs/2026-07-21-二进制DMA架构-design.md。
+ * 二进制遥测帧编码。
  *
  * 帧格式（与 K230Link 同范式，可靠地与 ASCII 命令回应共存于同一 UART）：
  *   0xAA 0x55 | VER | TYPE | SEQ | LEN | PAYLOAD(LEN 字节) | CRC8

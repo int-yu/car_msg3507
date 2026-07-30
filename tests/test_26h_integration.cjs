@@ -71,6 +71,19 @@ assert.match(taskHeader, /ACCOMPLISH_26H_MARKER_CONFIRM_TICKS/,
     '26H header must require several independent marker samples');
 assert.match(taskHeader, /Accomplish26H_TuneFinishRolloutMM/,
     '26H header must expose the field parking-offset calibration');
+for (const name of [
+    'Accomplish26H_TuneCruiseSpeedMMps',
+    'Accomplish26H_TuneFinishCrawlSpeedMMps',
+    'Accomplish26H_TuneStartClearDistanceMM',
+    'Accomplish26H_TuneNominalLapDistanceMM',
+    'Accomplish26H_TuneFinishApproachDistanceMM',
+    'Accomplish26H_TuneFinishMarkerArmDistanceMM',
+    'Accomplish26H_TuneMaxLapDistanceMM',
+]) {
+    assert.ok(taskHeader.includes(name), `26H must expose ${name}`);
+}
+assert.ok(task.includes('Accomplish26H_SnapshotParameters()'),
+    '26H must snapshot Param values only when KEY1 starts a new run');
 
 assert.ok(line.includes('MotionLine_SetSpeed'),
     'MotionLine must support in-place speed changes without PID reset');
@@ -80,11 +93,23 @@ assert.ok(line.includes('MOTION_LINE_ACCELERATION_MMPS2'),
     'MotionLine must ramp cruise speed');
 assert.ok(line.includes('MOTION_LINE_MAX_ADJUST_RATE_MMPS2'),
     'MotionLine must limit correction-rate steps');
+assert.ok(line.includes('MotionLine_SnapshotTunings()'),
+    'MotionLine must snapshot acceleration/deceleration at Start');
 assert.doesNotMatch(line, /Heading_GetYawRate|Application\/State\/Heading\.h/,
     'H2 line tracking must rely on infrared rather than the IMU');
 
 assert.ok(param.includes('"h2off"'),
     'K parameter table must expose the H2 parking-offset calibration');
+for (const name of [
+    'h2cru', 'h2fin', 'h2clr', 'h2lap', 'h2app', 'h2arm', 'h2max',
+    'lacc', 'ldec',
+]) {
+    assert.ok(param.includes(`{ "${name}"`),
+        `K parameter table must append ${name}`);
+}
+assert.doesNotMatch(task + read('Application/Control/MotionManager.h') +
+    read('Application/Control/MotionManager.c'), /SetLineDeceleration/,
+    'H2 must keep the existing MotionLine control path without a runtime deceleration setter');
 
 assert.match(display, /#include "Accomplish\/26H\.h"/,
     'OLED must read the 26H timer');

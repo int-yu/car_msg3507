@@ -6,7 +6,7 @@
 /* 六路红外巡线参数：状态位为 1 表示检测到已学习的黑线目标色。 */
 #define MOTION_LINE_OUTER_WEIGHT          6       /* 最外侧通道的权重绝对值。 */
 #define MOTION_LINE_INNER_WEIGHT          3       /* 内侧通道的权重绝对值。 */
-#define MOTION_LINE_MAX_ADJUST_RATIO      0.2f    /* 最外侧压线时，每侧增减当前速度的比例。 */
+#define MOTION_LINE_MAX_ADJUST_RATIO      0.24f    /* 最外侧压线时，每侧增减当前速度的比例。 */
 #define MOTION_LINE_MAX_SPEED_MMPS        1000.0f /* MotionLine_Start() 允许的巡线速度上限。 */
 #define MOTION_LINE_ACCELERATION_MMPS2    300.0f  /* 启动/提速斜坡；避免目标速度突变。 */
 #define MOTION_LINE_DECELERATION_MMPS2    360.0f  /* 降速/停车斜坡；低于急停的安全减速度。 */
@@ -15,11 +15,13 @@
 #define MOTION_LINE_MAX_ADJUST_RATE_MMPS2 1200.0f /* 左右差速修正的最大变化率。 */
 #define MOTION_LINE_LOST_CONFIRM_TICKS    8U      /* 连续全白 80 ms 后确认丢线。 */
 
-/* 运行时可调参数：上电恢复默认值，由 K 命令经 Param 模块读写，写入即生效。
- * TuneWeightKd 是权重变化率阻尼（mm/s 每 权重单位/s），默认 0 时行为与
- * 纯离散权重差速完全一致；弧线上左右摆动明显时少量增加以抑制震荡。 */
+/* 可调参数：上电恢复默认值，由 K 命令经 Param 模块读写；MotionLine_Start()
+ * 会一次性快照，运行中继续写入只影响下一次启动。TuneWeightKd 是权重变化率
+ * 阻尼（mm/s 每 权重单位/s），弧线上左右摆动明显时可少量增加。 */
 extern float MotionLine_TuneMaxAdjustRatio;
 extern float MotionLine_TuneWeightKd;
+extern float MotionLine_TuneAccelerationMMps2;
+extern float MotionLine_TuneDecelerationMMps2;
 
 typedef enum
 {

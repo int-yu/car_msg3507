@@ -86,9 +86,9 @@
 
 ### 3.2 100 Hz 主循环与 26H 单圈巡线
 
-当前加载 `Accomplish/26H.c` 的独立控制器，实现 H 题要求 2。KEY1 在 READY、完成或错误后按下时清零累计 Tick，启动平滑巡线；先确认已离开 A 点横向启停线，跑满最小圈长且进入终点慢速段后，才允许把该标志识别为终点。正常巡线只使用六路红外：速度、差速和入弯限速都由低通后的红外位置误差连续生成，不使用 MPU6050 参与循迹。预计回 A 前，巡线基准速度从 450 mm/s 平滑降至 160 mm/s；六路同时压到 A 点横线并连续确认 3 帧后，继续巡线到可标定的停车偏移，再平滑降至零并确认双轮低速 100 ms 后自动冻结时间。未在 20.00 s 内完成停车会冻结计时并以失败软停。**KEY1+KEY2 同时按下**为物理急停：立即合成 `C0` 停车，并优先冻结当前计时，不能触发新的计时轮次。计时使用 100 Hz 整数系统节拍，分辨率为 10 ms。
+当前加载 `Accomplish/26H.c` 的独立控制器，实现 H 题要求 2。KEY1 在 READY、完成或错误后按下时清零累计 Tick，启动平滑巡线；先确认已离开 A 点横向启停线，跑满最小圈长且进入终点慢速段后，才允许把该标志识别为终点。正常巡线只使用六路红外：速度、差速和入弯限速都由低通后的红外位置误差连续生成，不使用 MPU6050 参与循迹。预计回 A 前，巡线基准速度从 650 mm/s 平滑降至 300 mm/s；任意三路黑线同时压到 A 点横线并连续确认 3 帧后，继续巡线到可标定的停车偏移，再平滑降至零并确认双轮低速 100 ms 后自动冻结时间。未在 20.00 s 内完成停车会冻结计时并以失败软停。**KEY1+KEY2 同时按下**为物理急停：立即合成 `C0` 停车，并优先冻结当前计时，不能触发新的计时轮次。计时使用 100 Hz 整数系统节拍，分辨率为 10 ms。
 
-题面 A 点是一条垂直于环线、长 5 cm 的黑色启停线，停车误差按车身指定测试点相对于该线中心的距离判定，而不是红外条的位置。`K27`（`h2off`，单位 mm）控制“首次确认横线后，继续巡线多少距离再开始软停”；其初值为 0，必须在实车上标定。车停在基准线之前就增大 `K27`，停过基准线就减小它；完成标定后把稳定值写回 `ACCOMPLISH_26H_FINISH_ROLLOUT_MM`。
+题面 A 点是一条垂直于环线、长 5 cm 的黑色启停线，停车误差按车身指定测试点相对于该线中心的距离判定，而不是红外条的位置。`K30`（`h2off`，单位 mm）控制“首次确认横线后，继续巡线多少距离再开始软停”；其初值为 0，必须在实车上标定。车停在基准线之前就增大 `K30`，停过基准线就减小它；完成标定后把稳定值写回 `ACCOMPLISH_26H_FINISH_ROLLOUT_MM`。
 
 `App_Init()` 继续初始化并校准 MPU6050，`App_Update()` 继续更新 Heading 和里程，并在此后采样一次六路红外状态；保留的航向运动和调试命令仍可使用。正常 OLED 页面第 0 行改为 `T:<秒>.<百分秒>s`，开机 MPU6050 校准页面继续保留。
 
@@ -174,18 +174,21 @@ Heading -> Odometry -> Gimbal -> Key -> BluetoothDebug
 
 命令不区分大小写。推荐以 `\r` 或 `\n` 结束；也支持空格、逗号、分号作为分隔符。没有结束符时，接收空闲 3 个系统节拍（30 ms）后执行。每条命令都会返回 `OK ...` 或 `ERR ...`。
 
-`C` 命令进入单槽任务事件邮箱；App 每个有效节拍最多提供一个任务信号。普通信号不排队，同一拍只保留最后收到的一条；`C0` 具有最高优先级，待处理时不会被普通信号覆盖，并立即停车。26H 同时将 `C0` 视为急停，冻结当前计时；`C1~C255` 不消费。
+`C` 命令进入单槽任务事件邮箱；App 每个有效节拍最多提供一个任务信号。普通信号不排队，同一拍只保留最后收到的一条；`C0` 具有最高优先级，待处理时不会被普通信号覆盖，并立即停车。当前 `C3` 启动要求 3 摆球，等效实体 `KEY2`；`C4` 停止摆球闭环并让摆杆回中。除 `C0/C3/C4` 外的非零信号继续保留给其他任务。
 
 | 命令 | 作用 | 输入范围与限位 | 示例 |
 |---|---|---|---|
-| `C<number>` | 发送保留的 Mission 单次任务信号；`C0` 固定全局停车并冻结 26H 计时，`C1~C255` 当前 26H 不消费 | `0~255`，超限返回 `ERR RANGE` | `C1` |
+| `C0` | 全局急停，停止底盘与摆球并冻结 26H 计时 | 始终有效且优先级最高 | `C0` |
+| `C3` | 启动要求 3 的 `O → +5 cm → -5 cm` 摆球序列，等效按下实体 `KEY2` | 钢球视觉必须就绪、底盘与摆球任务必须空闲；成功回 `OK BALL START` | `C3` |
+| `C4` | 结束要求 3，停止闭环并让摆杆回中；不是全局急停 | 成功回 `OK BALL STOP` | `C4` |
+| `C<number>`（其他非零值） | 发送保留的 Mission 单次任务信号 | `1~255`，当前任务未定义的编号不消费 | `C1` |
 | `L<number>` | 只更新左轮 PWM，右轮保持上次指令 | `-1000~1000`，超限自动夹紧 | `L10` |
 | `R<number>` | 只更新右轮 PWM，左轮保持上次指令 | `-1000~1000`，超限自动夹紧 | `R10` |
 | `U<number>` | 左右轮使用相同 PWM | `-1000~1000`；正数前进，负数后退 | `U100` |
 | `O<number>` | 纵向舵机移动到指定角度 | 当前限位 `0°~270°` | `O10` |
 | `D<number>` | 横向舵机移动到指定角度 | 当前限位 `0°~270°` | `D10` |
-| `G<number>` | 设置遥测 CSV 输出频率；`G0` 关闭输出 | `0~100` Hz（硬上限）；实际安全上限由当前字段掩码动态决定，超限返回 `ERR RANGE MAX=<当前安全上限>` | `G20` |
-| `M<number>` | 设置遥测**通道掩码**（12 位，见 3.3.2），改变时发一帧二进制 SCHEMA | `1~4095`（`0x0FFF`），`0` 或超限返回 `ERR RANGE`；成功回报新频率 `OK M=<mask> G=<hz>` | `M6`（TR+RV 略） |
+| `G<number>` | 设置二进制遥测输出频率；`G0` 关闭输出 | `0~100` Hz（硬上限）；实际安全上限由当前字段掩码动态决定，超限返回 `ERR RANGE MAX=<当前安全上限>` | `G20` |
+| `M<number>` | 设置遥测**通道掩码**（16 位，见 3.3.2），改变时发一帧二进制 SCHEMA | `1~65535`（`0xFFFF`），`0` 返回 `ERR RANGE`；成功回报新频率 `OK M=<mask> G=<hz>` | `M49152`（bpos+bref） |
 | `V<number>` | 设置调试巡航速度 | `20~800` mm/s，默认 200 | `V200` |
 | `F<number>` | 前进定距，终点速度 0 | `1~10000` mm，忙时 `ERR BUSY` | `F300` |
 | `B<number>` | 后退定距，终点速度 0 | `1~10000` mm，忙时 `ERR BUSY` | `B300` |
@@ -195,7 +198,7 @@ Heading -> Odometry -> Gimbal -> Key -> BluetoothDebug
 | `P<number>` | 请求 K230 连拍并存 TF 卡 | `1~20`，链路未就绪返回 `ERR CAP NOLINK` | `P1` |
 | `W<number>` | 闭环恒速模式：双轮同目标速度、无规划斜坡、无航向修正，是轮速 PI 的标准阶跃激励；运动中重复发 `W` 直接改目标（不复位 PID，可链式阶跃）；`W0` 停止并释放电机 | `-800~800` mm/s；其他模式忙时 `ERR BUSY`，`W0` 只停恒速模式 | `W300` |
 | `N<number>` | 直接启动巡线（不经 Mission 状态图）；`N0` 停止 | `20~800` mm/s；其他模式忙时 `ERR BUSY`，`N0` 只停巡线模式；丢线后自动完成 | `N200` |
-| `K?` / `K<id>?` / `K<id>=<float>` | 运行时读写控制参数（见 3.3.1 参数表）：列表 / 读单个 / 写入（支持小数与负号，写入立即生效） | id `1~27`；越界返回 `ERR K RANGE MIN=<min> MAX=<max>`，格式错误返回 `ERR K FORMAT` | `K27=35` |
+| `K?` / `K<id>?` / `K<id>=<float>` | 运行时读写控制参数（见 3.3.1 参数表）：列表 / 读单个 / 写入（支持小数与负号，写入立即生效） | id `1~33`；越界返回 `ERR K RANGE MIN=<min> MAX=<max>`，格式错误返回 `ERR K FORMAT` | `K28=0.1` |
 | `E<number>` | 陀螺仪尺度标定：`E1` 开始（清零标定角），`E0` 取消 | 仅 `0/1`；运动中 `ERR BUSY`，MPU 离线 `ERR CAL OFFLINE` | `E1` |
 | `Y<number>` | 原地转 n 整圈回到起始朝向后结束标定，解算并应用尺度因子 | `1~20` 圈；未在标定中返回 `ERR CAL IDLE`，积分角过小返回 `ERR CAL SMALL`；成功回 `OK Y SCALE=<新因子> RAW=<积分角>` | `Y3` |
 | `Q` | 查询遥测能力；**上位机据此自适应频率，不再各存一份阈值** | 无参数（裸 `Q` 即可）；回 `OK Q MAX=<上限Hz> MASK=<掩码> RATE=<当前Hz>` | `Q` |
@@ -208,13 +211,12 @@ Heading -> Odometry -> Gimbal -> Key -> BluetoothDebug
 
 `L/R/U` 只在 MotionManager 空闲时执行，自动运动期间返回 `ERR BUSY`。数字仍是开环 PWM，不是 mm/s；OLED 上的 `LV/RV` 是编码器实测速度。
 
-**`G` 命令的上限是动态的。** `Serial1_SendByte()` 是阻塞发送，发送期间主循环完全停止。字段越多行越长，允许的最高频率越低：全字段（掩码 1023）时安全上限约 14 Hz，轮速调参子集（掩码 216 = speed+mode+target+pwm）约 30 Hz，只开 YAW（掩码 1）时可达 92 Hz。发送 `G<n>` 超过当前安全上限时，返回 `ERR RANGE MAX=<上限>` 而不是固定文本，用户可据此调整频率或先用 `M` 精简字段再提速。调参时应按网页「调参试验」的预设只开相关字段换高频。
+**`G` 命令的上限仍由当前掩码动态计算。** 发送已经改为 DMA，不再阻塞控制环；限流现在用于守住 115200 8N1 的串口总带宽。当前 16 个通道全开时 SAMPLE 帧为 75 字节，100 Hz 约 7.5 KB/s，仍在 70% 带宽预算内。网页会按调参阶段选字段并通过 `Q` 读取固件给出的真实上限。
 
 ### 3.3.0 二进制 DMA 遥测架构
 
 > **本节描述当前架构。** 遥测数据已从 ASCII CSV 改为二进制帧 + DMA 非阻塞发送。
-> 设计动机与协议规范见 `docs/superpowers/specs/2026-07-21-二进制DMA架构-design.md`；
-> 下文 3.3.2 及"遥测 CSV 格式"等 ASCII 描述是**历史架构**，已被本节取代。
+> 线上的帧定义以 `Application/Debug/TelemFrame.h` 和本节为准；下文“遥测 CSV 格式”等 ASCII 描述是**历史架构**，已被本节取代。
 
 **核心变化。** `Serial1`（当前落在物理 UART2）的发送从逐字节阻塞（`transmitDataBlocking`）改为 **DMA 搬运 + 环形缓冲**：主循环只往缓冲写、从不等硬件，DMA 完成中断推进下一段。发送不再占用主循环，遥测带宽预算从 20% 放宽到 70%。数据从 ASCII CSV（一个 float 占 11 字节）改为**二进制帧**（float32 只占 4 字节，压缩 2.5×）。两者叠加，单侧实时流上限从阻塞 ASCII 的 57 Hz 提到约 **450 Hz** 理论值，实际夹在 100 Hz 硬上限——**远超 100 Hz 控制环，实时流本身即无损**。
 
@@ -238,7 +240,7 @@ Heading -> Odometry -> Gimbal -> Key -> BluetoothDebug
 
 ### 3.3.2 通道掩码（`M` 命令）
 
-12 通道位定义见 `TELEMETRY_CH_*`，由 `M<mask>` 选择实时流通道。
+16 通道位定义见 `TELEMETRY_CH_*`，由 `M<mask>` 选择实时流通道。
 
 | 位 | 通道 | 单位 | 来源 |
 |---:|---|---|---|
@@ -254,24 +256,12 @@ Heading -> Odometry -> Gimbal -> Key -> BluetoothDebug
 | `0x200` | `gray` | 位图 | 兼容字段名；低 6 位为六路红外 CH1~CH6 状态 |
 | `0x400` | `LD` | mm | 左轮累计路程 |
 | `0x800` | `RD` | mm | 右轮累计路程 |
+| `0x1000` | `vx` | — | K230 最近视觉带偏差，车道偏右为正 |
+| `0x2000` | `vad` | mm/s | 视觉差速修正量，正值表示右转 |
+| `0x4000` | `bpos` | mm | 要求 3 钢球实测位置；视觉未就绪时为无效值 |
+| `0x8000` | `bref` | mm | 要求 3 梯形轨迹参考位置，与 `bpos` 同一控制拍采样 |
 
-`TELEMETRY_CH_ALL = 0x0FFF`。位序即帧列序，一经发布不得重排。二进制 SAMPLE 帧字节数 = 7（帧开销）+ 4（ms）+ 通道数×4；全 12 通道 59 字节，100 Hz 时仅 5.9 KB/s，占 115200 波特带宽的一半。网页调参试验按阶段自动选最优通道并用 `Q` 命令问出真实上限。
-
-| 位 | 通道 | 内容 |
-|---:|---|---|
-| `0x001` | `TL` | 左轮目标速度 mm/s |
-| `0x002` | `LV` | 左轮实测速度 mm/s |
-| `0x004` | `PL` | 左轮输出 PWM |
-| `0x008` | `TR` | 右轮目标速度 mm/s |
-| `0x010` | `RV` | 右轮实测速度 mm/s |
-| `0x020` | `PR` | 右轮输出 PWM |
-| `0x040` | `yaw` | 连续累计航向角（度）；Heading 离线时无效/空值 |
-| `0x080` | `navE` | 转向角误差（度）；Heading 离线时无效/空值 |
-| `0x100` | `lerr` | 巡线权重误差 |
-
-常用组合：调左轮 `X7`（TL+LV+PL）、调右轮 `X56`（TR+RV+PR）、双轮对比 `X27`（TL+LV+TR+RV）、转向 `X208`（navE+yaw+LV+RV）。
-
-位序即 dump 时的列序，**一经发布不得重排，只能在尾部追加**——网页按 `CH,` 表头的列名解析，但固件写入顺序由位序决定。
+`TELEMETRY_CH_ALL = 0xFFFF`。位序即帧列序，一经发布不得重排。二进制 SAMPLE 帧字节数 = 7（帧开销）+ 4（ms）+ 通道数×4；全 16 通道 75 字节，100 Hz 时约 7.5 KB/s。要求 3 调参使用 `M49152`（`0x4000|0x8000`），只发送 `bpos/bref`，可稳定跑到 100 Hz。
 
 ### 3.3.1 运行时参数表（K 命令）
 
@@ -305,17 +295,29 @@ Heading -> Odometry -> Gimbal -> Key -> BluetoothDebug
 | 24 | `rwil` | `MotionWheel_TuneRightIntegralLimit` | mm | 0~1000 |
 | 25 | `rwff` | `MotionWheel_TuneRightFeedforwardPWMPerMMps` | PWM/(mm/s) | 0~10 |
 | 26 | `rwsf` | `MotionWheel_TuneRightStaticFrictionPWM` | PWM | 0~500 |
-| 27 | `h2off` | `Accomplish26H_TuneFinishRolloutMM` | mm | 0~300 |
-| 28 | `bkp` | `BallBalance_TuneKp` | 度/mm | 0~2 |
-| 29 | `bkd` | `BallBalance_TuneKd` | 度/(mm/s) | 0~1 |
-| 30 | `bgk` | `BallBalance_TuneGravityCoupling` | (mm/s²)/度 | 10~400 |
-| 31 | `bhl` | `BallSensor_TuneHalfLengthMM` | mm | 50~200 |
-| 32 | `bgr` | `BeamActuator_TuneGearRatio` | 倍 | 0.1~50 |
-| 33 | `bzo` | `BeamActuator_TuneZeroOffsetDeg` | 度 | -20~20 |
+| 27 | `vkp` | `MotionLane_TuneKp` | 比例 | 0~5 |
+| 28 | `vkd` | `MotionLane_TuneKdYaw` | 比例 | 0~10 |
+| 29 | `vra` | `MotionLane_TuneMaxAdjustRatio` | 比例 | 0.05~1 |
+| 30 | `h2off` | `Accomplish26H_TuneFinishRolloutMM` | mm | 0~300 |
+| 31 | `bkp` | `BallBalance_TuneKp` | 度/mm | 0~2 |
+| 32 | `bkd` | `BallBalance_TuneKd` | 度/(mm/s) | 0~1 |
+| 33 | `bgk` | `BallBalance_TuneGravityCoupling` | (mm/s²)/度 | 10~400 |
+| 34 | `bhl` | `BallSensor_TuneHalfLengthMM` | mm | 50~200 |
+| 35 | `bgr` | `BeamActuator_TuneGearRatio` | 倍 | 0.1~50 |
+| 36 | `bzo` | `BeamActuator_TuneZeroOffsetDeg` | 度 | -20~20 |
+| 37 | `h2cru` | `Accomplish26H_TuneCruiseSpeedMMps` | mm/s | 20~1000 |
+| 38 | `h2fin` | `Accomplish26H_TuneFinishCrawlSpeedMMps` | mm/s | 10~1000 |
+| 39 | `h2clr` | `Accomplish26H_TuneStartClearDistanceMM` | mm | 0~1000 |
+| 40 | `h2lap` | `Accomplish26H_TuneNominalLapDistanceMM` | mm | 1000~20000 |
+| 41 | `h2app` | `Accomplish26H_TuneFinishApproachDistanceMM` | mm | 0~5000 |
+| 42 | `h2arm` | `Accomplish26H_TuneFinishMarkerArmDistanceMM` | mm | 0~20000 |
+| 43 | `h2max` | `Accomplish26H_TuneMaxLapDistanceMM` | mm | 1000~25000 |
+| 44 | `lacc` | `MotionLine_TuneAccelerationMMps2` | mm/s² | 10~5000 |
+| 45 | `ldec` | `MotionLine_TuneDecelerationMMps2` | mm/s² | 10~5000 |
 
-id 一经发布不得重排，新增参数只能在尾部追加。K1~K5 为旧上位机保留：写入会同时覆盖左右轮，读取返回两侧当前值的平均数；新调参应使用 K17~K26 分别设置左右轮。基础前馈公式为 `PWMbase = speed×ff + sign(speed)×sf`，再叠加该轮 PI 与上层 trim，最终夹到 ±1000；网页会按当前 W 目标实时显示左右基础 PWM 并提示饱和。`lkd` 是巡线权重变化率阻尼：默认 0 时巡线行为与纯离散权重差速完全一致，弧线段左右摆动明显时少量增加抑制震荡。`h2off` 用于要求 2 的停车基准线标定，增大它会让软停请求更晚发生。`gsc` 由 `E1`→原地转 N 圈→`Y<n>` 标定流程自动写入；`cpm` 建议用网页里程标定向导（记起点→`F1000`→填卷尺实测→自动换算写入）。
+id 一经发布不得重排，新增参数只能在尾部追加。K1~K5 为旧上位机保留：写入会同时覆盖左右轮，读取返回两侧当前值的平均数；新调参应使用 K17~K26 分别设置左右轮。基础前馈公式为 `PWMbase = speed×ff + sign(speed)×sf`，再叠加该轮 PI 与上层 trim，最终夹到 ±1000。K37~K45 与 `h2off`、`lra`、`lkd` 都在下一次 KEY1/N 启动时快照，当前运行中写入不会切换本圈参数；`ldec` 沿用 MotionLine 现有统一减速度，同时负责终点降速和最终软停，不增加额外状态机配置。`gsc` 由 `E1`→原地转 N 圈→`Y<n>` 标定流程自动写入；`cpm` 建议用网页里程标定向导。
 
-K28~K33 是要求 3 摆球的标定量，**全部为未实测的初值**，必须按下面顺序在实车上标定，每轮只改一个：先 `bgr`（实测齿轮比）和 `bzo`（摆杆水平零点），再 `bhl`（钢球放 0/±25/±50 mm 处读数反推半杆长），然后 `bgk`（给固定倾角、量钢球加速度反推重力耦合系数），最后才是 `bkd`（压过冲）和 `bkp`。**不要加积分项**：钢球是双积分对象，加 I 极易失稳；静摩擦死区应靠加大 `bkd` 解决。
+K31~K36 是要求 3 摆球的标定量，**全部为未实测的初值**，必须按下面顺序在实车上标定，每轮只改一个：先 `bgr`（实测齿轮比）和 `bzo`（摆杆水平零点），再 `bhl`（钢球放 0/±25/±50 mm 处读数反推半杆长），然后 `bgk`（给固定倾角、量钢球加速度反推重力耦合系数），最后才是 `bkd`（压过冲）和 `bkp`。**不要加积分项**：钢球是双积分对象，加 I 极易失稳；静摩擦死区应靠加大 `bkd` 解决。
 
 **遥测 CSV 格式（⚠️ 历史架构，已被 3.3.0 的二进制帧取代）。** 以下 ASCII CSV 描述对应第一次架构；当前固件发二进制 SCHEMA/SAMPLE 帧，通道定义见 3.3.2。保留本段仅为理解演进历史。每次字段掩码改变时输出一行表头 `H,...`，随后每隔 `1000/G` ms 输出一行数据：
 
@@ -393,7 +395,9 @@ OLED 默认显示 26H 单圈计时、六路红外 CH1~CH6、四个按键、左�
 | 蓝牙命令 | 作用 | 当前限制 |
 |---|---|---|
 | `C0` | 全局停车 | 始终有效，同时冻结 26H 计时并失能 Gimbal |
-| `C1~C255` | Mission 单次事件 | 当前 26H 不消费 |
+| `C3` | 启动要求 3 摆球，等效实体 `KEY2` | 视觉、底盘和摆球任务必须就绪/空闲 |
+| `C4` | 停止要求 3 并让摆杆回中 | 仅停止摆球，不替代 `C0` 全局急停 |
+| 其他非零 `C` 信号 | Mission 单次事件 | 当前任务未定义的编号不消费 |
 | `L<number>` | 设置左轮开环 PWM | MotionManager 空闲时有效，范围 `-1000~1000` |
 | `R<number>` | 设置右轮开环 PWM | MotionManager 空闲时有效，范围 `-1000~1000` |
 | `U<number>` | 设置双轮相同开环 PWM | MotionManager 空闲时有效，范围 `-1000~1000` |
@@ -533,9 +537,9 @@ uint8_t TestApp_Update(App_UpdateContext_t *context); /* 更新测试通道并�
 | `Application/Control/MotionManager.c/.h` | 统一包装直线、巡线、转向和短暂刹车；自动停止旧模式并只更新当前模式 |
 | `Application/Control/Nav.c/.h` | 头文件顶部保存转向参数；源文件实现连续航向目标、双轮等速反向转向和到角稳定判定 |
 | `Application/Debug/DebugDisplay.c/.h` | 组织启动零漂提示、基础状态和 MotionLine 运行状态的 OLED 八行调试数据 |
-| `Application/Debug/Telemetry.c/.h` | 表驱动组装二进制 SCHEMA/SAMPLE 帧，按频率和 12 通道掩码经 `Serial1`/UART2（DMA）输出（`SampleChannels`/`SendSchema` 原为捕获而导出，模块删除后已收回 `static`） |
+| `Application/Debug/Telemetry.c/.h` | 表驱动组装二进制 SCHEMA/SAMPLE 帧，按频率和 16 通道掩码经 `Serial1`/UART2（DMA）输出；`bpos/bref` 在要求 3 控制更新后同拍采样 |
 | `Application/Debug/TelemFrame.c/.h` | 二进制帧编码：CRC-8/ATM、帧构建、float32 小端打包；与 K230Link 同 CRC |
-| `Application/Debug/Param.c/.h` | 运行时调参注册表：K 命令后端，26 个参数的读写、范围校验、左右轮独立参数与 PID apply 钩子 |
+| `Application/Debug/Param.c/.h` | 运行时调参注册表：K 命令后端，33 个参数的读写、范围校验、左右轮独立参数与要求 3 摆球标定量 |
 | `Application/Servo/Servo.c/.h` | 纵向/横向角度限位并换算为 500~2500 us 脉宽，写入 TIMG7 CCP1/CCP0 |
 | `Application/State/Heading.c/.h` | MPU6050 Z 轴零漂标定、角速度积分和尺度标定 |
 | `Application/State/Odometry.c/.h` | 读取编码器增量，累计左右路程并计算 mm/s 速度 |
@@ -749,7 +753,7 @@ MotionLine_Error_t MotionLine_GetError(void);
 float MotionLine_GetLineError(void);
 ```
 
-`MotionLine_GetLineError()` 当前返回最近一次有效六路红外状态位图得到的离散权重，范围为 `-6~+6`，它不再是 PID 输入误差。两个 `Tune` 变量运行时可调、写入即生效：`TuneMaxAdjustRatio` 对应原 `MOTION_LINE_MAX_ADJUST_RATIO`；`TuneWeightKd` 是权重变化率阻尼（默认 0，行为与纯离散权重差速一致），差速修正总量被限制在 ±巡航速度内。
+`MotionLine_GetLineError()` 当前返回最近一次有效六路红外状态位图得到的离散权重，范围为 `-6~+6`，它不再是 PID 输入误差。四个 `Tune` 变量由 `MotionLine_Start()` 一次性快照：最大调整比例、权重变化率阻尼、统一加速度和统一减速度；运行中写入只影响下一次启动，差速修正总量仍限制在 ±巡航速度内。
 
 ### 5.6 `Application/Control/Nav.h`
 
@@ -882,19 +886,26 @@ void DebugDisplay_Update(uint8_t elapsedTicks);
 ### 5.7.1 `Application/Debug/Telemetry.h`
 
 ```c
-#define TELEMETRY_DEFAULT_RATE_HZ        20U
-#define TELEMETRY_RATE_HARD_LIMIT_HZ       100U
-#define TELEMETRY_FIELD_YAW      0x01U
-#define TELEMETRY_FIELD_SENSOR   0x02U
-#define TELEMETRY_FIELD_DISTANCE 0x04U
-#define TELEMETRY_FIELD_SPEED    0x08U
-#define TELEMETRY_FIELD_MODE     0x10U
-#define TELEMETRY_FIELD_K230     0x20U
-#define TELEMETRY_FIELD_TARGET   0x40U
-#define TELEMETRY_FIELD_PWM      0x80U
-#define TELEMETRY_FIELD_NAV      0x100U
-#define TELEMETRY_FIELD_LINE     0x200U
-#define TELEMETRY_FIELD_ALL      0x3FFU
+#define TELEMETRY_DEFAULT_RATE_HZ    50U
+#define TELEMETRY_RATE_HARD_LIMIT_HZ 100U
+
+#define TELEMETRY_CH_TL     0x0001U
+#define TELEMETRY_CH_LV     0x0002U
+#define TELEMETRY_CH_PL     0x0004U
+#define TELEMETRY_CH_TR     0x0008U
+#define TELEMETRY_CH_RV     0x0010U
+#define TELEMETRY_CH_PR     0x0020U
+#define TELEMETRY_CH_YAW    0x0040U
+#define TELEMETRY_CH_NAVE   0x0080U
+#define TELEMETRY_CH_LERR   0x0100U
+#define TELEMETRY_CH_GRAY   0x0200U
+#define TELEMETRY_CH_LD     0x0400U
+#define TELEMETRY_CH_RD     0x0800U
+#define TELEMETRY_CH_VX     0x1000U
+#define TELEMETRY_CH_VAD    0x2000U
+#define TELEMETRY_CH_BPOS   0x4000U
+#define TELEMETRY_CH_BREF   0x8000U
+#define TELEMETRY_CH_ALL    0xFFFFU
 
 void Telemetry_Init(void);
 void Telemetry_Update(uint8_t elapsedTicks, uint8_t pressedKeys);
@@ -905,19 +916,19 @@ uint16_t Telemetry_GetFieldMask(void);
 uint8_t Telemetry_GetMaxRateHz(void);
 ```
 
-**为什么频率上限是动态的：** `Serial1_SendByte()` 使用 `DL_UART_Main_transmitDataBlocking()`，是**阻塞发送**——发送期间主循环完全停止，`Heading_Update`、`Odometry_Update`、`MotionManager_Update` 全部挂起。主循环为 100 Hz（每 tick 10 ms），115200 8N1 每字节需 86.8 µs；若允许全字段（约 160 字节）以 100 Hz 发送，主循环占用率会远超 100%，PID 周期将严重失准。因此上限必须根据当前掩码的**实际行长**动态计算，而非固定为 100。调试时只开 YAW 一个字段（行长 25 字节），安全上限可达 92 Hz；开全部 10 个字段时安全上限降至约 14 Hz。这也符合实际调试习惯：需要高频率的场景（如看 PID 阶跃响应）只开相关字段——网页「调参试验」的预设就是按这个原则生成的。
+**为什么仍保留动态频率上限：** DMA 发送不会再阻塞主循环，但物理串口仍只有 115200 8N1。固件按当前二进制 SAMPLE 帧长度计算带宽，并在 100 Hz 控制频率处硬限幅；全 16 通道为 75 字节/帧，100 Hz 约 7.5 KB/s。要求 3 只开 `bpos/bref` 时帧更短，网页会直接请求 100 Hz。
 
 **带宽常量跟随 SysConfig，不写死。** 计算上限用的两个常量定义在 `Telemetry.c` 内部而非头文件里，其中每秒字节数直接由波特率推导：
 
 ```c
 /* 8N1 每字节含起始位和停止位共 10 个位时。 */
 #define TELEMETRY_UART_BYTES_PER_SECOND  ((uint32_t)BLUETOOTH_UART_BAUD_RATE / 10U)
-#define TELEMETRY_MAX_BLOCKING_PERCENT   20U
+#define TELEMETRY_BANDWIDTH_PERCENT      70U
 ```
 
-这样改 UART1 波特率时限流会自动跟上。若写死数值，一旦改了波特率却漏改这里，限流就会按错误的带宽计算，而这种失配没有任何编译期提示：波特率被调低时会严重超发，阻塞发送把主循环连同运动控制一起拖垮。反过来，若忘记在 CCS 中重新生成 SysConfig（`Debug/ti_msp_dl_config.h` 仍是旧波特率），遥测只会自动降到很低的频率，不会超发——失效方向是安全的。
+这样修改 UART 波特率时限流会自动跟随；若实际带宽降低，`Q` 回报的最大频率和 `G` 的范围校验也会同步收紧。
 
-`Telemetry_Init()` 也会用 `Telemetry_GetMaxRateHz()` 把默认频率夹一次。当前默认掩码为全字段（安全上限约 14 Hz），默认请求 20 Hz 会在 `Init` 中被自动夹到上限；默认频率、默认掩码、波特率三者任一改动都会改变这个结果，而 `Init` 不经 `Telemetry_SetRateHz()` 校验，越界不会有任何提示，全靠这次显式夹紧。
+`Telemetry_Init()` 会用 `Telemetry_GetMaxRateHz()` 对默认频率再夹一次；默认频率、掩码或波特率变化后仍不会超发。
 
 ### 5.7.2 `Application/Debug/Param.h`
 

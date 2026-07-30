@@ -1,4 +1,6 @@
 #include "Application/Debug/Telemetry.h"
+#include "Application/Control/BallBalance.h"
+#include "Application/Control/BallSensor.h"
 #include "Application/Control/MotionLane.h"
 #include "Application/Control/MotionLine.h"
 #include "Application/Control/MotionManager.h"
@@ -56,6 +58,15 @@ static float Telemetry_ReadLD(void)   { return Odometry_GetDistanceLMM(); }
 static float Telemetry_ReadRD(void)   { return Odometry_GetDistanceRMM(); }
 static float Telemetry_ReadVX(void)   { return MotionLane_GetLaneError(); }
 static float Telemetry_ReadVAD(void)  { return MotionLane_GetAdjustMMps(); }
+static float Telemetry_ReadBallPosition(void)
+{
+    return (BallSensor_IsFresh() != 0U) ?
+        BallSensor_GetPositionMM() : NAN;
+}
+static float Telemetry_ReadBallReference(void)
+{
+    return BallBalance_GetProfilePositionMM();
+}
 
 /* 顺序必须与 TELEMETRY_CH_* 的位序一致：schema、sample、行长估算都遍历它。 */
 static const Telemetry_Channel_t s_channels[] = {
@@ -73,6 +84,10 @@ static const Telemetry_Channel_t s_channels[] = {
     { TELEMETRY_CH_RD,   "RD",   TELEM_UNIT_MM,   Telemetry_ReadRD   },
     { TELEMETRY_CH_VX,   "vx",   TELEM_UNIT_RAW,  Telemetry_ReadVX   },
     { TELEMETRY_CH_VAD,  "vad",  TELEM_UNIT_MMPS, Telemetry_ReadVAD  },
+    { TELEMETRY_CH_BPOS,  "bpos", TELEM_UNIT_MM,
+      Telemetry_ReadBallPosition },
+    { TELEMETRY_CH_BREF,  "bref", TELEM_UNIT_MM,
+      Telemetry_ReadBallReference },
 };
 
 #define TELEMETRY_CHANNEL_COUNT \
@@ -302,7 +317,7 @@ uint8_t Telemetry_SetFieldMask(uint16_t mask)
 {
     uint8_t maxRate;
 
-    if ((mask == 0U) || (mask > TELEMETRY_CH_ALL))
+    if (mask == 0U)
     {
         return 0U;
     }

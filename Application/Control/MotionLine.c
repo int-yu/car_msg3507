@@ -10,6 +10,10 @@ typedef struct
     float requestedSpeedMMps;
     float profileSpeedMMps;
     float profileAccelerationMMps2;
+    float accelerationMMps2;
+    float decelerationMMps2;
+    float maxAdjustRatio;
+    float weightKd;
     float lineError;
     float filteredWeight;
     float previousWeight;
@@ -20,9 +24,11 @@ typedef struct
     uint8_t configured;
 } MotionLine_Context_t;
 
-/* 运行时可调参数，默认值取头文件 #define；范围校验由 Param 模块负责。 */
+/* Param 写入的是下一次启动值；Start 时校验并快照到 s_context。 */
 float MotionLine_TuneMaxAdjustRatio = MOTION_LINE_MAX_ADJUST_RATIO;
-float MotionLine_TuneWeightKd = 0.0f;
+float MotionLine_TuneWeightKd = 1.0f;
+float MotionLine_TuneAccelerationMMps2 = MOTION_LINE_ACCELERATION_MMPS2;
+float MotionLine_TuneDecelerationMMps2 = MOTION_LINE_DECELERATION_MMPS2;
 
 static MotionLine_Context_t s_context = {
     .state = MOTION_LINE_STATE_IDLE,
@@ -32,9 +38,6 @@ static MotionLine_Context_t s_context = {
 static uint8_t MotionLine_ParametersAreValid(void)
 {
     if ((!isfinite(MOTION_LINE_MAX_SPEED_MMPS)) ||
-        (!isfinite(MOTION_LINE_MAX_ADJUST_RATIO)) ||
-        (!isfinite(MOTION_LINE_ACCELERATION_MMPS2)) ||
-        (!isfinite(MOTION_LINE_DECELERATION_MMPS2)) ||
         (!isfinite(MOTION_LINE_CURVE_MIN_SPEED_RATIO)) ||
         (!isfinite(MOTION_LINE_WEIGHT_FILTER_ALPHA)) ||
         (!isfinite(MOTION_LINE_MAX_ADJUST_RATE_MMPS2)))
@@ -43,10 +46,6 @@ static uint8_t MotionLine_ParametersAreValid(void)
     }
 
     if ((MOTION_LINE_MAX_SPEED_MMPS <= 0.0f) ||
-        (MOTION_LINE_MAX_ADJUST_RATIO <= 0.0f) ||
-        (MOTION_LINE_MAX_ADJUST_RATIO > 1.0f) ||
-        (MOTION_LINE_ACCELERATION_MMPS2 <= 0.0f) ||
-        (MOTION_LINE_DECELERATION_MMPS2 <= 0.0f) ||
         (MOTION_LINE_CURVE_MIN_SPEED_RATIO <= 0.0f) ||
         (MOTION_LINE_CURVE_MIN_SPEED_RATIO > 1.0f) ||
         (MOTION_LINE_WEIGHT_FILTER_ALPHA <= 0.0f) ||
@@ -60,6 +59,41 @@ static uint8_t MotionLine_ParametersAreValid(void)
         return 0U;
     }
 
+    return 1U;
+}
+
+static uint8_t MotionLine_TuningsAreValid(void)
+{
+    if ((!isfinite(MotionLine_TuneMaxAdjustRatio)) ||
+        (!isfinite(MotionLine_TuneWeightKd)) ||
+        (!isfinite(MotionLine_TuneAccelerationMMps2)) ||
+        (!isfinite(MotionLine_TuneDecelerationMMps2)))
+    {
+        return 0U;
+    }
+
+    if ((MotionLine_TuneMaxAdjustRatio <= 0.0f) ||
+        (MotionLine_TuneMaxAdjustRatio > 1.0f) ||
+        (MotionLine_TuneWeightKd < 0.0f) ||
+        (MotionLine_TuneAccelerationMMps2 <= 0.0f) ||
+        (MotionLine_TuneDecelerationMMps2 <= 0.0f))
+    {
+        return 0U;
+    }
+    return 1U;
+}
+
+static uint8_t MotionLine_SnapshotTunings(void)
+{
+    if (MotionLine_TuningsAreValid() == 0U)
+    {
+        return 0U;
+    }
+
+    s_context.accelerationMMps2 = MotionLine_TuneAccelerationMMps2;
+    s_context.decelerationMMps2 = MotionLine_TuneDecelerationMMps2;
+    s_context.maxAdjustRatio = MotionLine_TuneMaxAdjustRatio;
+    s_context.weightKd = MotionLine_TuneWeightKd;
     return 1U;
 }
 
@@ -164,8 +198,8 @@ static float MotionLine_GetCurveTargetSpeed(float weight)
 static float MotionLine_UpdateProfileSpeed(float targetSpeedMMps, float dt)
 {
     float maximumStep = (targetSpeedMMps > s_context.profileSpeedMMps) ?
-        (MOTION_LINE_ACCELERATION_MMPS2 * dt) :
-        (MOTION_LINE_DECELERATION_MMPS2 * dt);
+        (s_context.accelerationMMps2 * dt) :
+        (s_context.decelerationMMps2 * dt);
     float previousSpeedMMps = s_context.profileSpeedMMps;
 
     s_context.profileSpeedMMps = MotionLine_Approach(
@@ -218,10 +252,10 @@ static uint8_t MotionLine_CalculateTargetSpeeds(
     /* 权重达到正负 6 时，速度增减比例等于最大调整比例；
      * 微分项对权重跳变（压线切换瞬间）施加一次性阻尼，默认 0 不生效。 */
     requestedAdjustMMps = s_context.profileSpeedMMps *
-                           MotionLine_TuneMaxAdjustRatio *
+                           s_context.maxAdjustRatio *
                            (weight /
                             (float)MOTION_LINE_OUTER_WEIGHT);
-    requestedAdjustMMps += MotionLine_TuneWeightKd *
+    requestedAdjustMMps += s_context.weightKd *
                            ((weight - s_context.previousWeight) / dt);
     s_context.previousWeight = weight;
 
@@ -271,7 +305,8 @@ MotionLine_Result_t MotionLine_Init(void)
 
     wheelResult = MotionWheel_Init();
     if ((wheelResult != MOTION_WHEEL_RESULT_OK) ||
-        (MotionLine_ParametersAreValid() == 0U))
+        (MotionLine_ParametersAreValid() == 0U) ||
+        (MotionLine_TuningsAreValid() == 0U))
     {
         return MOTION_LINE_RESULT_INVALID_ARGUMENT;
     }
@@ -291,6 +326,10 @@ MotionLine_Result_t MotionLine_Start(float speedMMps)
         return MOTION_LINE_RESULT_BUSY;
     }
     if ((!isfinite(speedMMps)) || (speedMMps <= 0.0f))
+    {
+        return MOTION_LINE_RESULT_INVALID_ARGUMENT;
+    }
+    if (MotionLine_SnapshotTunings() == 0U)
     {
         return MOTION_LINE_RESULT_INVALID_ARGUMENT;
     }

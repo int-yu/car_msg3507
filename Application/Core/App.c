@@ -292,9 +292,7 @@ uint8_t App_Update(App_UpdateContext_t *context)
         }
     }
 
-    /* 必须在 MotionManager_Update() 之后：目标速度和输出 PWM 都是本拍算出的，
-     * 提前采会发出上一拍的值，阶跃起点会整体偏移一个控制周期。 */
-    Telemetry_Update(elapsedTicks, context->pressedKeys);
+    /* 遥测由 main 在题目控制器更新后采样，确保底盘和摆球都是本拍值。 */
 
     for (index = 0U; index < elapsedTicks; index++)
     {

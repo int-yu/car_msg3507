@@ -24,7 +24,7 @@ typedef struct
     float maximum;
 } Param_Entry_t;
 
-/* 直接读写模块导出的运行时变量；写入后无需额外动作的参数用这个。 */
+/* 直接读写模块导出的 Tune 变量；是否立即使用或在 Start 时快照由模块负责。 */
 #define PARAM_VAR_ACCESSORS(fn, var)                          \
     static float Param_Get##fn(void) { return (var); }        \
     static void Param_Set##fn(float value) { (var) = value; }
@@ -130,6 +130,20 @@ PARAM_VAR_ACCESSORS(NavSlowdownAngle, Nav_TuneSlowdownAngleDeg)
 PARAM_VAR_ACCESSORS(NavTolerance, Nav_TuneAngleToleranceDeg)
 PARAM_VAR_ACCESSORS(CountsPerMM, Odometry_CountsPerMM)
 PARAM_VAR_ACCESSORS(H2FinishRollout, Accomplish26H_TuneFinishRolloutMM)
+PARAM_VAR_ACCESSORS(H2CruiseSpeed, Accomplish26H_TuneCruiseSpeedMMps)
+PARAM_VAR_ACCESSORS(H2FinishSpeed,
+                    Accomplish26H_TuneFinishCrawlSpeedMMps)
+PARAM_VAR_ACCESSORS(H2StartClear,
+                    Accomplish26H_TuneStartClearDistanceMM)
+PARAM_VAR_ACCESSORS(H2NominalLap,
+                    Accomplish26H_TuneNominalLapDistanceMM)
+PARAM_VAR_ACCESSORS(H2FinishApproach,
+                    Accomplish26H_TuneFinishApproachDistanceMM)
+PARAM_VAR_ACCESSORS(H2MarkerArm,
+                    Accomplish26H_TuneFinishMarkerArmDistanceMM)
+PARAM_VAR_ACCESSORS(H2MaxLap, Accomplish26H_TuneMaxLapDistanceMM)
+PARAM_VAR_ACCESSORS(LineAcceleration, MotionLine_TuneAccelerationMMps2)
+PARAM_VAR_ACCESSORS(LineDeceleration, MotionLine_TuneDecelerationMMps2)
 /* 要求 3 摆球：三个必须实车标定的量，做成运行时可调免去反复烧录。 */
 PARAM_VAR_ACCESSORS(BallKp, BallBalance_TuneKp)
 PARAM_VAR_ACCESSORS(BallKd, BallBalance_TuneKd)
@@ -196,6 +210,25 @@ static const Param_Entry_t s_params[] = {
     { "bgr", Param_GetBeamGearRatio, Param_SetBeamGearRatio, 0.1f, 50.0f },
     { "bzo", Param_GetBeamZeroOffset, Param_SetBeamZeroOffset,
       -20.0f, 20.0f },
+    /* 要求 2 仍沿用既有 26H 阶段；这些值只在下一次 KEY1 启动时快照。 */
+    { "h2cru", Param_GetH2CruiseSpeed, Param_SetH2CruiseSpeed,
+      20.0f, 1000.0f },
+    { "h2fin", Param_GetH2FinishSpeed, Param_SetH2FinishSpeed,
+      10.0f, 1000.0f },
+    { "h2clr", Param_GetH2StartClear, Param_SetH2StartClear,
+      0.0f, 1000.0f },
+    { "h2lap", Param_GetH2NominalLap, Param_SetH2NominalLap,
+      1000.0f, 20000.0f },
+    { "h2app", Param_GetH2FinishApproach, Param_SetH2FinishApproach,
+      0.0f, 5000.0f },
+    { "h2arm", Param_GetH2MarkerArm, Param_SetH2MarkerArm,
+      0.0f, 20000.0f },
+    { "h2max", Param_GetH2MaxLap, Param_SetH2MaxLap,
+      1000.0f, 25000.0f },
+    { "lacc", Param_GetLineAcceleration, Param_SetLineAcceleration,
+      10.0f, 5000.0f },
+    { "ldec", Param_GetLineDeceleration, Param_SetLineDeceleration,
+      10.0f, 5000.0f },
 };
 
 #define PARAM_COUNT (sizeof(s_params) / sizeof(s_params[0]))

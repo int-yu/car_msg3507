@@ -17,6 +17,7 @@ static uint16_t s_startLineCount;
 static uint16_t s_setSpeedCount;
 static uint16_t s_requestStopCount;
 static uint16_t s_stopCount;
+static float s_startLineSpeedMMps;
 static float s_lastLineSpeedMMps;
 
 /* ---- 26H 状态机使用的最小宿主桩 ---- */
@@ -29,8 +30,8 @@ float Odometry_GetSpeedR(void) { return s_speedRMMps; }
 
 MotionManager_Result_t MotionManager_StartLine(float speedMMps)
 {
-    (void)speedMMps;
     s_startLineCount++;
+    s_startLineSpeedMMps = speedMMps;
     if (s_startResult == MOTION_MANAGER_RESULT_OK)
     {
         s_motionMode = MOTION_MANAGER_MODE_LINE;
@@ -92,7 +93,22 @@ static void reset_fakes(void)
     s_setSpeedCount = 0U;
     s_requestStopCount = 0U;
     s_stopCount = 0U;
+    s_startLineSpeedMMps = 0.0f;
     s_lastLineSpeedMMps = 0.0f;
+    Accomplish26H_TuneCruiseSpeedMMps =
+        ACCOMPLISH_26H_CRUISE_SPEED_MMPS;
+    Accomplish26H_TuneFinishCrawlSpeedMMps =
+        ACCOMPLISH_26H_FINISH_CRAWL_SPEED_MMPS;
+    Accomplish26H_TuneStartClearDistanceMM =
+        ACCOMPLISH_26H_START_CLEAR_DISTANCE_MM;
+    Accomplish26H_TuneNominalLapDistanceMM =
+        ACCOMPLISH_26H_NOMINAL_LAP_DISTANCE_MM;
+    Accomplish26H_TuneFinishApproachDistanceMM =
+        ACCOMPLISH_26H_FINISH_APPROACH_DISTANCE_MM;
+    Accomplish26H_TuneFinishMarkerArmDistanceMM =
+        ACCOMPLISH_26H_FINISH_MARKER_ARM_DISTANCE_MM;
+    Accomplish26H_TuneMaxLapDistanceMM =
+        ACCOMPLISH_26H_MAX_LAP_DISTANCE_MM;
     Accomplish26H_TuneFinishRolloutMM =
         ACCOMPLISH_26H_FINISH_ROLLOUT_MM;
 }
@@ -134,6 +150,88 @@ static void test_init_is_ready_at_zero(void)
     CHECK(Accomplish26H_GetElapsedTicks() == 0U);
 }
 
+static void test_parameters_are_snapshotted_at_key1_start(void)
+{
+    App_UpdateContext_t context = make_context(3U, 0U);
+
+    reset_fakes();
+    Accomplish26H_TuneCruiseSpeedMMps = 520.0f;
+    Accomplish26H_TuneFinishCrawlSpeedMMps = 180.0f;
+    Accomplish26H_TuneStartClearDistanceMM = 120.0f;
+    Accomplish26H_TuneNominalLapDistanceMM = 6200.0f;
+    Accomplish26H_TuneFinishApproachDistanceMM = 500.0f;
+    Accomplish26H_TuneFinishMarkerArmDistanceMM = 6100.0f;
+    Accomplish26H_TuneMaxLapDistanceMM = 6800.0f;
+    Accomplish26H_TuneFinishRolloutMM = 40.0f;
+    Accomplish26H_Init();
+    start_one_lap();
+
+    CHECK_NEAR(s_startLineSpeedMMps, 520.0f, 0.001f);
+
+    /* 网页运行中继续写 K 参数，只能影响下一次 KEY1，不能改本圈阶段。 */
+    Accomplish26H_TuneCruiseSpeedMMps = 700.0f;
+    Accomplish26H_TuneFinishCrawlSpeedMMps = 90.0f;
+    Accomplish26H_TuneStartClearDistanceMM = 10.0f;
+    Accomplish26H_TuneNominalLapDistanceMM = 3000.0f;
+    Accomplish26H_TuneFinishApproachDistanceMM = 1000.0f;
+    Accomplish26H_TuneFinishMarkerArmDistanceMM = 2000.0f;
+    Accomplish26H_TuneMaxLapDistanceMM = 3200.0f;
+    Accomplish26H_TuneFinishRolloutMM = 0.0f;
+
+    s_distanceMM = 10.0f;
+    Accomplish26H_Update(&context);
+    CHECK(Accomplish26H_GetState() ==
+          ACCOMPLISH_26H_STATE_LEAVING_START);
+
+    s_distanceMM = 120.0f;
+    Accomplish26H_Update(&context);
+    CHECK(Accomplish26H_GetState() == ACCOMPLISH_26H_STATE_RUNNING);
+
+    context = make_context(1U, 0U);
+    s_distanceMM = 5700.0f; /* 6200 - 500，本圈快照的减速起点。 */
+    Accomplish26H_Update(&context);
+    CHECK(s_setSpeedCount == 1U);
+    CHECK_NEAR(s_lastLineSpeedMMps, 180.0f, 0.001f);
+
+    s_distanceMM = 6100.0f;
+    s_lineState = 0x3FU;
+    Accomplish26H_Update(&context);
+    Accomplish26H_Update(&context);
+    Accomplish26H_Update(&context);
+    CHECK(Accomplish26H_GetState() ==
+          ACCOMPLISH_26H_STATE_FINISH_ROLLOUT);
+
+    s_distanceMM = 6139.0f;
+    Accomplish26H_Update(&context);
+    CHECK(s_requestStopCount == 0U);
+    s_distanceMM = 6140.0f;
+    Accomplish26H_Update(&context);
+    CHECK(s_requestStopCount == 1U);
+}
+
+static void test_next_key1_uses_new_parameters(void)
+{
+    reset_fakes();
+    Accomplish26H_TuneCruiseSpeedMMps = 710.0f;
+    Accomplish26H_Init();
+    start_one_lap();
+
+    CHECK_NEAR(s_startLineSpeedMMps, 710.0f, 0.001f);
+}
+
+static void test_invalid_stage_configuration_is_rejected_before_motion(void)
+{
+    reset_fakes();
+    Accomplish26H_TuneCruiseSpeedMMps = 200.0f;
+    Accomplish26H_TuneFinishCrawlSpeedMMps = 300.0f;
+    Accomplish26H_Init();
+    start_one_lap();
+
+    CHECK(s_startLineCount == 0U);
+    CHECK(Accomplish26H_GetState() == ACCOMPLISH_26H_STATE_ERROR);
+    CHECK(Accomplish26H_GetError() == ACCOMPLISH_26H_ERROR_START);
+}
+
 static void test_key1_starts_line_and_timer(void)
 {
     reset_fakes();
@@ -145,6 +243,8 @@ static void test_key1_starts_line_and_timer(void)
           ACCOMPLISH_26H_STATE_LEAVING_START);
     CHECK(Accomplish26H_IsTiming() != 0U);
     CHECK(Accomplish26H_GetElapsedTicks() == 0U);
+    CHECK_NEAR(s_startLineSpeedMMps,
+               ACCOMPLISH_26H_CRUISE_SPEED_MMPS, 0.001f);
 }
 
 static void test_start_line_is_left_before_finish_is_armed(void)
@@ -216,7 +316,7 @@ static void test_marker_soft_stops_then_settles_before_freezing_time(void)
     CHECK(Accomplish26H_GetError() == ACCOMPLISH_26H_ERROR_NONE);
 }
 
-static void test_marker_requires_three_consecutive_six_channel_samples(void)
+static void test_marker_requires_three_consecutive_three_or_more_channel_samples(void)
 {
     App_UpdateContext_t context = make_context(1U, 0U);
 
@@ -226,7 +326,8 @@ static void test_marker_requires_three_consecutive_six_channel_samples(void)
     leave_start_line();
 
     s_distanceMM = ACCOMPLISH_26H_NOMINAL_LAP_DISTANCE_MM;
-    s_lineState = 0x3FU;
+    /* 任意三个通道压线都可作为终点横线，不要求相邻或六路全黑。 */
+    s_lineState = 0x25U;
     Accomplish26H_Update(&context);
     Accomplish26H_Update(&context);
     CHECK(Accomplish26H_GetState() == ACCOMPLISH_26H_STATE_RUNNING);
@@ -235,7 +336,7 @@ static void test_marker_requires_three_consecutive_six_channel_samples(void)
     Accomplish26H_Update(&context);
     CHECK(Accomplish26H_GetState() == ACCOMPLISH_26H_STATE_RUNNING);
 
-    s_lineState = 0x3FU;
+    s_lineState = 0x25U;
     Accomplish26H_Update(&context);
     Accomplish26H_Update(&context);
     Accomplish26H_Update(&context);
@@ -321,10 +422,13 @@ int main(void)
 {
     test_init_is_ready_at_zero();
     test_key1_starts_line_and_timer();
+    test_parameters_are_snapshotted_at_key1_start();
+    test_next_key1_uses_new_parameters();
+    test_invalid_stage_configuration_is_rejected_before_motion();
     test_start_line_is_left_before_finish_is_armed();
     test_finish_approach_slows_before_marker();
     test_marker_soft_stops_then_settles_before_freezing_time();
-    test_marker_requires_three_consecutive_six_channel_samples();
+    test_marker_requires_three_consecutive_three_or_more_channel_samples();
     test_marker_is_ignored_before_finish_approach();
     test_time_limit_freezes_timer_and_soft_stops();
     test_sensor_offline_stops_without_blind_run();

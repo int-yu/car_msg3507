@@ -53,6 +53,8 @@ static void reset_fakes(void)
     s_lastCommand.trimRPWM = 0.0f;
     MotionLine_TuneMaxAdjustRatio = MOTION_LINE_MAX_ADJUST_RATIO;
     MotionLine_TuneWeightKd = 0.0f;
+    MotionLine_TuneAccelerationMMps2 = MOTION_LINE_ACCELERATION_MMPS2;
+    MotionLine_TuneDecelerationMMps2 = MOTION_LINE_DECELERATION_MMPS2;
 }
 
 static void init_and_start(float speedMMps)
@@ -104,6 +106,32 @@ static void test_profile_acceleration_tracks_the_ramp(void)
     MotionLine_Update(0.01f);
     CHECK_NEAR(MotionLine_GetProfileAccelerationMMps2(),
                -MOTION_LINE_DECELERATION_MMPS2, 0.001f);
+}
+
+static void test_profile_tunings_are_snapshotted_at_start(void)
+{
+    reset_fakes();
+    MotionLine_TuneAccelerationMMps2 = 125.0f;
+    MotionLine_TuneDecelerationMMps2 = 240.0f;
+    init_and_start(300.0f);
+
+    MotionLine_TuneAccelerationMMps2 = 900.0f;
+    MotionLine_TuneDecelerationMMps2 = 950.0f;
+    MotionLine_Update(0.01f);
+    CHECK_NEAR(MotionLine_GetProfileAccelerationMMps2(), 125.0f, 0.001f);
+
+    while (MotionLine_GetProfileSpeedMMps() < 299.999f)
+    {
+        MotionLine_Update(0.01f);
+    }
+    CHECK(MotionLine_SetSpeed(100.0f) == MOTION_LINE_RESULT_OK);
+    MotionLine_Update(0.01f);
+    CHECK_NEAR(MotionLine_GetProfileAccelerationMMps2(), -240.0f, 0.001f);
+
+    MotionLine_Stop();
+    CHECK(MotionLine_Start(300.0f) == MOTION_LINE_RESULT_OK);
+    MotionLine_Update(0.01f);
+    CHECK_NEAR(MotionLine_GetProfileAccelerationMMps2(), 900.0f, 0.001f);
 }
 
 static void test_ir_side_controls_the_matching_wheel(void)
@@ -198,6 +226,7 @@ int main(void)
 {
     test_start_speed_is_ramped();
     test_profile_acceleration_tracks_the_ramp();
+    test_profile_tunings_are_snapshotted_at_start();
     test_ir_side_controls_the_matching_wheel();
     test_finish_speed_and_stop_remain_continuous();
     test_line_loss_is_confirmed_quickly();
