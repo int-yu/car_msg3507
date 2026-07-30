@@ -11,12 +11,39 @@
 #define STEPPER_MAX_STEP_RATE_HZ              16000U
 #define STEPPER_UPDATE_PERIOD_MS              10U
 
+/*
+ * Hardware-specific startup and travel configuration.
+ * Change these values when the mechanism or encoder mounting changes.
+ */
+#ifndef STEPPER_AUTO_START_ENABLED
+#define STEPPER_AUTO_START_ENABLED             1U
+#endif
+#ifndef STEPPER_INITIAL_ANGLE_DEG
+#define STEPPER_INITIAL_ANGLE_DEG              139.7f
+#endif
+#ifndef STEPPER_MIN_ANGLE_DEG
+#define STEPPER_MIN_ANGLE_DEG                  80.9f
+#endif
+#ifndef STEPPER_MAX_ANGLE_DEG
+#define STEPPER_MAX_ANGLE_DEG                  210.0f
+#endif
+#ifndef STEPPER_STARTUP_START_RATE_HZ
+#define STEPPER_STARTUP_START_RATE_HZ          200U
+#endif
+#ifndef STEPPER_STARTUP_MAX_RATE_HZ
+#define STEPPER_STARTUP_MAX_RATE_HZ            3200U
+#endif
+#ifndef STEPPER_STARTUP_ACCELERATION_STEPS_S2
+#define STEPPER_STARTUP_ACCELERATION_STEPS_S2  6400U
+#endif
+
 typedef enum {
     STEPPER_RESULT_OK = 0,
     STEPPER_RESULT_INVALID_ARGUMENT,
     STEPPER_RESULT_BUSY,
     STEPPER_RESULT_DISABLED,
-    STEPPER_RESULT_NOT_READY
+    STEPPER_RESULT_NOT_READY,
+    STEPPER_RESULT_LIMIT
 } Stepper_Result_t;
 
 typedef enum {
@@ -57,7 +84,9 @@ typedef struct {
 /*
  * Initializes the AB decoder, capture state and ST timer control. SysConfig
  * power, pin mux and timer initialization must be complete before this call.
- * EN is forced low. Three valid PWM frames are required before ready=true.
+ * With auto-start enabled, EN is asserted after safe timer setup. Three valid
+ * PWM frames establish the absolute reference, then motion starts toward
+ * STEPPER_INITIAL_ANGLE_DEG.
  */
 void Stepper_Init(void);
 
@@ -70,19 +99,19 @@ void Stepper_Update(uint8_t elapsedTicks);
 /* Enables or disables the driver. Disabling performs an immediate stop. */
 Stepper_Result_t Stepper_Enable(bool enable);
 
-/* Starts a relative move. New moves are rejected while busy. */
+/* Starts a relative move. Targets outside the configured limits are rejected. */
 Stepper_Result_t Stepper_MoveBySteps(
     int32_t steps, const Stepper_Profile_t *profile);
 
-/* Starts a move to an absolute software step coordinate. */
+/* Starts a limited move to an absolute software step coordinate. */
 Stepper_Result_t Stepper_MoveToSteps(
     int32_t target, const Stepper_Profile_t *profile);
 
-/* Starts a relative move in degrees; values are rounded to whole ST edges. */
+/* Starts a limited relative move; degrees are rounded to whole ST edges. */
 Stepper_Result_t Stepper_MoveByAngle(
     float degrees, const Stepper_Profile_t *profile);
 
-/* Starts a move to an absolute software angle coordinate. */
+/* Starts a move to a limited absolute software angle coordinate. */
 Stepper_Result_t Stepper_MoveToAngle(
     float degrees, const Stepper_Profile_t *profile);
 
@@ -92,7 +121,7 @@ void Stepper_Stop(void);
 /* Stops ST immediately. EN remains active unless Stepper_Enable(false) is used. */
 void Stepper_EmergencyStop(void);
 
-/* Reassigns the current idle coordinate without moving the motor. */
+/* Reassigns the limited current idle coordinate without moving the motor. */
 Stepper_Result_t Stepper_SetCurrentPosition(float degrees);
 
 bool Stepper_IsBusy(void);

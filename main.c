@@ -17,9 +17,10 @@
 #define TEST_DISPLAY_REFRESH_TICKS   10U
 
 static const Stepper_Profile_t s_testProfile = {
-    .startStepRateHz = 200U,
-    .maxStepRateHz = 3200U,
-    .accelerationStepsPerSec2 = 6400U
+    .startStepRateHz = STEPPER_STARTUP_START_RATE_HZ,
+    .maxStepRateHz = STEPPER_STARTUP_MAX_RATE_HZ,
+    .accelerationStepsPerSec2 =
+        STEPPER_STARTUP_ACCELERATION_STEPS_S2
 };
 
 static uint8_t s_keyCandidate;
@@ -126,13 +127,13 @@ static void Test_HandleKeys(uint8_t pressedEdges)
     }
     else if ((pressedEdges & TEST_KEY_FORWARD_MASK) != 0U)
     {
-        s_lastResult = Stepper_MoveBySteps(
-            (int32_t)STEPPER_STEPS_PER_REVOLUTION, &s_testProfile);
+        s_lastResult = Stepper_MoveToAngle(
+            STEPPER_MAX_ANGLE_DEG, &s_testProfile);
     }
     else if ((pressedEdges & TEST_KEY_REVERSE_MASK) != 0U)
     {
-        s_lastResult = Stepper_MoveBySteps(
-            -(int32_t)STEPPER_STEPS_PER_REVOLUTION, &s_testProfile);
+        s_lastResult = Stepper_MoveToAngle(
+            STEPPER_MIN_ANGLE_DEG, &s_testProfile);
     }
     else if ((pressedEdges & TEST_KEY_STOP_MASK) != 0U)
     {
@@ -159,7 +160,7 @@ static void Test_UpdateDisplay(void)
     OLED_ShowString(0, 0, "MS42CG", OLED_6X8);
     OLED_ShowString(48, 0, "R", OLED_6X8);
     OLED_ShowNum(54, 0, (uint32_t)s_lastResult, 1U, OLED_6X8);
-    OLED_ShowString(0, 8, "1EN 2+ 3- 4STOP", OLED_6X8);
+    OLED_ShowString(0, 8, "1EN 2MAX 3MIN 4STP", OLED_6X8);
     OLED_ShowString(0, 16, "1+4 EMERGENCY", OLED_6X8);
 
     OLED_ShowString(0, 24, "P", OLED_6X8);

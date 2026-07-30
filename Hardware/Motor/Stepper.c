@@ -32,6 +32,14 @@ static volatile int8_t s_direction;
 static volatile uint32_t s_currentRateHz;
 static volatile uint16_t s_segmentSteps;
 static Stepper_Profile_t s_profile;
+static bool s_startupMovePending;
+
+static const Stepper_Profile_t s_startupProfile = {
+    .startStepRateHz = STEPPER_STARTUP_START_RATE_HZ,
+    .maxStepRateHz = STEPPER_STARTUP_MAX_RATE_HZ,
+    .accelerationStepsPerSec2 =
+        STEPPER_STARTUP_ACCELERATION_STEPS_S2
+};
 
 static int32_t s_referenceSteps;
 static int32_t s_referenceEncoderCounts;
@@ -113,6 +121,108 @@ static bool Stepper_DegreesToSteps(float degrees, int32_t *steps)
     *steps = (scaled >= 0.0f) ?
         (int32_t)(scaled + 0.5f) : (int32_t)(scaled - 0.5f);
     return true;
+}
+
+static bool Stepper_GetLimitSteps(int32_t *minimum, int32_t *maximum)
+{
+    const float stepsPerDegree =
+        (float)STEPPER_STEPS_PER_REVOLUTION / 360.0f;
+    float minimumScaled;
+    float maximumScaled;
+    int32_t minimumSteps;
+    int32_t maximumSteps;
+
+    if ((minimum == NULL) || (maximum == NULL))
+    {
+        return false;
+    }
+
+    minimumScaled = STEPPER_MIN_ANGLE_DEG * stepsPerDegree;
+    maximumScaled = STEPPER_MAX_ANGLE_DEG * stepsPerDegree;
+    if (!(minimumScaled >= (float)INT32_MIN) ||
+        !(minimumScaled <= (float)INT32_MAX) ||
+        !(maximumScaled >= (float)INT32_MIN) ||
+        !(maximumScaled <= (float)INT32_MAX))
+    {
+        return false;
+    }
+
+    /* Round inward so quantization can never command beyond a limit. */
+    minimumSteps = (int32_t)minimumScaled;
+    if ((float)minimumSteps < minimumScaled)
+    {
+        minimumSteps++;
+    }
+    maximumSteps = (int32_t)maximumScaled;
+    if ((float)maximumSteps > maximumScaled)
+    {
+        maximumSteps--;
+    }
+    if (minimumSteps > maximumSteps)
+    {
+        return false;
+    }
+
+    *minimum = minimumSteps;
+    *maximum = maximumSteps;
+    return true;
+}
+
+static bool Stepper_TargetIsWithinLimits(int32_t target)
+{
+    int32_t minimum;
+    int32_t maximum;
+
+    return Stepper_GetLimitSteps(&minimum, &maximum) &&
+           (target >= minimum) && (target <= maximum);
+}
+
+static bool Stepper_LimitedAngleToSteps(float degrees, int32_t *steps)
+{
+    int32_t minimum;
+    int32_t maximum;
+
+    if (!Stepper_DegreesToSteps(degrees, steps))
+    {
+        return false;
+    }
+    if (!(degrees >= STEPPER_MIN_ANGLE_DEG) ||
+        !(degrees <= STEPPER_MAX_ANGLE_DEG) ||
+        !Stepper_GetLimitSteps(&minimum, &maximum))
+    {
+        return false;
+    }
+
+    if (*steps < minimum)
+    {
+        *steps = minimum;
+    }
+    else if (*steps > maximum)
+    {
+        *steps = maximum;
+    }
+    return true;
+}
+
+static bool Stepper_StartupConfigurationIsValid(void)
+{
+    int32_t initialSteps;
+    int32_t minimumSteps;
+    int32_t maximumSteps;
+
+    if ((STEPPER_AUTO_START_ENABLED > 1U) ||
+        !Stepper_GetLimitSteps(&minimumSteps, &maximumSteps))
+    {
+        return false;
+    }
+    if (STEPPER_AUTO_START_ENABLED == 0U)
+    {
+        return true;
+    }
+
+    return Stepper_ProfileIsValid(&s_startupProfile) &&
+           Stepper_LimitedAngleToSteps(
+               STEPPER_INITIAL_ANGLE_DEG, &initialSteps);
 }
 
 static int32_t Stepper_StepsToEncoderCounts(int32_t steps)
@@ -449,6 +559,10 @@ static Stepper_Result_t Stepper_StartMove(
     {
         return STEPPER_RESULT_INVALID_ARGUMENT;
     }
+    if (!Stepper_TargetIsWithinLimits(target))
+    {
+        return STEPPER_RESULT_LIMIT;
+    }
 
     primask = __get_PRIMASK();
     __disable_irq();
@@ -503,6 +617,9 @@ void Stepper_Init(void)
     s_direction = 1;
     s_currentRateHz = 0U;
     s_segmentSteps = 0U;
+    s_startupMovePending =
+        (STEPPER_AUTO_START_ENABLED != 0U) &&
+        Stepper_StartupConfigurationIsValid();
     s_referenceSteps = 0;
     s_referenceEncoderCounts = 0;
 
@@ -543,6 +660,17 @@ void Stepper_Init(void)
     NVIC_ClearPendingIRQ(STEPPER_ABS_CAPTURE_INST_INT_IRQN);
     NVIC_EnableIRQ(STEPPER_ABS_CAPTURE_INST_INT_IRQN);
     DL_TimerG_startCounter(STEPPER_ABS_CAPTURE_INST);
+
+    if (!Stepper_StartupConfigurationIsValid())
+    {
+        s_state = STEPPER_STATE_FAULT;
+    }
+    else if (STEPPER_AUTO_START_ENABLED != 0U)
+    {
+        DL_GPIO_setPins(
+            BOARD_OUTPUTS_STEPPER_EN_PORT, BOARD_OUTPUTS_STEPPER_EN_PIN);
+        s_enabled = true;
+    }
     __set_PRIMASK(primask);
 }
 
@@ -608,6 +736,24 @@ void Stepper_Update(uint8_t elapsedTicks)
         {
             s_pwmValid = false;
             s_pwmStableFrames = 0U;
+        }
+    }
+
+    if (s_startupMovePending && s_ready && s_enabled)
+    {
+        Stepper_Result_t result;
+
+        s_startupMovePending = false;
+        result = Stepper_MoveToAngle(
+            STEPPER_INITIAL_ANGLE_DEG, &s_startupProfile);
+        if (result != STEPPER_RESULT_OK)
+        {
+            Stepper_EmergencyStop();
+            DL_GPIO_clearPins(
+                BOARD_OUTPUTS_STEPPER_EN_PORT,
+                BOARD_OUTPUTS_STEPPER_EN_PIN);
+            s_enabled = false;
+            s_state = STEPPER_STATE_FAULT;
         }
     }
 }
@@ -682,6 +828,10 @@ Stepper_Result_t Stepper_MoveToAngle(
     {
         return STEPPER_RESULT_INVALID_ARGUMENT;
     }
+    if (!Stepper_LimitedAngleToSteps(degrees, &steps))
+    {
+        return STEPPER_RESULT_LIMIT;
+    }
     return Stepper_MoveToSteps(steps, profile);
 }
 
@@ -736,6 +886,10 @@ Stepper_Result_t Stepper_SetCurrentPosition(float degrees)
     if (!Stepper_DegreesToSteps(degrees, &steps))
     {
         return STEPPER_RESULT_INVALID_ARGUMENT;
+    }
+    if (!Stepper_LimitedAngleToSteps(degrees, &steps))
+    {
+        return STEPPER_RESULT_LIMIT;
     }
 
     primask = __get_PRIMASK();

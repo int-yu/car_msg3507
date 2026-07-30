@@ -62,10 +62,10 @@ OLED使用I2C0轮询发送，不依赖I2C0中断。UART1和DMA CH1没有实例�
 | PB8 | TIMA0 CCP0输出 | MS42CG ST | 上升沿有效，50%占空比，64~16000 ST/s |
 | PB9 | GPIO输出 | MS42CG DIR | 默认高电平为软件正方向，可用极性宏反转 |
 | PB10 | GPIO 输入、上拉 | KEY4 | 当前测试程序正常减速停止；与KEY1组合为急停 |
-| PB11 | GPIO 输入、上拉 | KEY2 | 当前测试程序正向移动3200 ST |
-| PB12 | GPIO输出 | MS42CG EN | 高电平使能；上电默认低电平 |
+| PB11 | GPIO 输入、上拉 | KEY2 | 当前测试程序移动到最高限位 |
+| PB12 | GPIO输出 | MS42CG EN | 高电平使能；初始化外设时先保持低电平，随后自动拉高 |
 | PB13 | TIMG12 CCP0输入 | MT6816绝对角PWM | 32 MHz脉宽/周期联合捕获，兼容约971.1 Hz和485.6 Hz两档 |
-| PB14 | GPIO 输入、上拉 | KEY3 | 当前测试程序反向移动3200 ST |
+| PB14 | GPIO 输入、上拉 | KEY3 | 当前测试程序移动到最低限位 |
 | PB15 | TIMG8 CCP0 | 右电机 PWM | TB6612 A 通道，20 kHz；由 MotionManager 当前模式经 MotionWheel 输出 |
 | PB16 | TIMG8 CCP1 | 左电机 PWM | TB6612 B 通道，20 kHz；由 MotionManager 当前模式经 MotionWheel 输出 |
 | PB17 | GPIO 输出 | 蜂鸣器 | 低电平有效 |
@@ -90,12 +90,12 @@ OLED使用I2C0轮询发送，不依赖I2C0中断。UART1和DMA CH1没有实例�
 
 | 输入/显示 | 含义 |
 |---|---|
-| KEY1 | 切换EN；`E=1`表示PB12输出高电平，电机有保持力矩 |
-| KEY2 | 使用测试梯形曲线正向移动3200 ST，即一圈 |
-| KEY3 | 使用测试梯形曲线反向移动3200 ST，即一圈 |
+| KEY1 | 切换EN；自动启动配置下上电后默认为`E=1`，表示PB12输出高电平 |
+| KEY2 | 使用测试梯形曲线移动到`STEPPER_MAX_ANGLE_DEG`最高限位 |
+| KEY3 | 使用测试梯形曲线移动到`STEPPER_MIN_ANGLE_DEG`最低限位 |
 | KEY4 | 正常减速停止 |
 | KEY1+KEY4 | 立即停止ST，EN保持当前状态 |
-| `R0~R4` | 上次命令结果：成功、参数错误、忙、未使能、未就绪 |
+| `R0~R5` | 上次按键命令结果：成功、参数错误、忙、未使能、未就绪、超出限位 |
 | `P/R/E/B` | PWM有效、绝对基准就绪、已使能、正在运动/停止中 |
 | `ST` | 已记账的软件绝对步位置；上电初值约为`ABS*3200/4096` |
 | `AB` | AB多圈位置，4096 count/rev |
@@ -103,7 +103,7 @@ OLED使用I2C0轮询发送，不依赖I2C0中断。UART1和DMA CH1没有实例�
 | `Q` | AB非法双位跳变累计数，正常应保持0 |
 | `ABS` | 最近有效PWM原始码`0~4095`及换算的`0.0~359.9°` |
 
-测试曲线为起步200 ST/s、最高3200 ST/s、加速度6400 ST/s²。运动命令精确按ST上升沿计数；多步段使用TIMA0重复计数中断，最后单步使用ZERO中断，因此`±3200`命令结束后`ST`应精确变化3200且`B`回到0。
+上电时先完成ST定时器和捕获输入的安全配置，再自动拉高EN。连续取得3帧有效PWM并建立绝对角坐标后，电机使用起步200 ST/s、最高3200 ST/s、加速度6400 ST/s²的梯形曲线自动移动到`139.7°`初始相位。KEY2和KEY3使用同一曲线分别移动到最高、最低限位。运动命令精确按ST上升沿计数；多步段使用TIMA0重复计数中断，最后单步使用ZERO中断，运动结束后`B`应回到0。
 
 ### 3.2 MS42CG硬件库
 
@@ -111,16 +111,16 @@ OLED使用I2C0轮询发送，不依赖I2C0中断。UART1和DMA CH1没有实例�
 
 | 函数 | 作用与约束 |
 |---|---|
-| `Stepper_Init()` | 初始化AB解码、PWM捕获状态和ST控制；强制EN低；调用前必须完成GPIO、TIMA0和TIMG12的供电、PinMux和外设配置 |
-| `Stepper_Update(elapsedTicks)` | 处理PWM新帧和丢失超时；每个tick固定为10 ms，应由100 Hz主循环传入实际累计tick |
+| `Stepper_Init()` | 初始化AB解码、PWM捕获状态和ST控制；自动启动开启时在安全配置完成后拉高EN；调用前必须完成GPIO、TIMA0和TIMG12的供电、PinMux和外设配置 |
+| `Stepper_Update(elapsedTicks)` | 处理PWM新帧和丢失超时，并在首次建立绝对参考后发起自动初始相位运动；每个tick固定为10 ms，应由100 Hz主循环传入实际累计tick |
 | `Stepper_Enable(enable)` | 高电平使能；传`false`时立即停脉冲并拉低EN |
-| `Stepper_MoveBySteps(steps, profile)` | 相对移动整数ST；忙时拒绝新命令 |
-| `Stepper_MoveToSteps(target, profile)` | 移动到软件绝对步坐标 |
-| `Stepper_MoveByAngle(degrees, profile)` | 相对角度移动，按3200 ST/rev四舍五入到整数ST |
-| `Stepper_MoveToAngle(degrees, profile)` | 移动到软件绝对角坐标 |
+| `Stepper_MoveBySteps(steps, profile)` | 相对移动整数ST；忙时或最终目标超出限位时拒绝新命令 |
+| `Stepper_MoveToSteps(target, profile)` | 移动到受限的软件绝对步坐标 |
+| `Stepper_MoveByAngle(degrees, profile)` | 相对角度移动，按3200 ST/rev四舍五入到整数ST，并检查最终目标 |
+| `Stepper_MoveToAngle(degrees, profile)` | 移动到受限的软件绝对角坐标；限位边界向有效区间内量化 |
 | `Stepper_Stop()` | 按当前加速度正常减速停止，EN保持高 |
 | `Stepper_EmergencyStop()` | 立即停止TIMA0和ST输出，EN保持高 |
-| `Stepper_SetCurrentPosition(degrees)` | 空闲且已就绪时重设当前位置坐标，不产生运动 |
+| `Stepper_SetCurrentPosition(degrees)` | 空闲且已就绪时在限位范围内重设当前位置坐标，不产生运动 |
 | `Stepper_IsBusy()` | `MOVING`或`STOPPING`时返回`true` |
 | `Stepper_GetStatus(status)` | 原子读取控制位置、AB反馈、绝对角、误差和诊断状态 |
 
@@ -133,6 +133,13 @@ OLED使用I2C0轮询发送，不依赖I2C0中断。UART1和DMA CH1没有实例�
 | `STEPPER_MIN_STEP_RATE_HZ` | `64U` | 最低允许ST频率 |
 | `STEPPER_MAX_STEP_RATE_HZ` | `16000U` | 最高允许ST频率 |
 | `STEPPER_UPDATE_PERIOD_MS` | `10U` | `Stepper_Update()`一个tick对应的时间 |
+| `STEPPER_AUTO_START_ENABLED` | `1U` | `1`时上电自动使能，并在绝对角就绪后移动到初始相位 |
+| `STEPPER_INITIAL_ANGLE_DEG` | `139.7f` | 上电自动移动的绝对目标角 |
+| `STEPPER_MIN_ANGLE_DEG` | `80.9f` | 所有运动命令允许的最低绝对目标角 |
+| `STEPPER_MAX_ANGLE_DEG` | `210.0f` | 所有运动命令允许的最高绝对目标角 |
+| `STEPPER_STARTUP_START_RATE_HZ` | `200U` | 自动启动及当前按键测试曲线的起步速度 |
+| `STEPPER_STARTUP_MAX_RATE_HZ` | `3200U` | 自动启动及当前按键测试曲线的最高速度 |
+| `STEPPER_STARTUP_ACCELERATION_STEPS_S2` | `6400U` | 自动启动及当前按键测试曲线的加速度 |
 
 | 返回值 | 含义 |
 |---|---|
@@ -141,8 +148,11 @@ OLED使用I2C0轮询发送，不依赖I2C0中断。UART1和DMA CH1没有实例�
 | `STEPPER_RESULT_BUSY` | 正在运动或减速，拒绝新运动命令 |
 | `STEPPER_RESULT_DISABLED` | EN未使能 |
 | `STEPPER_RESULT_NOT_READY` | 尚未连续收到3帧有效PWM，未建立第0圈绝对基准 |
+| `STEPPER_RESULT_LIMIT` | 命令最终目标或当前位置重设值超出配置限位 |
 
-状态结构中的`targetSteps/emittedSteps`以ST为单位；`encoderCounts/trackingErrorCounts`以4096 count/rev为单位；`absoluteCode/absoluteAngleDeg`是最近有效的单圈PWM结果；`multiTurnAngleDeg`由AB累计位置换算。PWM丢失或AB非法跳变只更新状态，不会闭环纠偏、自动停机或改变目标。
+上述角度参数直接暴露在`Hardware/Motor/Stepper.h`，更换机械结构时只需修改该头文件。由于3200 ST/rev只能以`0.1125°`为单位定位，当前初始目标`139.7°`实际量化为`139.725°`；最低限位`80.9°`向内量化为`81.000°`，最高限位`210.0°`向内量化为`209.925°`，确保整数步命令不会越过配置边界。
+
+状态结构中的`targetSteps/emittedSteps`以ST为单位；`encoderCounts/trackingErrorCounts`以4096 count/rev为单位；`absoluteCode/absoluteAngleDeg`是最近有效的单圈PWM结果；`multiTurnAngleDeg`由AB累计位置换算。限位只约束软件运动命令，不依据AB反馈进行实时硬限位；PWM丢失或AB非法跳变只更新状态，不会闭环纠偏、自动停机或改变目标。
 
 最小调用流程：
 
@@ -1039,6 +1049,9 @@ const Mission_GraphDefinition_t *BrushlessMotorTest_GetMissionGraph(void); /* �
 | `Serial.h` | `SERIAL3_RX_BUFFER_SIZE` / `SERIAL3_TX_BUFFER_SIZE` | `256U` / `256U` | `Serial3`/UART0 K230接收与DMA发送缓冲区容量 |
 | `Serial.h` | `Serial1_RxFlag` | `volatile uint8_t` | PC/网页链路存在未读数据标志 |
 | `PWM.h` | `PWM_MAX_DUTY` | `1000U` | 电机 PWM 指令绝对值上限 |
+| `Stepper.h` | `STEPPER_AUTO_START_ENABLED` / `STEPPER_INITIAL_ANGLE_DEG` | `1U` / `139.7f` | 步进上电自动使能及首次绝对角就绪后的目标相位 |
+| `Stepper.h` | `STEPPER_MIN_ANGLE_DEG` / `STEPPER_MAX_ANGLE_DEG` | `80.9f` / `210.0f` | 步进软件运动命令的绝对目标限位 |
+| `Stepper.h` | `STEPPER_STARTUP_*` | `200U` / `3200U` / `6400U` | 自动启动及当前测试按键共用的梯形速度参数 |
 | `Graydetect.h` | `GRAYDETECT_ENABLED` | `0U` | 灰度硬件总开关；当前关闭，所有读取返回0 |
 | `Graydetect.h` | `GRAY_SIDE_ALL/LEFT/RIGHT` | `0/1/2` | 保留的灰度区域选择值，当前不生效 |
 | `OLED.h` | `OLED_8X16` / `OLED_6X8` | `8U` / `6U` | 字体尺寸选择 |
