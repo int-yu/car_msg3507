@@ -9,8 +9,8 @@
 | 资源 | 当前配置 | 占用模块 | 作用 |
 |---|---:|---|---|
 | CPUCLK / SYSCLK | 32 MHz | 全工程 | SysConfig 默认时钟源；延时、总线外设和 SysTick 的基准时钟 |
-| SysTick | 32 MHz / 320000 = 100 Hz | `System/Tick`、`Application/Core/App`、`Stepper_Update`、`MotionManager`、`Mission`、`Accomplish/25H` | 10 ms 系统节拍；`App_Update()` 将实际累计 Tick 传给步进库并生成 dt；当前巡线连续全白 50 拍（约 500 ms）后安全返回等待 |
-| TIMG8 | 32 MHz，周期 1600 = 20 kHz | `Hardware/Motor/PWM`、`MotionWheel`、`MotionManager`、`Accomplish/25H` | 25H 通过 MotionManager 依次选择巡线、定距直线和绝对角转向，再由 MotionWheel 输出双轮 PWM |
+| SysTick | 32 MHz / 320000 = 100 Hz | `System/Tick`、`Application/Core/App`、`Stepper_Update`、`MotionManager`、`Mission`、`Accomplish/25H`、`Accomplish/26H` | 10 ms 系统节拍；`App_Update()` 将实际累计 Tick 传给步进库并生成 dt；当前 26H 用整数 Tick 完成手动计时 |
+| TIMG8 | 32 MHz，周期 1600 = 20 kHz | `Hardware/Motor/PWM`、`MotionWheel`、`MotionManager`、`Accomplish/25H` | 保留的 25H 通过 MotionManager 依次选择巡线、定距直线和绝对角转向，再由 MotionWheel 输出双轮 PWM；当前 26H 不启动电机 |
 | TIMG7 | 32 MHz / 32 = 1 MHz，周期 20000 = 50 Hz | `Application/Servo` | PA26/PA27 分别输出横向/纵向普通舵机 PWM；`D`/`O` 命令更新比较值 |
 | TIMA0 CCP0 | BUSCLK / 8 = 4 MHz，重复计数器 | `Hardware/Motor/Stepper` | PA0 输出步进 ST；多步段使用 REPC 中断，单步段使用 ZERO 中断；范围 64~16000 ST/s |
 | TIMG12 CCP0 | BUSCLK / 1 = 32 MHz，周期 16.384 ms | `Hardware/Motor/Stepper` | PA14 对 MT6816 PWM 做脉宽/周期联合捕获；使用 CC1_DN 和 ZERO 中断 |
@@ -18,7 +18,7 @@
 | UART0 | BUSCLK 32 MHz，115200 baud，8N1，RX + DMA TX 中断，IRQ 优先级 3 | `Hardware/Comms/Serial`、`Application/Comms/K230Link` | PA10/PA11 接 K230；逻辑接口为 `Serial3`，TX 使用 DMA CH2；RX 异常积压时熔断以保护行车实时性 |
 | UART1 | 当前 SysConfig 未实例化 | `Serial2` 停用桩、`Application/Comms/CarLink` 软件层 | 原 PB6/PB7 已改作步进 DIR/EN；DMA CH1 空闲，CarLink 当前没有物理链路 |
 | UART2 | BUSCLK 32 MHz，115200 baud，8N1，RX + DMA TX 中断 | `Hardware/Comms/Serial`、`Application/Comms/BluetoothDebug`、`App`、`Mission` | PA21/PA22 接 DAPLink，作为 PC/网页链路；逻辑接口为 `Serial1`，TX 使用 DMA CH0 |
-| GPIO 软件 I2C | CPU 延时产生时序 | `Hardware/Sensors/MPU6050`、`Application/State/Heading`、`Accomplish/25H` | 提供连续多圈航向；25H 保存 KEY1 启动基准，左转绝对目标依次为基准减 90°、180°、270°……；不占用 I2C 外设实例 |
+| GPIO 软件 I2C | CPU 延时产生时序 | `Hardware/Sensors/MPU6050`、`Application/State/Heading`、`Accomplish/25H` | 提供连续多圈航向；保留的 25H 保存 KEY1 启动基准，左转绝对目标依次为基准减 90°、180°、270°……；不占用 I2C 外设实例 |
 | GPIOA GROUP1 IRQ | A/B 相双边沿，共享唯一入口 | `Hardware/Motor/Encoder`、`Hardware/Motor/Stepper`、`MotionWheel` | PA8/PA25 解码步进编码器，PA15/PA16/PA17/PA24 解码左右轮编码器；统一由 `GROUP1_IRQHandler` 处理 |
 
 ## 2. Pin 口占用
@@ -45,7 +45,7 @@
 | PA27 | TIMG7 CCP1 | 纵向舵机 PWM | 50 Hz；`O<number>` 更新角度 |
 | PA28 | I2C0 SDA | OLED | 400 kHz |
 | PA29 | GPIO 输入、上拉 | 灰度 CH0 | 灰度位图 bit0；最左侧，黑线为 1 |
-| PA30 | GPIO 输入、上拉 | KEY1 | 低电平按下，按键位图 bit0；App 生成按下沿事件，当前用于启动 25H |
+| PA30 | GPIO 输入、上拉 | KEY1 | 低电平按下，按键位图 bit0；App 生成按下沿事件，当前用于启动、停止或重新开始 26H 计时 |
 | PA31 | I2C0 SCL | OLED | 400 kHz |
 | PB0 | GPIO 输出 | 左电机 BIN1 | TB6612 B 通道方向；由 MotionManager 当前模式经 MotionWheel 输出 |
 | PB1 | GPIO 输出 | 左电机 BIN2 | TB6612 B 通道方向；由 MotionManager 当前模式经 MotionWheel 输出 |
@@ -81,24 +81,32 @@
 
 ## 3. 当前程序说明
 
-当前完整 `App/Mission` 入口继续启用 PC/网页链路和独立 K230Link，并初始化 MS42CG 步进库；步进 EN 上电保持低电平，当前 Mission 与串口命令尚未下发步进运动指令。CarLink 软件层仍参与更新，但 `Serial2` 是无物理 UART 的停用桩，因此当前没有双车无线链路。F32C/Gimbal 仍停用。
+当前完整 `App/26H` 入口继续启用 PC/网页链路和独立 K230Link，并初始化 MS42CG 步进库；步进 EN 上电保持低电平，当前 26H 控制器与串口命令均未下发步进运动指令。CarLink 软件层仍参与更新，但 `Serial2` 是无物理 UART 的停用桩，因此当前没有双车无线链路。F32C/Gimbal 仍停用。
 
-### 3.2 100 Hz 主循环与 Mission
+### 3.2 100 Hz 主循环与 26H 手动计时
+
+当前加载 `Accomplish/26H.c` 的独立控制器。第一版不启动直流电机或步进电机：KEY1 第一次按下沿把累计 Tick 清零并开始计时，第二次按下沿停止并冻结结果，再次按下则从零开始新一轮。计时使用 100 Hz 整数系统节拍，分辨率为 10 ms。
+
+`App_Init()` 继续初始化并校准 MPU6050，`App_Update()` 继续更新 Heading；保留的航向运动和调试命令仍可使用。正常 OLED 页面第 0 行改为 `T:<秒>.<百分秒>s`，开机 MPU6050 校准页面继续保留。
 
 ```c
+#include "Accomplish/26H.h"
+#include "Application/Core/App.h"
+#include "System/Interrupt.h"
+
 int main(void)
 {
     App_UpdateContext_t updateContext;
 
     App_Init();
-    Mission_Init(Accomplish25H_GetMissionGraph());
+    Accomplish26H_Init();
     Interrupt_Enable();
 
     for (;;)
     {
         if (App_Update(&updateContext) != 0U)
         {
-            Mission_Update(&updateContext);
+            Accomplish26H_Update(&updateContext);
         }
     }
 }
@@ -109,18 +117,18 @@ int main(void)
 ```text
 Heading -> Odometry -> Stepper -> 按键边沿 -> CarLink -> K230Link -> BluetoothDebug
         -> C0 全局停车（含步进急停）-> MotionManager -> K230 ACK -> Beep -> OLED
-        -> Mission_Update
+        -> Accomplish26H_Update
 ```
 
-Mission 使用静态状态图，不使用 `malloc`。每个状态含 `onEnter/onUpdate/onExit`、有序转换表和 `interruptible`。动作运行时只检查打断转换；动作完成后只检查正常转换；每拍最多转换一次。被打断状态调用退出回调并停车，不保存或恢复原进度。
+保留的 Mission 使用静态状态图，不使用 `malloc`。每个状态含 `onEnter/onUpdate/onExit`、有序转换表和 `interruptible`。动作运行时只检查打断转换；动作完成后只检查正常转换；每拍最多转换一次。被打断状态调用退出回调并停车，不保存或恢复原进度。当前 `main.c` 不加载 Mission。
 
-当前加载 `Accomplish/25H.c` 的静态状态图。KEY1 按下沿启动 200 mm/s 巡线，并保存 MPU6050 连续航向作为 0°基准；最左侧 bit0 与左内侧 bit1 同时为 1 时立即打断巡线，向前直行 150 mm 并减速至零。零速目标固定保持后，直接调用 `MotionManager_TurnTo()` 指向下一绝对左转目标。目标依次为启动航向减 90°、180°、270°……；到角后继续巡线并循环。巡线连续全白 50 拍时停车并返回等待；`C0` 始终能够停车、返回等待并清除航向基准。
+`Accomplish/25H.c` 静态状态图继续保留，但当前不加载。它的 KEY1 巡线、150 mm 直行和连续绝对左转行为没有改动。
 
 OLED 每 10 个系统节拍刷新一次，即 10 Hz。页面内容为：
 
 | 行 | 显示内容 |
 |---|---|
-| 0 | MPU6050 解算的 Z 轴连续累计角度，不做 ±180° 归一化，可显示多圈转角 |
+| 0 | 26H 手动计时 `T:<秒>.<百分秒>s`；运行时递增，停止后保持最终成绩 |
 | 1 | 灰度位图：主车显示 `CH0~CH7`，从车显示 `CH0~CH4`；`1` 代表检测到黑色，`0` 代表检测到白色 |
 | 2 | 四个按键 `KEY1 KEY2 KEY3 KEY4`，`1` 表示按下 |
 | 3 | 左轮累计路程 `LD`，单位 mm |
@@ -133,7 +141,7 @@ K230Link 当前通过逻辑接口 `Serial3`、物理 UART0 的 PA10/PA11 运行�
 
 ```text
 Heading -> Odometry -> Gimbal -> Key -> BluetoothDebug
-        -> C0 全局停止 -> MotionManager -> Beep -> OLED -> Mission
+        -> C0 全局停止 -> MotionManager -> Beep -> OLED -> Accomplish26H_Update
 ```
 
 - `VER=0x01`；`TYPE` 为 `READY=0x01`、`READY_ACK=0x02`、`TARGET=0x10`、`CAPTURE=0x20`、`CAPTURE_ACK=0x21`。
@@ -150,11 +158,11 @@ Heading -> Odometry -> Gimbal -> Key -> BluetoothDebug
 
 命令不区分大小写。推荐以 `\r` 或 `\n` 结束；也支持空格、逗号、分号作为分隔符。没有结束符时，接收空闲 3 个系统节拍（30 ms）后执行。每条命令都会返回 `OK ...` 或 `ERR ...`。
 
-`C` 命令进入单槽任务事件邮箱；App 每个有效节拍最多向 Mission 传递一个任务信号。普通信号不排队，同一拍只保留最后收到的一条；`C0` 具有最高优先级，待处理时不会被普通信号覆盖，并立即停车。
+`C` 命令进入单槽任务事件邮箱；App 每个有效节拍最多提供一个任务信号。普通信号不排队，同一拍只保留最后收到的一条；`C0` 具有最高优先级，待处理时不会被普通信号覆盖，并立即停车。当前 26H 控制器不消费该任务信号。
 
 | 命令 | 作用 | 输入范围与限位 | 示例 |
 |---|---|---|---|
-| `C<number>` | 发送 Mission 单次任务信号；`C0` 固定全局停车，`C1~C255` 当前未绑定 25H | `0~255`，超限返回 `ERR RANGE` | `C1` |
+| `C<number>` | 发送保留的 Mission 单次任务信号；`C0` 固定全局停车，`C1~C255` 当前 26H 不消费 | `0~255`，超限返回 `ERR RANGE` | `C1` |
 | `L<number>` | 只更新左轮 PWM，右轮保持上次指令 | `-1000~1000`，超限自动夹紧 | `L10` |
 | `R<number>` | 只更新右轮 PWM，左轮保持上次指令 | `-1000~1000`，超限自动夹紧 | `R10` |
 | `U<number>` | 左右轮使用相同 PWM | `-1000~1000`；正数前进，负数后退 | `U100` |
@@ -355,12 +363,12 @@ id 一经发布不得重排，新增参数只能在尾部追加。K1~K5 为旧�
 3. 低速测试航向 `kp`；若偏差被放大，将 `correctionSign` 从 `1` 改为 `-1` 或反向。随后少量增加 `kd` 抑制摆动。
 4. 最后调整加速度、最大减速度、减速起点比例、每次任务的终点速度和距离允许误差。
 
-OLED 默认显示 Z 轴连续角度、主车八路/从车五路灰度、四个按键、左右轮路程/速度和当前运动状态。Gimbal 显式使能后切换为 F32C 双轴角度页。
+OLED 默认显示 26H 手动计时、主车八路/从车五路灰度、四个按键、左右轮路程/速度和当前运动状态。Gimbal 显式使能后切换为 F32C 双轴角度页。
 
 | 蓝牙命令 | 作用 | 当前限制 |
 |---|---|---|
-| `C0` | 全局停车并复位 Mission | 始终有效，同时失能 Gimbal |
-| `C1~C255` | Mission 单次事件 | 当前 25H 未绑定 |
+| `C0` | 全局停车 | 始终有效，同时失能 Gimbal |
+| `C1~C255` | Mission 单次事件 | 当前 26H 不消费 |
 | `L<number>` | 设置左轮开环 PWM | MotionManager 空闲时有效，范围 `-1000~1000` |
 | `R<number>` | 设置右轮开环 PWM | MotionManager 空闲时有效，范围 `-1000~1000` |
 | `U<number>` | 设置双轮相同开环 PWM | MotionManager 空闲时有效，范围 `-1000~1000` |
@@ -414,7 +422,8 @@ OLED 默认显示 Z 轴连续角度、主车八路/从车五路灰度、四个�
 |---|---|---|
 | `Application/Mission/Mission.c/.h` | 通用任务执行层 | 校验并执行静态状态图、回调和有序转换 |
 | `Accomplish/25E.c/.h` | 题目状态图 | 25E 参数、状态、回调和转换表 |
-| `Accomplish/25H.c/.h` | 当前题目状态图 | KEY1 启动的巡线、150 mm 直行和连续绝对左转循环 |
+| `Accomplish/26H.c/.h` | 当前题目控制器 | KEY1 启动、停止和重新开始的 100 Hz 整数计时 |
+| `Accomplish/25H.c/.h` | 保留题目状态图 | KEY1 启动的巡线、150 mm 直行和连续绝对左转循环 |
 | `Accomplish/Brushless_Motor_Test.c/.h` | 可选测试状态图 | F32C 双轴多圈位置循环测试；当前未加载 |
 | `状态机.md` | 使用说明 | 新建 Accomplish 状态图的编写流程 |
 
@@ -422,7 +431,7 @@ OLED 默认显示 Z 轴连续角度、主车八路/从车五路灰度、四个�
 
 | 文件 | 类型 | 职责 |
 |---|---|---|
-| `main.c` | C 源文件 | 选择 App 运行通道和当前 Accomplish 状态图 |
+| `main.c` | C 源文件 | 选择 App 运行通道和当前 Accomplish 控制器 |
 | `main.syscfg` | TI SysConfig | 时钟、PinMux、GPIO、UART、I2C、PWM 和 SysTick 配置 |
 | `.project`、`.cproject`、`.settings/` | CCS 元数据 | 工程、编译器、SDK 和 IDE 配置 |
 | `targetConfigs/*.ccxml` | CCS 目标配置 | MSPM0G3507 调试连接 |
@@ -443,13 +452,13 @@ uint8_t TestApp_Update(App_UpdateContext_t *context); /* 更新测试通道并�
 - 首次测试使用 60~80 mm/s。若启动后角度误差持续增大，只翻转 `NAV_ROTATION_COMMAND_SIGN`。
 - Nav 到角后先把轮速斜坡降到零，再要求连续 `NAV_SETTLE_TICKS` 个周期处于允许误差内，避免单次采样抖动误判完成。
 
-当前 25H 在 KEY1 启动巡线时记录连续航向作为 0°基准。每次左侧双灰度触发后均先完成 150 mm 直行和固定时长的零速目标保持，再把下一绝对目标减去 90°并调用 `MotionManager_TurnTo()`；因此目标序列为 `startYaw-90°`、`startYaw-180°`、`startYaw-270°`……，不是在进入 TURN 时临时调用相对角接口。
+保留的 25H 在 KEY1 启动巡线时记录连续航向作为 0°基准。每次左侧双灰度触发后均先完成 150 mm 直行和固定时长的零速目标保持，再把下一绝对目标减去 90°并调用 `MotionManager_TurnTo()`；因此目标序列为 `startYaw-90°`、`startYaw-180°`、`startYaw-270°`……，不是在进入 TURN 时临时调用相对角接口。
 
 ## 4. 工程文件类型与职责
 
 | 文件或目录 | 类型 | 职责 |
 |---|---|---|
-| `main.c` | C 源文件 | 仅调用 App 初始化、Mission 初始化、硬件中断启用以及 App/Mission 主循环 |
+| `main.c` | C 源文件 | 仅调用 App 初始化、26H 初始化、硬件中断启用以及 App/26H 主循环 |
 | `main.syscfg` | TI SysConfig | 时钟树、GPIO、UART、I2C、PWM、SysTick 和 PinMux 的唯一配置源 |
 | `car_debug.html` | 单文件调试网页 | 浏览器端上位机：Web Serial 连接无线串口，发送第 3.3 节命令、解析遥测 CSV、实时画曲线并导出。无外部依赖，不参与固件编译 |
 | `tests/*.mjs` | Node 测试脚本 | 无依赖，`node tests/<文件>` 直接跑。覆盖遥测解析、页面启动、固件-网页协议契约与教程源码一致性；清单见 4.2 节末 |
@@ -459,7 +468,7 @@ uint8_t TestApp_Update(App_UpdateContext_t *context); /* 更新测试通道并�
 | `Application/Comms/` | 应用层 C 模块 | 蓝牙调试命令；K230 二进制帧、CRC8、握手和目标解析 |
 | `Application/Core/` | 应用运行层 C 模块 | 固定硬件初始化、零漂、100 Hz 后台服务、按键和蓝牙事件采集 |
 | `Application/Mission/` | 通用任务执行层 C 模块 | 校验并执行题目层提供的静态状态图、生命周期回调、有序条件转换和打断处理 |
-| `Accomplish/` | 具体题目实现 C 模块 | 位于工程根目录；每道题独立保存用户参数、状态编号、回调、转换表和静态状态图；当前启用 `25H.c/.h`，并保留 `25E.c/.h` 与刹车测试 `Test.c/.h` |
+| `Accomplish/` | 具体题目实现 C 模块 | 位于工程根目录；当前启用独立计时控制器 `26H.c/.h`，并保留 `25E.c/.h`、`25H.c/.h` 与刹车测试 `Test.c/.h` |
 | `Application/Control/` | 运动控制层 C 模块 | MotionManager、通用 PID、公共双轮速度闭环、直线、巡线、目标角转向和短暂主动刹车 |
 | `Application/Debug/` | 应用层 C 模块 | OLED 调试页面编排、CSV 遥测输出与运行时调参注册表 |
 | `Application/Servo/` | 舵机硬件模块 | PA26/PA27 上的 TIMG7 双路 50 Hz PWM、角度限位和脉宽换算 |
@@ -480,10 +489,11 @@ uint8_t TestApp_Update(App_UpdateContext_t *context); /* 更新测试通道并�
 | 源文件 / 头文件 | 文件职责 |
 |---|---|
 | `Application/Comms/BluetoothDebug.c/.h` | 解析 `C/L/R/U/O/D/G/M/V/F/B/T/A/Z/P/W/N/K/E/Y` 命令，保存单槽任务事件，限制自动运动期间的开环电机调试；`K` 命令带文本参数缓冲转交 Param 模块 |
-| `Application/Core/App.c/.h` | 封装系统初始化和每拍固定更新，向 Mission 提供 dt、按键边沿和蓝牙信号 |
+| `Application/Core/App.c/.h` | 封装系统初始化和每拍固定更新，向当前控制器或保留的 Mission 提供 dt、按键边沿和蓝牙信号 |
 | `Application/Mission/Mission.c/.h` | 定义状态图公共类型，校验题目状态图并执行每拍最多一次的状态转换 |
 | `Accomplish/25E.c/.h` | 保存 25E 参数和状态图：每轮绝对目标在上一目标上增加 180°；当前未由 main 加载 |
-| `Accomplish/25H.c/.h` | 保存 25H 参数和状态图：KEY1 启动巡线，左侧双黑线后直行 150 mm、固定时长零速保持，绝对左转目标每轮减少 90°并循环 |
+| `Accomplish/26H.c/.h` | 当前由 main 加载；保存 KEY1 手动计时状态和 100 Hz 累计 Tick |
+| `Accomplish/25H.c/.h` | 保留 25H 参数和状态图：KEY1 启动巡线，左侧双黑线后直行 150 mm、固定时长零速保持，绝对左转目标每轮减少 90°并循环；当前未由 main 加载 |
 | `Accomplish/Test.c/.h` | 独立刹车测试状态图：KEY2 启动定距直行、短暂刹车并返回等待；需要测试时才在 main.c 临时加载 |
 | `Application/Comms/K230Link.c/.h` | 解析 `AA 55` 二进制帧和 CRC8，执行 READY/READY_ACK 双向握手，保存最新 TARGET |
 | `Application/Control/PID.c/.h` | 通用 PID 初始化、调参、复位和单步计算 |
@@ -808,15 +818,26 @@ const Mission_GraphDefinition_t *Accomplish25E_GetMissionGraph(void);
 const Mission_GraphDefinition_t *Accomplish25H_GetMissionGraph(void);
 ```
 
-该函数返回 25H 静态只读状态图。当前 `main.c` 调用该接口；题目参数全部位于 `Accomplish/25H.h` 开头。
+该函数返回保留的 25H 静态只读状态图。当前 `main.c` 不调用该接口；题目参数全部位于 `Accomplish/25H.h` 开头。
 
-### 5.6.5 `Accomplish/Test.h`
+### 5.6.5 `Accomplish/26H.h`
+
+```c
+void Accomplish26H_Init(void);
+void Accomplish26H_Update(const App_UpdateContext_t *context);
+uint8_t Accomplish26H_IsTiming(void);
+uint32_t Accomplish26H_GetElapsedTicks(void);
+```
+
+这些接口实现当前独立计时控制器，不经过 Mission；`main.c` 调用初始化和更新接口，OLED 读取累计 Tick。
+
+### 5.6.6 `Accomplish/Test.h`
 
 ```c
 const Mission_GraphDefinition_t *AccomplishTest_GetMissionGraph(void);
 ```
 
-该函数返回独立的刹车测试状态图。测试时才在 `main.c` 临时加载；KEY2 会执行“定距直行 -> 短暂刹车 -> 等待”，不影响 25H 的正式流程。
+该函数返回独立的刹车测试状态图。测试时才在 `main.c` 临时加载；KEY2 会执行“定距直行 -> 短暂刹车 -> 等待”，不影响当前 26H 计时流程。
 
 ### 5.7 `Application/Debug/DebugDisplay.h`
 
@@ -949,11 +970,13 @@ void Stepper_GetStatus(Stepper_Status_t *status);
 
 转换数组从前到后就是优先级。动作运行时只检查打断转换，动作完成后只检查正常转换；每个系统节拍最多转换一次。`C0` 不受 `interruptible` 限制，始终停止并复位任务。
 
-### 7.2 Accomplish 状态图入口
+### 7.2 Accomplish 入口
 
 ```c
 const Mission_GraphDefinition_t *Accomplish25E_GetMissionGraph(void); /* 返回 25E 静态状态图。 */
-const Mission_GraphDefinition_t *Accomplish25H_GetMissionGraph(void); /* 返回当前 25H 静态状态图。 */
+const Mission_GraphDefinition_t *Accomplish25H_GetMissionGraph(void); /* 返回保留的 25H 静态状态图。 */
+void Accomplish26H_Init(void); /* 初始化当前 26H 计时器。 */
+void Accomplish26H_Update(const App_UpdateContext_t *context); /* 更新当前 26H 计时器。 */
 const Mission_GraphDefinition_t *BrushlessMotorTest_GetMissionGraph(void); /* 返回 F32C 测试状态图。 */
 ```
 
@@ -974,6 +997,7 @@ const Mission_GraphDefinition_t *BrushlessMotorTest_GetMissionGraph(void); /* �
 | `MotionLine.h` | `MOTION_LINE_*` | 见 6.3 | 灰度权重、最大速度调整比例、巡线速度上限和丢线确认节拍 |
 | `Accomplish/25E.h` | `ACCOMPLISH_25E_*` | 见 6.5 | 25E 启动按键、直线距离与速度、入线确认、巡线速度和转向参数 |
 | `Accomplish/25H.h` | `ACCOMPLISH_25H_*` | 见 6.6 | 25H 启动按键、左侧标志掩码、巡线、150 mm 直行和绝对左转参数 |
+| `Accomplish/26H.h` | `ACCOMPLISH_26H_START_STOP_KEY_MASK` | `0x01U` | 当前 26H 启停与重新计时使用的 KEY1 bit0 掩码 |
 | `Accomplish/Test.h` | `ACCOMPLISH_TEST_*` | 见 6.7 | KEY2 启动的定距软停与短刹测试参数 |
 | `Nav.h` | `NAV_*` | 见 6.4 | 双轮转向的加减速、低速区、到角误差和稳定判定 |
 | `Servo.h` | `SERVO_PHYSICAL_RANGE_DEG` | `270U` | 脉宽换算对应的舵机物理量程 |
@@ -1064,7 +1088,7 @@ const Mission_GraphDefinition_t *BrushlessMotorTest_GetMissionGraph(void); /* �
 
 ### 6.3 `MotionLine.h` 参数
 
-以下宏位于 `Application/Control/MotionLine.h` 开头。当前 25H 通过 MotionManager 启动巡线，连续丢线确认后把巡线标记为正常完成并返回等待：
+以下宏位于 `Application/Control/MotionLine.h` 开头。保留的 25H 通过 MotionManager 启动巡线，连续丢线确认后把巡线标记为正常完成并返回等待：
 
 | 宏 | 单位 | 当前值 | 作用 |
 |---|---:|---:|---|
@@ -1121,7 +1145,7 @@ const Mission_GraphDefinition_t *BrushlessMotorTest_GetMissionGraph(void); /* �
 
 ### 6.7 `Accomplish/Test.h` 参数
 
-`Test.c/.h` 只用于上机观察短刹时的滑行量。它已包含在 CCS 工程中，但默认 `main.c` 仍加载 25H；测试时按头文件注释临时改为加载 `AccomplishTest_GetMissionGraph()`，完成后恢复 25H。
+`Test.c/.h` 只用于上机观察短刹时的滑行量。它已包含在 CCS 工程中，但默认 `main.c` 加载 26H；测试时按头文件注释临时改为加载 `AccomplishTest_GetMissionGraph()`，完成后恢复 26H。
 
 | 宏 | 单位 | 当前值 | 作用 |
 |---|---:|---:|---|

@@ -9,6 +9,18 @@ const main = read('main.c');
 const app = read('Application/Core/App.c');
 const display = read('Application/Debug/DebugDisplay.c');
 const displayHeader = read('Application/Debug/DebugDisplay.h');
+const readme = read('README.md');
+
+assert.match(readme, /26H 手动计时/,
+    'README 必须标明当前 26H 手动计时入口');
+assert.match(readme, /App_Init\(\).*继续初始化并校准 MPU6050/,
+    'README 必须明确 MPU6050 继续初始化和校准');
+assert.match(readme, /App_Update\(\).*继续更新 Heading/,
+    'README 必须明确 Heading 继续周期更新');
+assert.match(readme, /T:<秒>\.<百分秒>s/,
+    'README 必须记录 OLED 首行计时格式');
+assert.match(readme, /第一版不启动.*电机/,
+    'README 必须说明 KEY1 不启动车辆');
 
 assert.match(main, /#include "Accomplish\/26H\.h"/,
     'main.c must select the 26H controller');
