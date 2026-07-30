@@ -3,6 +3,9 @@
 #include "Application/Comms/CarLink.h"
 #include "Application/Comms/K230Link.h"
 #include "Application/Core/CarRole.h"
+#include "Accomplish/26H_Ball.h"
+#include "Application/Control/BallSensor.h"
+#include "Application/Control/BeamActuator.h"
 #include "Application/Control/MotionManager.h"
 #include "Application/Debug/DebugDisplay.h"
 #include "Application/Debug/Telemetry.h"
@@ -151,6 +154,9 @@ void App_Init(void)
     CarLink_Init();
     Odometry_Init();
     Stepper_Init();
+    /* 摆杆执行层接管步进：Stepper_Init() 必须先于它完成。 */
+    BeamActuator_Init();
+    BallSensor_Init();
 
     DebugDisplay_Init();
     Heading_Init();
@@ -212,6 +218,8 @@ uint8_t App_Update(App_UpdateContext_t *context)
 
     CarLink_Update(elapsedTicks);
     K230Link_Update(elapsedTicks);
+    /* 必须在 K230Link_Update() 之后：钢球位置来自本拍刚解析的 TARGET 帧。 */
+    BallSensor_Update(context->dt);
 
     BluetoothDebug_Update(
         elapsedTicks, (MotionManager_IsBusy() == 0U) ? 1U : 0U);
@@ -235,6 +243,9 @@ uint8_t App_Update(App_UpdateContext_t *context)
     {
         MotionManager_Stop();
         Motor_StopAll();
+        /* 摆杆闭环必须和步进一起停：否则任务层会继续往一个已急停的
+         * 步进写倾角，解除急停后摆杆会突然跳到那个累积的目标。 */
+        Accomplish26HBall_Stop();
         Stepper_EmergencyStop();
         /* (void)Gimbal_Disable();  云台已停用 */
     }

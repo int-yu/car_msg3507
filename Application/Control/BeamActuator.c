@@ -43,9 +43,9 @@ void BeamActuator_Init(void)
     BeamActuator_TuneGearRatio = BEAM_ACTUATOR_GEAR_RATIO;
     BeamActuator_TuneZeroOffsetDeg = 0.0f;
 
-    Stepper_Init();
+    /* Stepper_Init() 由 App_Init() 统一调用，这里不重复初始化硬件，
+     * 只接管它：使能驱动并把上电位置声明为水平零点。 */
     (void)Stepper_Enable(true);
-    /* 上电位置即零点，不做寻限位。 */
     (void)Stepper_SetCurrentPosition(0.0f);
 }
 

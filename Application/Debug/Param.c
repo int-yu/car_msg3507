@@ -1,5 +1,8 @@
 #include "Application/Debug/Param.h"
 #include "Accomplish/26H.h"
+#include "Application/Control/BallBalance.h"
+#include "Application/Control/BallSensor.h"
+#include "Application/Control/BeamActuator.h"
 #include "Application/Control/MotionLane.h"
 #include "Application/Control/MotionLine.h"
 #include "Application/Control/MotionStraight.h"
@@ -127,6 +130,13 @@ PARAM_VAR_ACCESSORS(NavSlowdownAngle, Nav_TuneSlowdownAngleDeg)
 PARAM_VAR_ACCESSORS(NavTolerance, Nav_TuneAngleToleranceDeg)
 PARAM_VAR_ACCESSORS(CountsPerMM, Odometry_CountsPerMM)
 PARAM_VAR_ACCESSORS(H2FinishRollout, Accomplish26H_TuneFinishRolloutMM)
+/* 要求 3 摆球：三个必须实车标定的量，做成运行时可调免去反复烧录。 */
+PARAM_VAR_ACCESSORS(BallKp, BallBalance_TuneKp)
+PARAM_VAR_ACCESSORS(BallKd, BallBalance_TuneKd)
+PARAM_VAR_ACCESSORS(BallGravity, BallBalance_TuneGravityCoupling)
+PARAM_VAR_ACCESSORS(BallHalfLength, BallSensor_TuneHalfLengthMM)
+PARAM_VAR_ACCESSORS(BeamGearRatio, BeamActuator_TuneGearRatio)
+PARAM_VAR_ACCESSORS(BeamZeroOffset, BeamActuator_TuneZeroOffsetDeg)
 
 /* 陀螺仪尺度因子保存在 Heading 内部，经既有接口读写。 */
 static float Param_GetGyroScale(void) { return Heading_GetScale(); }
@@ -177,6 +187,15 @@ static const Param_Entry_t s_params[] = {
     { "vra", Param_GetLaneRatio, Param_SetLaneRatio, 0.05f, 1.0f },
     { "h2off", Param_GetH2FinishRollout, Param_SetH2FinishRollout,
       0.0f, 300.0f },
+    /* 要求 3 摆球标定量，追加在表尾，保持既有 id 不变。 */
+    { "bkp", Param_GetBallKp, Param_SetBallKp, 0.0f, 2.0f },
+    { "bkd", Param_GetBallKd, Param_SetBallKd, 0.0f, 1.0f },
+    { "bgk", Param_GetBallGravity, Param_SetBallGravity, 10.0f, 400.0f },
+    { "bhl", Param_GetBallHalfLength, Param_SetBallHalfLength,
+      50.0f, 200.0f },
+    { "bgr", Param_GetBeamGearRatio, Param_SetBeamGearRatio, 0.1f, 50.0f },
+    { "bzo", Param_GetBeamZeroOffset, Param_SetBeamZeroOffset,
+      -20.0f, 20.0f },
 };
 
 #define PARAM_COUNT (sizeof(s_params) / sizeof(s_params[0]))
