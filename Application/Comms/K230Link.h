@@ -15,6 +15,12 @@
 #define K230_LINK_MESSAGE_READY          0x01U
 #define K230_LINK_MESSAGE_READY_ACK      0x02U
 #define K230_LINK_MESSAGE_TARGET         0x10U
+#define K230_LINK_MESSAGE_BALL_POSITION  0x14U
+
+#define K230_LINK_BALL_POSITION_SCALE    100
+#define K230_LINK_BALL_POSITION_MIN      (-5000)
+#define K230_LINK_BALL_POSITION_MAX      (+5000)
+#define K230_LINK_BALL_POSITION_INVALID  INT16_MIN
 
 #define K230_LINK_MESSAGE_CAPTURE        0x20U
 #define K230_LINK_MESSAGE_CAPTURE_ACK    0x21U
@@ -31,10 +37,18 @@ typedef struct
     uint8_t sequence;
 } K230Link_Target_t;
 
+typedef struct
+{
+    uint8_t valid;
+    int16_t positionX100;
+    uint8_t sequence;
+} K230Link_BallPosition_t;
+
 void K230Link_Init(void);
 void K230Link_Update(uint8_t elapsedTicks);
 uint8_t K230Link_IsReady(void);
 uint8_t K230Link_GetTarget(K230Link_Target_t *target);
+uint8_t K230Link_GetBallPosition(K230Link_BallPosition_t *position);
 uint8_t K230Link_RequestCapture(uint8_t count);
 uint8_t K230Link_IsCapturePending(void);
 uint8_t K230Link_PopCaptureAck(uint8_t *ok, uint16_t *index);

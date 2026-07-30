@@ -14,6 +14,8 @@
 /*
  * Hardware-specific startup and travel configuration.
  * Change these values when the mechanism or encoder mounting changes.
+ * Coordinate convention: increasing angle moves upward; decreasing angle
+ * moves downward.
  */
 #ifndef STEPPER_AUTO_START_ENABLED
 #define STEPPER_AUTO_START_ENABLED             1U
