@@ -102,9 +102,10 @@ static void MotionLine_SetError(MotionLine_Error_t error)
 }
 
 /*
- * 教程协议为 bit0=CH1 ... bit5=CH6。俯视传感器（探头朝前）时 CH1 在
- * 右侧、CH6 在左侧，因此 bit0 的正权重表示车应向右修正；安装翻面时只需
- * 修改 Graydetect.h 的 GRAYDETECT_CHANNEL1_IS_RIGHT。
+ * 教程协议为 bit0=CH1 ... bit5=CH6。实车俯视（探头朝前）时 CH1 在左侧、
+ * CH6 在右侧，对应 GRAYDETECT_CHANNEL1_IS_RIGHT 为 0 的下面一张表：
+ * 左侧通道取负权重，压到左侧时左轮减速、右轮加速，把车拉回线上。
+ * 传感器翻面安装时改 Graydetect.h 的那个宏即可，这里两张表都在。
  */
 #if GRAYDETECT_CHANNEL1_IS_RIGHT
 static const int8_t s_grayWeight[GRAY_CHANNEL_COUNT] = {

@@ -75,8 +75,9 @@
 - 六路红外接线固定为：模块 `+5V -> +5V`、`GND -> GND`、`SDA -> PA25`、`SCL -> PA14`。教程线序对应红、黑、蓝、绿。
 - 模块的 SDA/SCL 空闲高电平必须是 **3.3 V**；若模块板载上拉到 5 V，必须先加双向 I2C 电平转换器，不能直接接入 PA25/PA14。
 - 模块地址为 `0x5C`，每拍读取寄存器 `0x05` 的低 6 位：bit0=CH1，…，bit5=CH6；`1` 表示已学习的目标颜色。先按教程完成背景长按学习、目标短按学习。
+- **安装方向**：实车俯视（探头朝前）时 CH1 在左、CH6 在右，对应 `GRAYDETECT_CHANNEL1_IS_RIGHT = 0`。翻面安装只需把该宏改回 `1`，`MotionLine.c` 里两张权重表都已备好，不要去改权重符号。方向接反会让巡线修正朝错误一侧、车直接冲出赛道，上电首测务必先确认：手动把车偏到线左侧，右轮应加速。
 - DAPLink 接 PA21/PA22（UART2），承载 PC/网页命令、回应和遥测；K230 迁移到 PA10/PA11（UART0、DMA CH2）。
-- 原 UART1/HC05 配置已移除，`Serial2` 保留为停用桩；MS42CG 已迁移到 PB8/PB9/PB12、PA13/PA29、PB13，仍由 `STEPPER_ENABLED=0` 安全停用。
+- 原 UART1/HC05 配置已移除，`Serial2` 保留为停用桩；MS42CG 已迁移到 PB8/PB9/PB12、PA13/PA29、PB13。步进驱动已启用（`STEPPER_ENABLED=1`）用于摆杆；仅 MT6816 绝对编码器反馈停用（`STEPPER_FEEDBACK_ENABLED=0`），位置闭环由钢球视觉在外层完成。
 - F32C/Gimbal 仍停用；PA26/PA27 舵机 PWM 继续由 TIMG7 提供。
 
 ## 3. 当前程序说明

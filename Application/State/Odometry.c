@@ -2,8 +2,8 @@
 #include "Hardware/Motor/Encoder.h"
 #include "System/Tick.h"
 
-/* 初始参考值，必须通过实车定距滚动测试进一步标定。 */
-float Odometry_CountsPerMM = 6.23f;
+/* 1:20/48 mm 的 6.23 按 (28/20)*(48/65) 换算；仍需实车定距标定。 */
+float Odometry_CountsPerMM = 6.44086f;
 
 static float s_distanceL = 0.0f;
 static float s_distanceR = 0.0f;

@@ -1780,9 +1780,9 @@ const PARAM_GROUPS = {
 };
 const PARAM_STORE_KEY = 'carDebugParamsV1';
 const RUN_STORE_KEY = 'carDebugRunsV1';
-const WHEEL_TESTED_BASELINE = {
-    lwkp: 0.6, lwki: 0, lwil: 0, lwff: 0.43114, lwsf: 19.884,
-    rwkp: 0.6, rwki: 0, rwil: 0, rwff: 0.44289, rwsf: 22.205,
+const WHEEL_MECHANICAL_BASELINE = {
+    lwkp: 0.6, lwki: 0, lwil: 0, lwff: 0.44573, lwsf: 19.884,
+    rwkp: 0.6, rwki: 0, rwil: 0, rwff: 0.45788, rwsf: 22.205,
 };
 const PARAM_NUDGE_STEPS = {
     lwkp: 0.02, rwkp: 0.02,
@@ -2614,15 +2614,15 @@ function renderWheelMapping() {
         return;
     }
     const card = (side, prefix, result) => {
-        const baselineFF = WHEEL_TESTED_BASELINE[prefix + 'ff'];
-        const baselineSF = WHEEL_TESTED_BASELINE[prefix + 'sf'];
+        const baselineFF = WHEEL_MECHANICAL_BASELINE[prefix + 'ff'];
+        const baselineSF = WHEEL_MECHANICAL_BASELINE[prefix + 'sf'];
         const iText = Number.isFinite(result.integralWorst) ?
             result.integralWorst.toFixed(1) : '无限（积分限=0）';
         return `<div class="wheel-side"><b>${side}轮</b><br>` +
             `<code>PWM=${fmtParam(result.ff)}×速度+${fmtParam(result.sf)}</code><br>` +
             `基础 ${result.base.raw.toFixed(1)}；静止 P 修正 ${result.proportionalAtRest.toFixed(1)}<br>` +
             `静止首拍估计 <strong>${result.firstRaw.toFixed(1)}</strong>；积分最坏附加 ${iText}<br>` +
-            `已测基线 ff/sf=${fmtParam(baselineFF)}/${fmtParam(baselineSF)}</div>`;
+            `机械换算初值 ff/sf=${fmtParam(baselineFF)}/${fmtParam(baselineSF)}</div>`;
     };
     const warnings = [];
     const showLeft = focusState.side !== 'right';

@@ -16,8 +16,8 @@
 #define GRAYDETECT_STATE_REGISTER   0x05U
 #define GRAYDETECT_OFFLINE_CONFIRM_FAILURES 3U
 
-/* 教程俯视图中 CH1 在右、CH6 在左。若实际安装方向反了，只改为 0。 */
-#define GRAYDETECT_CHANNEL1_IS_RIGHT 1U
+/* 实车俯视方向：CH1 在左、CH6 在右。传感器翻面安装时才改为 1。 */
+#define GRAYDETECT_CHANNEL1_IS_RIGHT 0U
 
 #define GRAY_SIDE_ALL    0
 #define GRAY_SIDE_LEFT   1

@@ -2495,8 +2495,8 @@ extern float Odometry_CountsPerMM;  /* 标定常量：每毫米对应编码器�
 #include "Hardware/Motor/Encoder.h"
 #include "System/Tick.h"
 
-/* 初始参考值，必须通过实车定距滚动测试进一步标定。 */
-float Odometry_CountsPerMM = 6.23f;
+/* 1:20/48 mm 的 6.23 按 (28/20)*(48/65) 换算；仍需实车定距标定。 */
+float Odometry_CountsPerMM = 6.44086f;
 
 static float s_distanceL = 0.0f;
 static float s_distanceR = 0.0f;
@@ -2571,7 +2571,7 @@ float Odometry_GetSpeedR(void)
 }</code></pre>
   <ol class="line-notes">
     <li><strong>第 1～3 行：</strong>引入本模块接口、编码器增量接口和 <code>TICK_DT</code> 时间常量。第 1 行使用同目录短路径。</li>
-    <li><strong>第 5～6 行：</strong>初始标定认为每移动 1 mm 产生 6.23 个计数；注释强调这是参考值，不是所有车辆通用的真理。</li>
+    <li><strong>第 5～6 行：</strong>旧 1:20、48 mm 轮胎的 6.23 counts/mm 按新 1:28、65 mm 轮胎换算为 6.44086；该值仍只是实车标定的起点。</li>
     <li><strong>第 8～11 行：</strong>四个私有状态分别保存左右累计距离和最近周期速度，初值都为零。</li>
     <li><strong>第 13～16 行：</strong>初始化先启用编码器，再调用统一 Reset；复用 Reset 可避免两套清零逻辑逐渐不一致。</li>
     <li><strong>第 17 行：</strong>结束初始化。</li>
@@ -2675,7 +2675,7 @@ float Odometry_GetSpeedR(void)
     <h4>难点八：计数到毫米、毫米到速度，以及 dt 与 ticks</h4>
     <p><strong>输入：</strong>本周期增量 <code>delta</code>、标定值 <code>Odometry_CountsPerMM</code>、经过节拍数 <code>ticks</code>，以及 <code>TICK_DT=0.01 s</code>。</p>
     <p><strong>过程：</strong><code>位移(mm)=delta/countsPerMM</code>；<code>时间(s)=ticks×0.01</code>；<code>速度(mm/s)=位移/时间</code>。</p>
-    <p>例：<code>delta=623</code> 个整数计数、<code>countsPerMM=6.23</code>，位移是 100 mm。若经过 20 tick，即 0.20 s，速度是 <code>100/0.20=500 mm/s</code>。若主循环延迟了两拍却仍固定除以 0.01，速度会错误翻倍，所以必须传真实 ticks。</p>
+    <p>例：<code>delta=644</code> 个整数计数、<code>countsPerMM=6.44086</code>，位移约 99.99 mm。若经过 20 tick，即 0.20 s，速度约为 499.93 mm/s。若主循环延迟了两拍却仍固定除以 0.01，速度会错误翻倍，所以必须传真实 ticks。</p>
     <p><strong>输出：</strong>距离是长期累计值；速度是最近一批计数的区间平均值，不是编码器边沿时刻的连续瞬时速度。</p>
     <p><strong>边界条件：</strong>低速时一个周期可能没有脉冲，速度会在 0 与较大值之间量化跳动；需要控制层滤波/PID 参数与编码器分辨率共同配合。</p>
     <p><strong>设计原因：</strong><code>App</code> 同一周期把 <code>dt = elapsedTicks×TICK_DT</code> 给 Heading/Motion，把 <code>elapsedTicks</code> 给 Odometry，所有状态和控制器就使用同一段真实时间。</p>
@@ -2735,7 +2735,7 @@ float Odometry_GetSpeedR(void)
   <details class="quiz"><summary>2. 为什么 MPU_SendByte 读到低电平 ACK 后，变量 ack 反而是 1？</summary><p>I2C 的 ACK 在电气上是低电平。代码先读到 0，再用逻辑非 ! 把它转换为 C 语言中的成功真值 1。</p></details>
   <details class="quiz"><summary>3. 静止零偏为 20 LSB，当前原始值为 184 LSB，dt=0.01 s、scale=1 时，本拍航向变化是多少？</summary><p>去偏为 164 LSB，除以 32.8 得 5°/s，再乘方向符号 -1 和 0.01 s，变化为 -0.05°。</p></details>
   <details class="quiz"><summary>4. 为什么 Encoder_Get 必须保存并恢复 PRIMASK，而不能函数结尾直接开中断？</summary><p>调用者进入函数前可能已经关闭中断。直接开中断会破坏调用者的临界区；恢复旧 PRIMASK 才能保持进入前的中断状态。</p></details>
-  <details class="quiz"><summary>5. 某段左轮增量 623 count，counts/mm=6.23，经过 20 tick，左轮速度是多少？</summary><p>位移是 623/6.23=100 mm；20 tick 是 0.20 s；速度是 100/0.20=500 mm/s。</p></details>
+  <details class="quiz"><summary>5. 某段左轮增量 644 count，counts/mm=6.44086，经过 20 tick，左轮速度约是多少？</summary><p>位移约为 644/6.44086=99.99 mm；20 tick 是 0.20 s；速度约为 499.93 mm/s。</p></details>
 
   <h3>覆盖清单</h3>
   <ul class="coverage-list">
@@ -3158,24 +3158,24 @@ void PID_Reset(PID_t *pid)
 #define MOTION_WHEEL_KP                       0.6f     /* 左右 Kp 的公共参考值。 */
 #define MOTION_WHEEL_KI                       0.0f    /* 消除稳态轮速误差；当前关闭。 */
 #define MOTION_WHEEL_INTEGRAL_LIMIT           0.0f    /* KI 开启后限制积分累积。 */
-#define MOTION_WHEEL_FEEDFORWARD_PWM_PER_MMPS 0.43702f /* 左右前馈斜率的算术平均值。 */
+#define MOTION_WHEEL_FEEDFORWARD_PWM_PER_MMPS 0.45181f /* 左右前馈斜率的算术平均值。 */
 #define MOTION_WHEEL_STATIC_FRICTION_PWM      21.0445f /* 左右静摩擦补偿的算术平均值。 */
 #define MOTION_WHEEL_MAX_COMMAND_PWM          1000.0f /* 每侧车轮最终 PWM 上限。 */
 
-/* 2026-07-20 正向实测标定值：
- * - 开环 PWM150~600 的 21 个升降稳态点分别拟合左右前馈与静摩擦；
- * - Kp 0.5~0.9 细网格中左右均以 0.6 综合误差最低；
- * - Ki 的小幅收益尚未通过重复交叉试验确认，因此安全默认继续关闭。
- * 左右电机、减速箱和静摩擦不同，默认值必须分别固化。 */
+/* 2026-07-30 新机械参数的初始换算值：
+ * - 旧 1:20、48 mm 轮胎的前馈来自 2026-07-20 开环实测；
+ * - 新 1:28、65 mm 轮胎按 (28/20)*(48/65)=1.033846 缩放前馈；
+ * - Kp、Ki 和静摩擦无法仅由减速比与轮径推导，暂时保留旧实测值。
+ * 更换电机后必须重新执行左右轮独立实车标定。 */
 #define MOTION_WHEEL_LEFT_KP                       0.6f
 #define MOTION_WHEEL_LEFT_KI                       0.0f
 #define MOTION_WHEEL_LEFT_INTEGRAL_LIMIT           0.0f
-#define MOTION_WHEEL_LEFT_FEEDFORWARD_PWM_PER_MMPS 0.43114f
+#define MOTION_WHEEL_LEFT_FEEDFORWARD_PWM_PER_MMPS 0.44573f
 #define MOTION_WHEEL_LEFT_STATIC_FRICTION_PWM      19.884f
 #define MOTION_WHEEL_RIGHT_KP                       0.6f
 #define MOTION_WHEEL_RIGHT_KI                       0.0f
 #define MOTION_WHEEL_RIGHT_INTEGRAL_LIMIT           0.0f
-#define MOTION_WHEEL_RIGHT_FEEDFORWARD_PWM_PER_MMPS 0.44289f
+#define MOTION_WHEEL_RIGHT_FEEDFORWARD_PWM_PER_MMPS 0.45788f
 #define MOTION_WHEEL_RIGHT_STATIC_FRICTION_PWM      22.205f
 
 /* 运行时可调参数：上电恢复左右各自的 #define 默认值，由 K 命令经 Param 模块读写。
@@ -3229,9 +3229,9 @@ float MotionWheel_GetTargetSpeedR(void);
 #endif</code></pre>
   <ol class="line-notes">
     <li><strong>第 1～4、78 行：</strong>头文件保护和固定宽度整数类型。</li>
-    <li><strong>第 6～12 行：</strong>公共 Kp、Ki、积分限、前馈和静摩擦现在是兼容参考值；前馈 0.43702 与静摩擦 21.0445 是左右实测值的算术平均。真正初始化左右轮时使用下面的 LEFT/RIGHT 宏。第 12 行仍规定最终输出不得超过 ±1000。</li>
-    <li><strong>第 14～18 行：</strong>注释记录标定证据：21 个开环稳态点拟合前馈/静摩擦，Kp 在 0.5～0.9 中比较，Ki 因收益尚未重复确认而保持关闭。这些数字不是凭感觉填写。</li>
-    <li><strong>第 19～28 行：</strong>左右分别固化五项默认值。两侧 Kp 都是 0.6，但左前馈/静摩擦为 0.43114、19.884，右侧为 0.44289、22.205；同一目标速度下，两轮基础 PWM 可以不同。</li>
+    <li><strong>第 6～12 行：</strong>公共 Kp、Ki、积分限、前馈和静摩擦是兼容参考值；前馈 0.45181 是左右机械换算值的平均，静摩擦 21.0445 是旧实测值的平均。真正初始化左右轮时使用下面的 LEFT/RIGHT 宏。第 12 行仍规定最终输出不得超过 ±1000。</li>
+    <li><strong>第 14～18 行：</strong>注释记录换算依据：旧 1:20、48 mm 轮胎的前馈来自开环实测，新 1:28、65 mm 轮胎先乘 1.033846；Kp、Ki 和静摩擦保持旧值等待复测。</li>
+    <li><strong>第 19～28 行：</strong>左右分别固化五项默认值。两侧 Kp 都是 0.6，但左前馈/静摩擦为 0.44573、19.884，右侧为 0.45788、22.205；同一目标速度下，两轮基础 PWM 可以不同。</li>
     <li><strong>第 30～42 行：</strong>十个 <code>extern</code> 变量是本次上电的运行时参数。K17～K21 对应左轮 Kp、Ki、积分限、前馈、静摩擦，K22～K26 对应右轮五项。</li>
     <li><strong>兼容入口：</strong>K1～K5 读取时返回左右均值，写入时同时覆盖左右对应参数；它们不是第三套参数。左右已分开调好后再写 K1～K5，会抹掉两侧差异。</li>
     <li><strong>第 44～51 行：</strong>命令结构体同时携带左右目标速度（mm/s）与左右附加 PWM 修正。trim 已经是 PWM 单位，不参与速度换算。</li>
@@ -3473,10 +3473,10 @@ static int16_t MotionWheel_ToMotorCommand(float value)
   </ol>
 
   <div class="deep-dive">
-    <h4>用当前左右实测默认值把闭环算一遍</h4>
+    <h4>用当前左右机械换算初值把闭环算一遍</h4>
     <p><strong>输入：</strong>左右目标都是 200mm/s，左实测 180mm/s，右实测 220mm/s，trim 都为 0；左右 Kp 都是 0.6，Ki=Kd=0。</p>
-    <p><strong>过程：</strong>左前馈为 <code>200×0.43114+19.884=106.112</code>，左 P 反馈为 <code>0.6×(200-180)=12</code>；右前馈为 <code>200×0.44289+22.205=110.783</code>，右 P 反馈为 <code>0.6×(200-220)=-12</code>。</p>
-    <p><strong>输出：</strong>左浮点命令约 <code>118.112</code>，四舍五入为 118；右浮点命令约 <code>98.783</code>，四舍五入为 99。同一目标速度的左右基础 PWM 本来就不同，反馈再根据各自误差增减。</p>
+    <p><strong>过程：</strong>左前馈为 <code>200×0.44573+19.884=109.030</code>，左 P 反馈为 <code>0.6×(200-180)=12</code>；右前馈为 <code>200×0.45788+22.205=113.781</code>，右 P 反馈为 <code>0.6×(200-220)=-12</code>。</p>
+    <p><strong>输出：</strong>左浮点命令约 <code>121.030</code>，四舍五入为 121；右浮点命令约 <code>101.781</code>，四舍五入为 102。同一目标速度的左右基础 PWM 本来就不同，反馈再根据各自误差增减。</p>
     <p><strong>边界条件：</strong>任一总和超过 ±1000 会被限幅；目标、实测或 dt 异常会停机；Odometry 标定无效也会停机。</p>
     <p><strong>设计原因：</strong>前馈承担大部分基础驱动力，反馈只需修正实际偏差，通常比完全依赖 PID 从零“追”目标更直接。</p>
   </div>
@@ -3610,7 +3610,7 @@ float MotionWheel_GetTargetSpeedR(void)
 
   <h3>8. 学完自测</h3>
   <details class="quiz"><summary>1. 为什么 PWM 强度可以是无符号数，而 Motor 命令必须有正负号？</summary><p>PWM 只表示输出有多强，方向由 H 桥 GPIO 单独表达；Motor 层用正负号同时表达逻辑方向，再把绝对值交给 PWM。</p></details>
-  <details class="quiz"><summary>2. 左轮目标 200mm/s、实测 180mm/s、trim=0，使用当前左轮默认值时最终整数 PWM 约是多少？</summary><p>前馈为 <code>200×0.43114+19.884=106.112</code>，P 反馈为 <code>0.6×20=12</code>，浮点总和 118.112，转换后约为 118。</p></details>
+  <details class="quiz"><summary>2. 左轮目标 200mm/s、实测 180mm/s、trim=0，使用当前左轮默认值时最终整数 PWM 约是多少？</summary><p>前馈为 <code>200×0.44573+19.884=109.030</code>，P 反馈为 <code>0.6×20=12</code>，浮点总和 121.030，转换后约为 121。</p></details>
   <details class="quiz"><summary>3. 左右轮为什么各自需要一份 PID_t？</summary><p>两轮的编码器速度、积分历史和上次误差不同；共用一份会让一侧的历史污染另一侧控制。</p></details>
   <details class="quiz"><summary>4. Ki 当前为 0 时，积分代码为什么还保留？启用 Ki 还要做什么？</summary><p>PID 是通用实现，当前轮速配置暂时关闭 I。启用 Ki 时要给正的积分上限，实车调参并检查饱和、低速和停车切换。</p></details>
   <details class="quiz"><summary>5. MotionWheel 收到 NULL、非法 dt 或无效里程标定时会怎样？</summary><p>未配置时直接返回 NOT_CONFIGURED；动态参数或里程异常时调用 MotionWheel_Stop，关闭电机并清 PID，再返回对应错误码。</p></details>

@@ -106,7 +106,7 @@ static void test_profile_acceleration_tracks_the_ramp(void)
                -MOTION_LINE_DECELERATION_MMPS2, 0.001f);
 }
 
-static void test_ir_error_slows_and_turns_without_speed_step(void)
+static void test_ir_side_controls_the_matching_wheel(void)
 {
     float speedBefore;
     uint8_t index;
@@ -119,13 +119,13 @@ static void test_ir_error_slows_and_turns_without_speed_step(void)
     }
 
     speedBefore = MotionLine_GetProfileSpeedMMps();
-    s_grayState = 0x01U; /* CH1 在右侧：左轮应更快，车向右修正。 */
+    s_grayState = 0x01U; /* CH1 在左侧：左轮减速、右轮加速。 */
     MotionLine_Update(0.01f);
     CHECK(MotionLine_GetProfileSpeedMMps() <=
           speedBefore + MOTION_LINE_ACCELERATION_MMPS2 * 0.01f + 0.001f);
-    CHECK(s_lastCommand.targetSpeedLMMps > s_lastCommand.targetSpeedRMMps);
-    CHECK((s_lastCommand.targetSpeedLMMps -
-           s_lastCommand.targetSpeedRMMps) <=
+    CHECK(s_lastCommand.targetSpeedLMMps < s_lastCommand.targetSpeedRMMps);
+    CHECK((s_lastCommand.targetSpeedRMMps -
+           s_lastCommand.targetSpeedLMMps) <=
           (2.0f * MOTION_LINE_MAX_ADJUST_RATE_MMPS2 * 0.01f + 0.001f));
 
     for (index = 0U; index < 100U; index++)
@@ -134,6 +134,17 @@ static void test_ir_error_slows_and_turns_without_speed_step(void)
     }
     CHECK(MotionLine_GetProfileSpeedMMps() <=
           450.0f * MOTION_LINE_CURVE_MIN_SPEED_RATIO + 0.1f);
+
+    reset_fakes();
+    init_and_start(450.0f);
+    for (index = 0U; index < 100U; index++)
+    {
+        MotionLine_Update(0.01f);
+    }
+
+    s_grayState = 0x20U; /* CH6 在右侧：右轮减速、左轮加速。 */
+    MotionLine_Update(0.01f);
+    CHECK(s_lastCommand.targetSpeedLMMps > s_lastCommand.targetSpeedRMMps);
 }
 
 static void test_finish_speed_and_stop_remain_continuous(void)
@@ -187,7 +198,7 @@ int main(void)
 {
     test_start_speed_is_ramped();
     test_profile_acceleration_tracks_the_ramp();
-    test_ir_error_slows_and_turns_without_speed_step();
+    test_ir_side_controls_the_matching_wheel();
     test_finish_speed_and_stop_remain_continuous();
     test_line_loss_is_confirmed_quickly();
 
