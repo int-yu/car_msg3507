@@ -5,7 +5,7 @@
 
 /* 六路红外巡线参数：状态位为 1 表示检测到已学习的黑线目标色。 */
 #define MOTION_LINE_OUTER_WEIGHT          6       /* 最外侧通道的权重绝对值。 */
-#define MOTION_LINE_INNER_WEIGHT          3       /* 内侧通道的权重绝对值。 */
+#define MOTION_LINE_INNER_WEIGHT          2.5       /* 内侧通道的权重绝对值。 */
 #define MOTION_LINE_MAX_ADJUST_RATIO      0.24f    /* 最外侧压线时，每侧增减当前速度的比例。 */
 #define MOTION_LINE_MAX_SPEED_MMPS        1000.0f /* MotionLine_Start() 允许的巡线速度上限。 */
 #define MOTION_LINE_ACCELERATION_MMPS2    300.0f  /* 启动/提速斜坡；避免目标速度突变。 */
@@ -16,7 +16,7 @@
 #define MOTION_LINE_LOST_CONFIRM_TICKS    8U      /* 连续全白 80 ms 后确认丢线。 */
 #define MOTION_LINE_CURVE_TRIGGER_MASK    0x12U   /* CH2 or CH5 declares a curve candidate. */
 #define MOTION_LINE_CURVE_ENTRY_CONFIRM_TICKS 3U  /* Consecutive IR samples for a candidate. */
-#define MOTION_LINE_CURVE_SPEED_MMPS       400.0f /* 弧线低速上限，低于 26H 默认巡航速度。 */
+#define MOTION_LINE_CURVE_SPEED_MMPS       380.0f /* 弧线低速上限，低于 26H 默认巡航速度。 */
 #define MOTION_LINE_CURVE_HOLD_DISTANCE_MM 1700.0f /* 半圆弧长加停车裕量后的低速保持距离。 */
 
 /* 可调参数：上电恢复默认值，由 K 命令经 Param 模块读写；MotionLine_Start()

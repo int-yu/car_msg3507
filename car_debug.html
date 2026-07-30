@@ -5056,6 +5056,11 @@ function rebuildSeries() {
         /* 表头重建只剔除已经消失的列，不覆盖用户手动增删的选择。 */
         selected = new Set([...selected].filter((column) => cols.includes(column)));
     }
+    /* 遥测掩码切换后，旧列可能全部消失。恢复推荐列，保证新样本仍有曲线可画。 */
+    if (selected.size === 0) {
+        const fallback = recommended.filter((column) => cols.includes(column));
+        selected = new Set(fallback.length > 0 ? fallback : cols.slice(0, 3));
+    }
     cols.forEach((col, i) => {
         const color = PALETTE[i % PALETTE.length];
         const label = document.createElement('label');
