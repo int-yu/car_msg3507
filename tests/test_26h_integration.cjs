@@ -14,6 +14,8 @@ const line = read('Application/Control/MotionLine.c');
 const param = read('Application/Debug/Param.c');
 const display = read('Application/Debug/DebugDisplay.c');
 const displayHeader = read('Application/Debug/DebugDisplay.h');
+const stepperHeader = read('Hardware/Motor/Stepper.h');
+const grayHeader = read('Hardware/Sensors/Graydetect.h');
 const readme = read('README.md');
 const ball4 = read('Application/Control/BallHold.c');
 const ball4Header = read('Application/Control/BallHold.h');
@@ -24,11 +26,11 @@ assert.match(readme, /KEY1.*启动.*单圈/,
     'README 必须说明 KEY1 启动单圈');
 assert.match(readme, /KEY1\+KEY2 同时按下/,
     'README 必须记录物理组合急停');
-assert.match(readme, /IR:CH1~CH6/,
-    'README 必须记录 OLED 六路红外显示');
+assert.match(readme, /OLED[^\n]*钢球位置/,
+    'README 必须记录 OLED 只显示钢球位置');
 
-assert.match(main, /MAIN_STEPPER_TEST_MODE\s+1U/,
-    'main.c must default to the current stepper test');
+assert.match(main, /MAIN_STEPPER_TEST_MODE\s+0U/,
+    'main.c must default to the complete automatic ball task');
 assert.match(main, /Main26H_Run\(\);/,
     'main.c must retain a switchable complete 26H entry');
 assert.match(fullMain, /#include "Accomplish\/26H\.h"/,
@@ -57,7 +59,6 @@ assert.doesNotMatch(ball4Header, /TuneFeedforward|TuneConvergeTimeout/,
 for (const required of [
     '#include "Application/State/Heading.h"',
     'Heading_Init();',
-    'DebugDisplay_ShowHeadingCalibration(Heading_IsReady());',
     'Heading_Calibrate();',
     'Heading_Update(context->dt);',
     'Graydetect_Update();',
@@ -139,25 +140,26 @@ assert.doesNotMatch(task + read('Application/Control/MotionManager.h') +
     read('Application/Control/MotionManager.c'), /SetLineDeceleration/,
     'H2 must keep the existing MotionLine control path without a runtime deceleration setter');
 
-assert.match(display, /#include "Accomplish\/26H\.h"/,
-    'OLED must read the 26H timer');
-assert.match(display, /Accomplish26H_GetElapsedTicks\(\)/,
-    'OLED must read accumulated integer ticks');
-assert.ok(display.includes('"T:%lu.%02lus"'),
-    'OLED first row must show seconds and centiseconds');
-assert.ok(display.includes('"IR:"'),
-    'OLED must render the six-channel infrared state');
-assert.match(display, /#include "Hardware\/Motor\/Stepper\.h"/,
-    'OLED must include the stepper status interface');
-assert.ok(display.includes('Stepper_GetStatus(&stepperStatus);'),
-    'OLED must read the stepper status');
-assert.ok(display.includes('"EC:"') && display.includes('encoderCounts'),
-    'OLED must retain the historical stepper encoder-count row');
-assert.ok(display.includes('"EA:"') && display.includes('multiTurnAngleDeg'),
-    'OLED must retain the historical stepper angle row');
-assert.ok(display.includes('Accomplish26H_GetState()'),
-    'OLED must expose a 26H task error');
-assert.ok(displayHeader.includes('DebugDisplay_ShowHeadingCalibration'),
-    'the display header must retain the MPU calibration page API');
+assert.match(display, /#include "Application\/Control\/BallSensor\.h"/,
+    'OLED must read the physical ball sensor interface');
+assert.ok(display.includes('BallSensor_GetPositionMM()'),
+    'OLED must display the physical ball position');
+assert.ok(display.includes('BallSensor_IsFresh()'),
+    'OLED must show WAIT when vision is unavailable');
+assert.ok(display.includes('OLED_UpdateArea('),
+    'OLED refresh must be limited to the ball-value area');
+assert.doesNotMatch(display, /OLED_Update\(\)|IR:|KEY:|encoderCounts/,
+    'OLED must not perform full-screen or unrelated status refreshes');
+assert.doesNotMatch(displayHeader, /ShowHeadingCalibration/,
+    'OLED must not expose the removed MPU calibration page');
 
-console.log('26H ring, infrared display, and smooth-stop contract passed');
+assert.match(stepperHeader, /STEPPER_INITIAL_ANGLE_DEG\s+200\.0f/,
+    'stepper horizontal angle must be 200 degrees');
+assert.match(stepperHeader, /STEPPER_MIN_ANGLE_DEG\s+79\.0f/,
+    'stepper minimum limit must be 79 degrees');
+assert.match(stepperHeader, /STEPPER_MAX_ANGLE_DEG\s+300\.0f/,
+    'stepper maximum limit must be 300 degrees');
+assert.match(grayHeader, /GRAYDETECT_ENABLED\s+1U/,
+    'complete 26H mode must enable the six-channel infrared sensor');
+
+console.log('26H ring, ball display, and smooth-stop contract passed');

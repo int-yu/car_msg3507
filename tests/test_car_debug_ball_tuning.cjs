@@ -10,12 +10,15 @@ const main = read('Application/Core/Main26H.c');
 const app = read('Application/Core/App.c');
 const telemetry = read('Application/Debug/Telemetry.c');
 const telemetryHeader = read('Application/Debug/Telemetry.h');
+const param = read('Application/Debug/Param.c');
 const readme = read('README.md');
 
 for (const required of [
     '#define MAIN_BALL_START_SIGNAL 3U',
     '#define MAIN_BALL_STOP_SIGNAL  4U',
-    'static void Main26H_ReportBallStart(void)',
+    'static uint8_t Main26H_ReportBallStart(void)',
+    'MAIN26H_BALL_AUTO_START_ENABLED',
+    'Main26H_AutoStartIsReady()',
     'OK BALL START',
     'ERR BALL VISION',
     'ERR BALL CAR BUSY',
@@ -75,6 +78,9 @@ for (const name of ['bgr', 'bzo', 'bhl', 'bgk', 'bkd', 'bkp']) {
     assert.ok(html.includes(`${name}:`),
         `ball parameter metadata missing ${name}`);
 }
+assert.match(param,
+    /"bzo"[\s\S]*?STEPPER_MIN_ANGLE_DEG,\s*STEPPER_MAX_ANGLE_DEG/,
+    'bzo tuning must use the same absolute range as the stepper');
 
 for (const required of [
     "if (p.startReply)",

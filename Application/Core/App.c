@@ -161,7 +161,6 @@ void App_Init(void)
 
     DebugDisplay_Init();
     Heading_Init();
-    DebugDisplay_ShowHeadingCalibration(Heading_IsReady());
     Heading_Calibrate();
 
     /* 标定期间全局中断保持关闭，从正式流程的零时刻重新开始计数。 */
@@ -219,7 +218,7 @@ uint8_t App_Update(App_UpdateContext_t *context)
 
     CarLink_Update(elapsedTicks);
     K230Link_Update(elapsedTicks);
-    /* 必须在 K230Link_Update() 之后：钢球位置来自本拍刚解析的 TARGET 帧。 */
+    /* 必须在 K230Link_Update() 之后：钢球位置来自本拍刚解析的 BALL_POSITION 帧。 */
     BallSensor_Update(context->dt);
 
     BluetoothDebug_Update(
@@ -302,6 +301,5 @@ uint8_t App_Update(App_UpdateContext_t *context)
         Beep_Tick();
     }
 
-    DebugDisplay_Update(elapsedTicks);
     return 1U;
 }

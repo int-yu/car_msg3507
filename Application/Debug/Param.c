@@ -11,6 +11,7 @@
 #include "Application/State/Heading.h"
 #include "Application/State/Odometry.h"
 #include "Hardware/Comms/Serial.h"
+#include "Hardware/Motor/Stepper.h"
 #include <math.h>
 #include <stddef.h>
 #include <stdlib.h>
@@ -216,7 +217,7 @@ static const Param_Entry_t s_params[] = {
       50.0f, 200.0f },
     { "bgr", Param_GetBeamGearRatio, Param_SetBeamGearRatio, 0.1f, 50.0f },
     { "bzo", Param_GetBeamZeroOffset, Param_SetBeamZeroOffset,
-      -20.0f, 20.0f },
+      STEPPER_MIN_ANGLE_DEG, STEPPER_MAX_ANGLE_DEG },
     /* 要求 2 仍沿用既有 26H 阶段；这些值只在下一次 KEY1 启动时快照。 */
     { "h2cru", Param_GetH2CruiseSpeed, Param_SetH2CruiseSpeed,
       20.0f, 1000.0f },

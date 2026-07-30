@@ -337,6 +337,20 @@ void Graydetect_Init(void)
 {
 }
 
+void Graydetect_Update(void)
+{
+}
+
+uint8_t Graydetect_IsOnline(void)
+{
+    return 0U;
+}
+
+uint32_t Graydetect_GetReadErrorCount(void)
+{
+    return 0U;
+}
+
 uint8_t Graydetect_GetState(void)
 {
     return 0U;

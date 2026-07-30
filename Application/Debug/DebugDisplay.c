@@ -1,197 +1,55 @@
 #include "Application/Debug/DebugDisplay.h"
-#include "Accomplish/26H.h"
-#include "Application/Control/BallHold.h"
-#include "Application/Control/MotionManager.h"
-#include "Application/Gimbal/Gimbal.h"
-#include "Application/Mission/Mission.h"
-#include "Application/State/Heading.h"
-#include "Application/State/Odometry.h"
-#include "Hardware/Board/Key.h"
+#include "Application/Control/BallSensor.h"
 #include "Hardware/Display/OLED.h"
-#include "Hardware/Motor/Stepper.h"
-#include "Hardware/Sensors/Graydetect.h"
-#include "System/Tick.h"
+
+#define DEBUG_DISPLAY_BALL_LABEL_X    0
+#define DEBUG_DISPLAY_BALL_VALUE_X    30
+#define DEBUG_DISPLAY_BALL_Y          0
+#define DEBUG_DISPLAY_BALL_VALUE_WIDTH 66U
 
 static uint8_t s_refreshTicks;
 
-static void DebugDisplay_ShowLineFollowerState(uint8_t state, uint8_t online)
+static void DebugDisplay_DrawBallValue(void)
 {
-    uint8_t index;
+    OLED_ClearArea(DEBUG_DISPLAY_BALL_VALUE_X,
+                   DEBUG_DISPLAY_BALL_Y,
+                   DEBUG_DISPLAY_BALL_VALUE_WIDTH,
+                   8U);
 
-    OLED_ShowString(0, 8, "IR:", OLED_6X8);
-    for (index = 0U; index < GRAY_CHANNEL_COUNT; index++)
+    if (BallSensor_IsFresh() != 0U)
     {
-        OLED_ShowChar((int16_t)(18 + index * OLED_6X8), 8,
-                      (online != 0U) ?
-                          ((((state >> index) & 1U) != 0U) ? '1' : '0') :
-                          '-',
-                      OLED_6X8);
-    }
-}
-
-static void DebugDisplay_ShowKeyState(uint8_t pressedMask)
-{
-    uint8_t index;
-
-    OLED_ShowString(0, 16, "KEY:", OLED_6X8);
-    for (index = 0U; index < 4U; index++)
-    {
-        OLED_ShowChar((int16_t)(24 + index * OLED_6X8), 16,
-                      ((pressedMask >> index) & 1U) != 0U ? '1' : '0',
-                      OLED_6X8);
-    }
-}
-
-static void DebugDisplay_ShowMotionValue(int16_t y,
-                                         const char *label,
-                                         float value,
-                                         const char *unit)
-{
-    OLED_ShowString(0, y, label, OLED_6X8);
-    OLED_ShowFloatNum(18, y, value, 5U, 1U, OLED_6X8);
-    OLED_ShowString(72, y, unit, OLED_6X8);
-}
-
-static void DebugDisplay_ShowMotionState(void)
-{
-    MotionManager_Mode_t mode = MotionManager_GetMode();
-    BallHold_State_t holdState = BallHold_GetState();
-
-    if (Accomplish26H_GetState() == ACCOMPLISH_26H_STATE_ERROR)
-    {
-        OLED_Printf(0, 56, OLED_6X8, "H:E%u",
-                    (unsigned)Accomplish26H_GetError());
-    }
-    /* 要求 4 运行时底盘是 IDLE，不显示的话这一行会让人以为程序没在跑。
-     * 摆杆任务优先于底盘模式显示：要求 4 期间底盘本来就该是空闲。 */
-    else if (holdState == BALL_HOLD_STATE_ERROR)
-    {
-        OLED_Printf(0, 56, OLED_6X8, "H4:E%u",
-                    (unsigned)BallHold_GetError());
-    }
-    else if (holdState == BALL_HOLD_STATE_CONVERGING)
-    {
-        OLED_ShowString(0, 56, "H4:->O", OLED_6X8);
-    }
-    else if (holdState == BALL_HOLD_STATE_HOLDING)
-    {
-        /* 收敛耗时是要求 4 现场最想看的数：拨球后多久回到 O。 */
-        OLED_Printf(0, 56, OLED_6X8, "H4:HOLD %lu.%02lus",
-                    (unsigned long)(BallHold_GetConvergeTicks() /
-                                    TICK_HZ),
-                    (unsigned long)(((BallHold_GetConvergeTicks() %
-                                      TICK_HZ) * 100U) / TICK_HZ));
-    }
-    else if ((MotionManager_GetError() != MOTION_MANAGER_ERROR_NONE) ||
-        (Mission_GetStatus() == MISSION_STATUS_ERROR))
-    {
-        OLED_ShowString(0, 56, "M:ERROR", OLED_6X8);
-    }
-    else if (mode == MOTION_MANAGER_MODE_STRAIGHT)
-    {
-        OLED_ShowString(0, 56, "M:STRAIGHT", OLED_6X8);
-    }
-    else if (mode == MOTION_MANAGER_MODE_LINE)
-    {
-        OLED_ShowString(0, 56, "M:LINE", OLED_6X8);
-    }
-    else if (mode == MOTION_MANAGER_MODE_LANE)
-    {
-        OLED_ShowString(0, 56, "M:LANE", OLED_6X8);
-    }
-    else if (mode == MOTION_MANAGER_MODE_TURN)
-    {
-        OLED_ShowString(0, 56, "M:TURN", OLED_6X8);
-    }
-    else if (mode == MOTION_MANAGER_MODE_DRIVE)
-    {
-        OLED_ShowString(0, 56, "M:DRIVE", OLED_6X8);
+        OLED_ShowFloatNum(DEBUG_DISPLAY_BALL_VALUE_X,
+                          DEBUG_DISPLAY_BALL_Y,
+                          BallSensor_GetPositionMM(),
+                          3U,
+                          1U,
+                          OLED_6X8);
+        OLED_ShowString(72, DEBUG_DISPLAY_BALL_Y, "mm", OLED_6X8);
     }
     else
     {
-        OLED_ShowString(0, 56, "M:IDLE", OLED_6X8);
+        OLED_ShowString(DEBUG_DISPLAY_BALL_VALUE_X,
+                        DEBUG_DISPLAY_BALL_Y,
+                        "WAIT",
+                        OLED_6X8);
     }
-}
-
-static uint8_t DebugDisplay_ShowGimbalPage(void)
-{
-    Gimbal_State_t state = Gimbal_GetState();
-
-    if ((state != GIMBAL_STATE_ENABLED) &&
-        (state != GIMBAL_STATE_ERROR))
-    {
-        return 0U;
-    }
-
-    OLED_ShowString(0, 0, "F32C GIMBAL", OLED_6X8);
-    DebugDisplay_ShowMotionValue(
-        8, "X:", Gimbal_GetCurrentAngleDeg(GIMBAL_AXIS_X), "deg");
-    DebugDisplay_ShowMotionValue(
-        16, "XT:", Gimbal_GetTargetAngleDeg(GIMBAL_AXIS_X), "deg");
-    DebugDisplay_ShowMotionValue(
-        24, "Y:", Gimbal_GetCurrentAngleDeg(GIMBAL_AXIS_Y), "deg");
-    DebugDisplay_ShowMotionValue(
-        32, "YT:", Gimbal_GetTargetAngleDeg(GIMBAL_AXIS_Y), "deg");
-
-    OLED_ShowString(0, 40, "FB:X", OLED_6X8);
-    OLED_ShowChar(24, 40,
-                  Gimbal_HasFeedback(GIMBAL_AXIS_X) != 0U ? '1' : '0',
-                  OLED_6X8);
-    OLED_ShowString(36, 40, "Y", OLED_6X8);
-    OLED_ShowChar(42, 40,
-                  Gimbal_HasFeedback(GIMBAL_AXIS_Y) != 0U ? '1' : '0',
-                  OLED_6X8);
-    DebugDisplay_ShowKeyState(Key_GetPressedMask());
-    OLED_ShowString(0, 56,
-                    state == GIMBAL_STATE_ERROR ? "G:ERROR" : "G:RUN",
-                    OLED_6X8);
-    return 1U;
 }
 
 void DebugDisplay_Init(void)
 {
-    s_refreshTicks = DEBUG_DISPLAY_REFRESH_TICKS;
+    s_refreshTicks = 0U;
     OLED_Init();
-}
-
-void DebugDisplay_ShowHeadingCalibration(uint8_t mpuReady)
-{
     OLED_Clear();
-    OLED_ShowString(0, 0, "MPU6050 Z ANGLE", OLED_6X8);
-
-    if (mpuReady != 0U)
-    {
-        OLED_ShowString(0, 16, "ZERO CALIBRATING...", OLED_6X8);
-        OLED_ShowString(0, 32, "KEEP CAR STILL", OLED_6X8);
-    }
-    else
-    {
-        OLED_ShowString(0, 16, "MPU6050 OFFLINE", OLED_6X8);
-        OLED_ShowString(0, 32, "CHECK PA10/PA11", OLED_6X8);
-    }
-
-    OLED_Update();
-}
-
-static void DebugDisplay_ShowElapsedTime(void)
-{
-    uint32_t elapsedTicks = Accomplish26H_GetElapsedTicks();
-    uint32_t seconds = elapsedTicks / TICK_HZ;
-    uint32_t centiseconds =
-        ((elapsedTicks % TICK_HZ) * 100U) / TICK_HZ;
-
-    OLED_Printf(0, 0, OLED_6X8, "T:%lu.%02lus",
-                (unsigned long)seconds,
-                (unsigned long)centiseconds);
+    OLED_ShowString(DEBUG_DISPLAY_BALL_LABEL_X,
+                    DEBUG_DISPLAY_BALL_Y,
+                    "BALL:",
+                    OLED_6X8);
+    DebugDisplay_DrawBallValue();
+    OLED_UpdateArea(0, DEBUG_DISPLAY_BALL_Y, 96U, 8U);
 }
 
 void DebugDisplay_Update(uint8_t elapsedTicks)
 {
-    uint8_t grayState;
-    uint8_t lineFollowerOnline;
-    uint8_t keyMask;
-    Stepper_Status_t stepperStatus;
-
     if ((uint16_t)s_refreshTicks + elapsedTicks <
         DEBUG_DISPLAY_REFRESH_TICKS)
     {
@@ -200,29 +58,9 @@ void DebugDisplay_Update(uint8_t elapsedTicks)
     }
     s_refreshTicks = 0U;
 
-    grayState = Graydetect_GetState();
-    lineFollowerOnline = Graydetect_IsOnline();
-    keyMask = Key_GetPressedMask();
-
-    OLED_Clear();
-    if (DebugDisplay_ShowGimbalPage() != 0U)
-    {
-        OLED_Update();
-        return;
-    }
-    Stepper_GetStatus(&stepperStatus);
-    DebugDisplay_ShowElapsedTime();
-
-    DebugDisplay_ShowLineFollowerState(grayState, lineFollowerOnline);
-    DebugDisplay_ShowKeyState(keyMask);
-    DebugDisplay_ShowMotionValue(24, "LD:", Odometry_GetDistanceLMM(), "mm");
-    OLED_ShowString(0, 32, "EC:", OLED_6X8);
-    OLED_ShowSignedNum(
-        18, 32, stepperStatus.encoderCounts, 10U, OLED_6X8);
-    DebugDisplay_ShowMotionValue(40, "RD:", Odometry_GetDistanceRMM(), "mm");
-    DebugDisplay_ShowMotionValue(
-        48, "EA:", stepperStatus.multiTurnAngleDeg, "deg");
-
-    DebugDisplay_ShowMotionState();
-    OLED_Update();
+    DebugDisplay_DrawBallValue();
+    OLED_UpdateArea(DEBUG_DISPLAY_BALL_VALUE_X,
+                    DEBUG_DISPLAY_BALL_Y,
+                    DEBUG_DISPLAY_BALL_VALUE_WIDTH,
+                    8U);
 }
