@@ -188,6 +188,9 @@ static void Test_ShowBallPosition(void)
     K230Link_BallPosition_t position;
 
     OLED_ShowString(0, 24, "BALL:", OLED_6X8);
+    OLED_ShowString(72, 24, "H", OLED_6X8);
+    OLED_ShowNum(
+        78, 24, K230Link_IsReady() != 0U ? 1U : 0U, 1U, OLED_6X8);
     if (K230Link_GetBallPosition(&position) == 0U)
     {
         OLED_ShowString(30, 24, "WAIT", OLED_6X8);

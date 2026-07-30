@@ -147,8 +147,7 @@ static void K230Link_HandleFrame(void)
         s_hasTarget = 1U;
     }
     else if ((s_parser.type == K230_LINK_MESSAGE_BALL_POSITION) &&
-             (s_parser.length == 2U) &&
-             (K230Link_IsReady() != 0U))
+             (s_parser.length == 2U))
     {
         int16_t position = (int16_t)(
             (uint16_t)s_parser.payload[0] |
