@@ -121,9 +121,11 @@ PARAM_VAR_APPLY_ACCESSORS(StraightKd, MotionStraight_TuneHeadingKd,
 PARAM_VAR_ACCESSORS(StraightAcceleration, MotionStraight_TuneAccelerationMMps2)
 PARAM_VAR_ACCESSORS(LineRatio, MotionLine_TuneMaxAdjustRatio)
 PARAM_VAR_ACCESSORS(LineWeightKd, MotionLine_TuneWeightKd)
-PARAM_VAR_ACCESSORS(LineCurveRatio, MotionLine_TuneCurveMaxAdjustRatio)
-PARAM_VAR_ACCESSORS(LineCurveWeightKd, MotionLine_TuneCurveWeightKd)
+/* K46/K47 已发布，保留为单套巡线 P/D 的兼容别名。 */
+PARAM_VAR_ACCESSORS(LineCurveRatio, MotionLine_TuneMaxAdjustRatio)
+PARAM_VAR_ACCESSORS(LineCurveWeightKd, MotionLine_TuneWeightKd)
 PARAM_VAR_ACCESSORS(LineCurveSpeed, MotionLine_TuneCurveSpeedMMps)
+PARAM_VAR_ACCESSORS(LineCurveHoldDistance, MotionLine_TuneCurveHoldDistanceMM)
 PARAM_VAR_ACCESSORS(LaneKp, MotionLane_TuneKp)
 PARAM_VAR_ACCESSORS(LaneKdYaw, MotionLane_TuneKdYaw)
 PARAM_VAR_ACCESSORS(LaneRatio, MotionLane_TuneMaxAdjustRatio)
@@ -235,13 +237,15 @@ static const Param_Entry_t s_params[] = {
     { "ldec", Param_GetLineDeceleration, Param_SetLineDeceleration,
       10.0f, 5000.0f },
     /* 要求 4 保持 O 点，追加在表尾，保持既有 id 不变。增益仍用 bkp/bkd。 */
-    /* 弧线 PID 和限速，追加在表尾；MotionLine_Start() 才会快照。 */
+    /* K46/K47 是已发布的直线 P/D 兼容别名；弧线仅控制低速速度和保持距离。 */
     { "lcra", Param_GetLineCurveRatio, Param_SetLineCurveRatio,
       0.01f, 1.0f },
     { "lckd", Param_GetLineCurveWeightKd, Param_SetLineCurveWeightKd,
       0.0f, 100.0f },
     { "lcv", Param_GetLineCurveSpeed, Param_SetLineCurveSpeed,
       20.0f, 1000.0f },
+    { "lch", Param_GetLineCurveHoldDistance,
+      Param_SetLineCurveHoldDistance, 100.0f, 5000.0f },
 };
 
 #define PARAM_COUNT (sizeof(s_params) / sizeof(s_params[0]))

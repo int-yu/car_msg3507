@@ -16,7 +16,7 @@ assert.ok(!params.includes('{ "h4ff"') && !params.includes('{ "h4to"'),
     'firmware K table must not expose requirement 4 tuning parameters');
 
 for (const name of [
-    'lra', 'lkd', 'lcra', 'lckd', 'lcv', 'h2cru', 'h2fin', 'h2clr', 'h2lap', 'h2app',
+    'lra', 'lkd', 'lcv', 'lch', 'h2cru', 'h2fin', 'h2clr', 'h2lap', 'h2app',
     'h2arm', 'h2max', 'h2off', 'lacc', 'ldec',
 ]) {
     assert.ok(params.includes(`{ "${name}"`),
@@ -37,8 +37,8 @@ for (const required of [
     'function renderLineMonitor()',
     'lostPct:',
     'wheelMaeMMps:',
-    "line: ['lra', 'lcra'], damping: ['lkd', 'lckd'], curveSpeed: ['lcv']",
-    'lra: 0.01, lkd: 0.05, lcra: 0.01, lckd: 0.05, lcv: 10',
+    "line: ['lra'], damping: ['lkd'], curveSpeed: ['lcv', 'lch']",
+    'lra: 0.01, lkd: 0.05, lcv: 10, lch: 100',
     'CH.yaw | CH.lerr | CH.gray | CH.TL | CH.TR | CH.LV | CH.RV',
     "start: ['h2cru', 'h2clr', 'lacc']",
     "position: ['h2lap', 'h2arm', 'h2max']",
@@ -57,7 +57,7 @@ for (const required of [
     assert.ok(html.includes(required), `巡线调参面板缺少 ${required}`);
 }
 
-assert.ok(html.includes('CH2/CH5 连续压线 3 拍后进入弧线，并将当前航向记为相对角度 0'),
+assert.ok(html.includes('CH2/CH5 连续压线 3 拍后进入弧线低速区'),
     '巡线结构说明必须包含当前直弯判断');
 assert.ok(html.includes('固定基准速度上限，不随 lerr 回中而提速'),
     '巡线面板必须说明弧线速度不再依赖偏差回中');

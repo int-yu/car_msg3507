@@ -4,8 +4,7 @@
 #include "tests/host/test_assert.h"
 
 static uint8_t s_grayState;
-static uint8_t s_headingReady;
-static float s_yawDeg;
+static float s_distanceMM;
 static uint16_t s_wheelInitCount;
 static uint16_t s_wheelStopCount;
 static uint16_t s_wheelUpdateCount;
@@ -17,14 +16,9 @@ uint8_t Graydetect_GetState(void)
     return s_grayState;
 }
 
-uint8_t Heading_IsReady(void)
+float Odometry_GetDistanceMM(void)
 {
-    return s_headingReady;
-}
-
-float Heading_GetYaw(void)
-{
-    return s_yawDeg;
+    return s_distanceMM;
 }
 
 MotionWheel_Result_t MotionWheel_Init(void)
@@ -56,8 +50,7 @@ void MotionWheel_Stop(void)
 static void reset_fakes(void)
 {
     s_grayState = 0x0CU; /* CH3 + CH4，六路几何中心。 */
-    s_headingReady = 1U;
-    s_yawDeg = 0.0f;
+    s_distanceMM = 0.0f;
     s_wheelInitCount = 0U;
     s_wheelStopCount = 0U;
     s_wheelUpdateCount = 0U;
@@ -67,8 +60,9 @@ static void reset_fakes(void)
     s_lastCommand.trimRPWM = 0.0f;
     MotionLine_TuneMaxAdjustRatio = MOTION_LINE_MAX_ADJUST_RATIO;
     MotionLine_TuneWeightKd = 0.0f;
-    MotionLine_TuneCurveMaxAdjustRatio = 0.48f;
-    MotionLine_TuneCurveWeightKd = 0.0f;
+    MotionLine_TuneCurveSpeedMMps = MOTION_LINE_CURVE_SPEED_MMPS;
+    MotionLine_TuneCurveHoldDistanceMM =
+        MOTION_LINE_CURVE_HOLD_DISTANCE_MM;
     MotionLine_TuneAccelerationMMps2 = MOTION_LINE_ACCELERATION_MMPS2;
     MotionLine_TuneDecelerationMMps2 = MOTION_LINE_DECELERATION_MMPS2;
 }
@@ -238,83 +232,22 @@ static void test_line_loss_is_confirmed_quickly(void)
     CHECK(s_wheelStopCount >= 1U);
 }
 
-static void test_curve_mode_uses_ch2_ch5_and_yaw_angle_exit(void)
-{
-    uint8_t index;
-
-    reset_fakes();
-    MotionLine_TuneMaxAdjustRatio = 0.10f;
-    init_and_start(450.0f);
-
-    /* CH2 连续压线只能产生弧线候选；未见转动时仍保持直线 PID。 */
-    s_grayState = 0x02U;
-    for (index = 0U;
-         index < (MOTION_LINE_CURVE_ENTRY_CONFIRM_TICKS - 1U); index++)
-    {
-        MotionLine_Update(0.01f);
-    }
-    CHECK(MotionLine_GetPathState() == MOTION_LINE_PATH_STRAIGHT);
-
-    /* 角速度连续越过进入阈值才真正切到弧线 PID。 */
-    MotionLine_Update(0.01f);
-    CHECK(MotionLine_GetPathState() == MOTION_LINE_PATH_CURVE);
-
-    /* 在两道角速度阈值之间必须锁住弧线，不允许来回切换。 */
-    s_grayState = 0x0CU;
-    s_yawDeg = 0.0f;
-    for (index = 0U; index < 20U; index++)
-    {
-        MotionLine_Update(0.01f);
-    }
-    CHECK(MotionLine_GetPathState() == MOTION_LINE_PATH_CURVE);
-
-    /* 退出只由低角速度连续确认，不能依据 CH2/CH5 是否释放。 */
-    s_yawDeg = 0.0f;
-    for (index = 0U; index < 20U; index++)
-    {
-        MotionLine_Update(0.01f);
-    }
-    CHECK(MotionLine_GetPathState() == MOTION_LINE_PATH_CURVE);
-    s_yawDeg = MOTION_LINE_CURVE_EXIT_ANGLE_DEG;
-    MotionLine_Update(0.01f);
-    CHECK(MotionLine_GetPathState() == MOTION_LINE_PATH_STRAIGHT);
-}
-
-static void test_curve_speed_is_limited_after_curve_confirmation(void)
+static void test_curve_speed_is_held_until_encoder_distance(void)
 {
     uint8_t index;
 
     reset_fakes();
     MotionLine_TuneCurveSpeedMMps = 400.0f;
+    MotionLine_TuneCurveHoldDistanceMM = 1500.0f;
     init_and_start(450.0f);
+
     for (index = 0U; index < 200U; index++)
     {
         MotionLine_Update(0.01f);
     }
     CHECK(MotionLine_GetProfileSpeedMMps() > 400.0f);
 
-    s_grayState = 0x10U; /* CH5：弧线入口。 */
-    for (index = 0U; index < MOTION_LINE_CURVE_ENTRY_CONFIRM_TICKS; index++)
-    {
-        MotionLine_Update(0.01f);
-    }
-    CHECK(MotionLine_GetPathState() == MOTION_LINE_PATH_CURVE);
-
-    for (index = 0U; index < 100U; index++)
-    {
-        MotionLine_Update(0.01f);
-    }
-    CHECK_NEAR(MotionLine_GetProfileSpeedMMps(),
-               MotionLine_TuneCurveSpeedMMps, 0.1f);
-}
-
-static void test_curve_exit_uses_relative_yaw_angle(void)
-{
-    uint8_t index;
-
-    reset_fakes();
-    init_and_start(450.0f);
-
+    /* CH2 连续三拍进入低速区；全程仍使用同一套 lra/lkd。 */
     s_grayState = 0x02U;
     for (index = 0U; index < MOTION_LINE_CURVE_ENTRY_CONFIRM_TICKS; index++)
     {
@@ -322,13 +255,27 @@ static void test_curve_exit_uses_relative_yaw_angle(void)
     }
     CHECK(MotionLine_GetPathState() == MOTION_LINE_PATH_CURVE);
 
-    s_yawDeg = MOTION_LINE_CURVE_EXIT_ANGLE_DEG - 0.1f;
+    /* 红外回中不能让车在弧线中提前提速。 */
+    s_grayState = 0x0CU;
+    for (index = 0U; index < 100U; index++)
+    {
+        MotionLine_Update(0.01f);
+    }
+    CHECK(MotionLine_GetPathState() == MOTION_LINE_PATH_CURVE);
+    CHECK_NEAR(MotionLine_GetProfileSpeedMMps(), 400.0f, 0.1f);
+
+    s_distanceMM = 1499.9f;
     MotionLine_Update(0.01f);
     CHECK(MotionLine_GetPathState() == MOTION_LINE_PATH_CURVE);
-
-    s_yawDeg = MOTION_LINE_CURVE_EXIT_ANGLE_DEG;
+    s_distanceMM = 1500.0f;
     MotionLine_Update(0.01f);
     CHECK(MotionLine_GetPathState() == MOTION_LINE_PATH_STRAIGHT);
+
+    for (index = 0U; index < 20U; index++)
+    {
+        MotionLine_Update(0.01f);
+    }
+    CHECK(MotionLine_GetProfileSpeedMMps() > 400.0f);
 }
 
 int main(void)
@@ -339,9 +286,7 @@ int main(void)
     test_ir_side_controls_the_matching_wheel();
     test_finish_speed_and_stop_remain_continuous();
     test_line_loss_is_confirmed_quickly();
-    test_curve_mode_uses_ch2_ch5_and_yaw_angle_exit();
-    test_curve_speed_is_limited_after_curve_confirmation();
-    test_curve_exit_uses_relative_yaw_angle();
+    test_curve_speed_is_held_until_encoder_distance();
 
     if (s_failures == 0)
     {

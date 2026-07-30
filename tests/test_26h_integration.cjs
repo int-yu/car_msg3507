@@ -111,13 +111,13 @@ assert.ok(line.includes('MOTION_LINE_MAX_ADJUST_RATE_MMPS2'),
     'MotionLine must limit correction-rate steps');
 assert.ok(line.includes('MotionLine_SnapshotTunings()'),
     'MotionLine must snapshot acceleration/deceleration at Start');
-assert.match(line, /Heading_GetYaw|Application\/State\/Heading\.h/,
-    'MotionLine must use MPU6050 yaw to measure the relative curve angle');
+assert.match(line, /Odometry_GetDistanceMM|Application\/State\/Odometry\.h/,
+    'MotionLine must use encoder odometry to measure the curve hold distance');
 assert.ok(line.includes('MOTION_LINE_CURVE_TRIGGER_MASK'),
     'MotionLine must use CH2/CH5 as the curve-entry signal');
-assert.ok(line.includes('MOTION_LINE_CURVE_EXIT_ANGLE_DEG') &&
-          line.includes('curveEntryYawDeg'),
-    'MotionLine must exit a curve after the configured relative yaw angle');
+assert.ok(line.includes('MOTION_LINE_CURVE_HOLD_DISTANCE_MM') &&
+          line.includes('curveEntryDistanceMM'),
+    'MotionLine must exit the low-speed arc zone after the configured encoder distance');
 assert.ok(line.includes('MotionLine_TuneCurveSpeedMMps'),
     'MotionLine must snapshot the curve speed limit');
 
@@ -125,7 +125,7 @@ assert.ok(param.includes('"h2off"'),
     'K parameter table must expose the H2 parking-offset calibration');
 for (const name of [
     'h2cru', 'h2fin', 'h2clr', 'h2lap', 'h2app', 'h2arm', 'h2max',
-    'lacc', 'ldec', 'lcra', 'lckd', 'lcv',
+    'lacc', 'ldec', 'lcra', 'lckd', 'lcv', 'lch',
 ]) {
     assert.ok(param.includes(`{ "${name}"`),
         `K parameter table must append ${name}`);
