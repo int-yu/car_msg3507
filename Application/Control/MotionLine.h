@@ -61,5 +61,9 @@ MotionLine_Error_t MotionLine_GetError(void);
 float MotionLine_GetLineError(void);
 float MotionLine_GetRequestedSpeedMMps(void);
 float MotionLine_GetProfileSpeedMMps(void);
+/* 本拍速度斜坡的规划加速度，正为加速、负为减速。摆杆平衡用它做车体
+ * 加速度前馈：钢球在非惯性系里受 a_car 的惯性力，需 θ_ff = a_car / k
+ * 抵消。必须用规划量而不是编码器差分，后者的噪声会让摆杆抖动。 */
+float MotionLine_GetProfileAccelerationMMps2(void);
 
 #endif

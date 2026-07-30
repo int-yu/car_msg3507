@@ -9,6 +9,7 @@ typedef struct
     MotionLine_Error_t error;
     float requestedSpeedMMps;
     float profileSpeedMMps;
+    float profileAccelerationMMps2;
     float lineError;
     float filteredWeight;
     float previousWeight;
@@ -82,6 +83,7 @@ static void MotionLine_ResetControl(void)
 {
     s_context.requestedSpeedMMps = 0.0f;
     s_context.profileSpeedMMps = 0.0f;
+    s_context.profileAccelerationMMps2 = 0.0f;
     s_context.lineError = 0.0f;
     s_context.filteredWeight = 0.0f;
     s_context.previousWeight = 0.0f;
@@ -163,9 +165,14 @@ static float MotionLine_UpdateProfileSpeed(float targetSpeedMMps, float dt)
     float maximumStep = (targetSpeedMMps > s_context.profileSpeedMMps) ?
         (MOTION_LINE_ACCELERATION_MMPS2 * dt) :
         (MOTION_LINE_DECELERATION_MMPS2 * dt);
+    float previousSpeedMMps = s_context.profileSpeedMMps;
 
     s_context.profileSpeedMMps = MotionLine_Approach(
         s_context.profileSpeedMMps, targetSpeedMMps, maximumStep);
+    /* 规划加速度而不是编码器差分：差分噪声乘进摆杆前馈会让钢球抖到
+     * 没法看，而这里是规划量——无噪声，且先于实际运动一拍。 */
+    s_context.profileAccelerationMMps2 =
+        (s_context.profileSpeedMMps - previousSpeedMMps) / dt;
     return s_context.profileSpeedMMps;
 }
 
@@ -408,4 +415,9 @@ float MotionLine_GetRequestedSpeedMMps(void)
 float MotionLine_GetProfileSpeedMMps(void)
 {
     return s_context.profileSpeedMMps;
+}
+
+float MotionLine_GetProfileAccelerationMMps2(void)
+{
+    return s_context.profileAccelerationMMps2;
 }

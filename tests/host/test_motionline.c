@@ -80,6 +80,32 @@ static void test_start_speed_is_ramped(void)
                MOTION_LINE_ACCELERATION_MMPS2 * 0.02f, 0.001f);
 }
 
+/* 摆杆平衡要用它做车体加速度前馈（θ_ff = a_car / k）。必须是规划量：
+ * 加速段为正、匀速段归零、减速段为负，且不含编码器差分的噪声。 */
+static void test_profile_acceleration_tracks_the_ramp(void)
+{
+    reset_fakes();
+    init_and_start(450.0f);
+
+    MotionLine_Update(0.01f);
+    CHECK_NEAR(MotionLine_GetProfileAccelerationMMps2(),
+               MOTION_LINE_ACCELERATION_MMPS2, 0.001f);
+
+    /* 斜坡到达请求速度后进入匀速，前馈必须归零，否则摆杆会一直偏着。 */
+    while (MotionLine_GetProfileSpeedMMps() < 449.999f)
+    {
+        MotionLine_Update(0.01f);
+    }
+    MotionLine_Update(0.01f);
+    CHECK_NEAR(MotionLine_GetProfileAccelerationMMps2(), 0.0f, 0.001f);
+
+    /* 减速段为负，且大小按减速度常数而不是加速度常数。 */
+    CHECK(MotionLine_SetSpeed(100.0f) == MOTION_LINE_RESULT_OK);
+    MotionLine_Update(0.01f);
+    CHECK_NEAR(MotionLine_GetProfileAccelerationMMps2(),
+               -MOTION_LINE_DECELERATION_MMPS2, 0.001f);
+}
+
 static void test_ir_error_slows_and_turns_without_speed_step(void)
 {
     float speedBefore;
@@ -160,6 +186,7 @@ static void test_line_loss_is_confirmed_quickly(void)
 int main(void)
 {
     test_start_speed_is_ramped();
+    test_profile_acceleration_tracks_the_ramp();
     test_ir_error_slows_and_turns_without_speed_step();
     test_finish_speed_and_stop_remain_continuous();
     test_line_loss_is_confirmed_quickly();
