@@ -40,6 +40,14 @@ gcc $CFLAGS \
     -o "$OUT/test_motionline.exe"
 "$OUT/test_motionline.exe"
 
+echo "--- test_ballsensor ---"
+gcc $CFLAGS \
+    "$ROOT/tests/host/test_ballsensor.c" \
+    "$ROOT/Application/Control/BallSensor.c" \
+    -lm \
+    -o "$OUT/test_ballsensor.exe"
+"$OUT/test_ballsensor.exe"
+
 if [ -f "$ROOT/tests/host/test_motionlane.c" ]; then
     echo "--- test_motionlane ---"
     gcc $CFLAGS \
