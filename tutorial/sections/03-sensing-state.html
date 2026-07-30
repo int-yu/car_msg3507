@@ -848,8 +848,8 @@ extern float Odometry_CountsPerMM;  /* 标定常量：每毫米对应编码器�
 #include "Hardware/Motor/Encoder.h"
 #include "System/Tick.h"
 
-/* 初始参考值，必须通过实车定距滚动测试进一步标定。 */
-float Odometry_CountsPerMM = 6.23f;
+/* 1:20/48 mm 的 6.23 按 (28/20)*(48/65) 换算；仍需实车定距标定。 */
+float Odometry_CountsPerMM = 6.44086f;
 
 static float s_distanceL = 0.0f;
 static float s_distanceR = 0.0f;
@@ -924,7 +924,7 @@ float Odometry_GetSpeedR(void)
 }</code></pre>
   <ol class="line-notes">
     <li><strong>第 1～3 行：</strong>引入本模块接口、编码器增量接口和 <code>TICK_DT</code> 时间常量。第 1 行使用同目录短路径。</li>
-    <li><strong>第 5～6 行：</strong>初始标定认为每移动 1 mm 产生 6.23 个计数；注释强调这是参考值，不是所有车辆通用的真理。</li>
+    <li><strong>第 5～6 行：</strong>旧 1:20、48 mm 轮胎的 6.23 counts/mm 按新 1:28、65 mm 轮胎换算为 6.44086；该值仍只是实车标定的起点。</li>
     <li><strong>第 8～11 行：</strong>四个私有状态分别保存左右累计距离和最近周期速度，初值都为零。</li>
     <li><strong>第 13～16 行：</strong>初始化先启用编码器，再调用统一 Reset；复用 Reset 可避免两套清零逻辑逐渐不一致。</li>
     <li><strong>第 17 行：</strong>结束初始化。</li>
@@ -1028,7 +1028,7 @@ float Odometry_GetSpeedR(void)
     <h4>难点八：计数到毫米、毫米到速度，以及 dt 与 ticks</h4>
     <p><strong>输入：</strong>本周期增量 <code>delta</code>、标定值 <code>Odometry_CountsPerMM</code>、经过节拍数 <code>ticks</code>，以及 <code>TICK_DT=0.01 s</code>。</p>
     <p><strong>过程：</strong><code>位移(mm)=delta/countsPerMM</code>；<code>时间(s)=ticks×0.01</code>；<code>速度(mm/s)=位移/时间</code>。</p>
-    <p>例：<code>delta=623</code> 个整数计数、<code>countsPerMM=6.23</code>，位移是 100 mm。若经过 20 tick，即 0.20 s，速度是 <code>100/0.20=500 mm/s</code>。若主循环延迟了两拍却仍固定除以 0.01，速度会错误翻倍，所以必须传真实 ticks。</p>
+    <p>例：<code>delta=644</code> 个整数计数、<code>countsPerMM=6.44086</code>，位移约 99.99 mm。若经过 20 tick，即 0.20 s，速度约为 499.93 mm/s。若主循环延迟了两拍却仍固定除以 0.01，速度会错误翻倍，所以必须传真实 ticks。</p>
     <p><strong>输出：</strong>距离是长期累计值；速度是最近一批计数的区间平均值，不是编码器边沿时刻的连续瞬时速度。</p>
     <p><strong>边界条件：</strong>低速时一个周期可能没有脉冲，速度会在 0 与较大值之间量化跳动；需要控制层滤波/PID 参数与编码器分辨率共同配合。</p>
     <p><strong>设计原因：</strong><code>App</code> 同一周期把 <code>dt = elapsedTicks×TICK_DT</code> 给 Heading/Motion，把 <code>elapsedTicks</code> 给 Odometry，所有状态和控制器就使用同一段真实时间。</p>
@@ -1088,7 +1088,7 @@ float Odometry_GetSpeedR(void)
   <details class="quiz"><summary>2. 为什么 MPU_SendByte 读到低电平 ACK 后，变量 ack 反而是 1？</summary><p>I2C 的 ACK 在电气上是低电平。代码先读到 0，再用逻辑非 ! 把它转换为 C 语言中的成功真值 1。</p></details>
   <details class="quiz"><summary>3. 静止零偏为 20 LSB，当前原始值为 184 LSB，dt=0.01 s、scale=1 时，本拍航向变化是多少？</summary><p>去偏为 164 LSB，除以 32.8 得 5°/s，再乘方向符号 -1 和 0.01 s，变化为 -0.05°。</p></details>
   <details class="quiz"><summary>4. 为什么 Encoder_Get 必须保存并恢复 PRIMASK，而不能函数结尾直接开中断？</summary><p>调用者进入函数前可能已经关闭中断。直接开中断会破坏调用者的临界区；恢复旧 PRIMASK 才能保持进入前的中断状态。</p></details>
-  <details class="quiz"><summary>5. 某段左轮增量 623 count，counts/mm=6.23，经过 20 tick，左轮速度是多少？</summary><p>位移是 623/6.23=100 mm；20 tick 是 0.20 s；速度是 100/0.20=500 mm/s。</p></details>
+  <details class="quiz"><summary>5. 某段左轮增量 644 count，counts/mm=6.44086，经过 20 tick，左轮速度约是多少？</summary><p>位移约为 644/6.44086=99.99 mm；20 tick 是 0.20 s；速度约为 499.93 mm/s。</p></details>
 
   <h3>覆盖清单</h3>
   <ul class="coverage-list">

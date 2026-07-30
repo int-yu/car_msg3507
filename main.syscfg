@@ -17,6 +17,7 @@ const GPIO4   = GPIO.addInstance();
 const GPIO5   = GPIO.addInstance();
 const GPIO6   = GPIO.addInstance();
 const GPIO7   = GPIO.addInstance();
+const GPIO8   = GPIO.addInstance();
 const CAPTURE = scripting.addModule("/ti/driverlib/CAPTURE", {}, false);
 const CAPTURE1 = CAPTURE.addInstance();
 const I2C     = scripting.addModule("/ti/driverlib/I2C", {}, false);
@@ -24,6 +25,7 @@ const I2C1    = I2C.addInstance();
 const PWM     = scripting.addModule("/ti/driverlib/PWM", {}, false);
 const PWM1    = PWM.addInstance();
 const PWM2    = PWM.addInstance();
+const PWM3    = PWM.addInstance();
 const SYSTICK = scripting.addModule("/ti/driverlib/SYSTICK");
 const UART    = scripting.addModule("/ti/driverlib/UART", {}, false);
 const UART1   = UART.addInstance();
@@ -116,20 +118,35 @@ GPIO6.associatedPins.create(1);
 GPIO6.associatedPins[0].$name               = "A";
 GPIO6.associatedPins[0].direction           = "INPUT";
 GPIO6.associatedPins[0].internalResistor    = "PULL_UP";
-GPIO6.associatedPins[0].interruptEn         = true;
+/* SysConfig 只完成引脚输入配置；Stepper_Init() 通过
+ * Encoder_InitStepper() 显式打开双边沿中断。 */
+GPIO6.associatedPins[0].interruptEn         = false;
 GPIO6.associatedPins[0].polarity            = "RISE_FALL";
 GPIO6.associatedPins[0].assignedPortSegment = "Lower";
 GPIO6.associatedPins[0].pin.$assign         = "PA13";
 
-GPIO7.$name                                 = "STEPPER_ENCODER_B";
-GPIO7.associatedPins.create(1);
-GPIO7.associatedPins[0].$name               = "B";
-GPIO7.associatedPins[0].direction           = "INPUT";
-GPIO7.associatedPins[0].internalResistor    = "PULL_UP";
-GPIO7.associatedPins[0].interruptEn         = true;
-GPIO7.associatedPins[0].polarity            = "RISE_FALL";
-GPIO7.associatedPins[0].assignedPortSegment = "Upper";
-GPIO7.associatedPins[0].pin.$assign         = "PA29";
+/* 六路红外学习模块：教程定义 +5V/GND/SDA/SCL；现有线束中 PA25= SDA、
+ * PA14 = SCL。该芯片没有把 PA25 复用为硬件 I2C SDA，因此此组供软件
+ * I2C 开漏驱动使用。步进新映射在 PB8/PB9/PB12、PA13/PA29、PB13，
+ * 与本通信线无重叠。 */
+GPIO7.$name                         = "LINE_FOLLOWER_I2C";
+GPIO7.associatedPins.create(2);
+GPIO7.associatedPins[0].$name       = "LINE_SDA";
+GPIO7.associatedPins[0].direction   = "INPUT";
+GPIO7.associatedPins[0].pin.$assign = "PA25";
+GPIO7.associatedPins[1].$name       = "LINE_SCL";
+GPIO7.associatedPins[1].direction   = "INPUT";
+GPIO7.associatedPins[1].pin.$assign = "PA14";
+
+GPIO8.$name                                 = "STEPPER_ENCODER_B";
+GPIO8.associatedPins.create(1);
+GPIO8.associatedPins[0].$name               = "B";
+GPIO8.associatedPins[0].direction           = "INPUT";
+GPIO8.associatedPins[0].internalResistor    = "PULL_UP";
+GPIO8.associatedPins[0].interruptEn         = false;
+GPIO8.associatedPins[0].polarity            = "RISE_FALL";
+GPIO8.associatedPins[0].assignedPortSegment = "Upper";
+GPIO8.associatedPins[0].pin.$assign         = "PA29";
 
 CAPTURE1.$name                      = "STEPPER_ABS_CAPTURE";
 CAPTURE1.ccIndex                    = 0;
@@ -175,23 +192,44 @@ PWM1.ccp1PinConfig.onlyInternalResistor = scripting.forceWrite(false);
 PWM1.ccp1PinConfig.passedPeripheralType = scripting.forceWrite("Digital");
 PWM1.ccp1PinConfig.$name                = "ti_driverlib_gpio_GPIOPinGeneric5";
 
-PWM2.$name                              = "STEPPER_PULSE";
-PWM2.ccIndex                            = [0];
-PWM2.clockPrescale                      = 8;
-PWM2.timerCount                         = 62500;
-PWM2.enableRepeatCounter                = true;
-PWM2.repeatCounter                      = 1;
-PWM2.peripheral.$assign                 = "TIMA0";
-PWM2.peripheral.ccp0Pin.$assign         = "PB8";
-PWM2.PWM_CHANNEL_0.$name                = "STEPPER_ST";
-PWM2.PWM_CHANNEL_0.dutyCycle            = 50;
-PWM2.ccp0PinConfig.$name                 = "ti_driverlib_gpio_GPIOPinGeneric13";
-PWM2.ccp0PinConfig.direction             = scripting.forceWrite("OUTPUT");
-PWM2.ccp0PinConfig.hideOutputInversion   = scripting.forceWrite(false);
-PWM2.ccp0PinConfig.internalResistor      = "PULL_UP";
-PWM2.ccp0PinConfig.onlyInternalResistor  = scripting.forceWrite(false);
-PWM2.ccp0PinConfig.passedPeripheralType  = scripting.forceWrite("Digital");
-PWM2.ccp0PinConfig.enableConfig          = true;
+PWM2.$name                              = "SERVO_PWM";
+PWM2.clockPrescale                      = 32;
+PWM2.timerCount                         = 20000;
+PWM2.peripheral.$assign                 = "TIMG7";
+PWM2.peripheral.ccp0Pin.$assign         = "PA26";
+PWM2.peripheral.ccp1Pin.$assign         = "PA27";
+PWM2.PWM_CHANNEL_0.$name                = "SERVO_HORIZONTAL";
+PWM2.PWM_CHANNEL_0.dutyCycle            = 7.5;
+PWM2.PWM_CHANNEL_1.$name                = "SERVO_VERTICAL";
+PWM2.PWM_CHANNEL_1.dutyCycle            = 7.5;
+PWM2.ccp0PinConfig.direction            = scripting.forceWrite("OUTPUT");
+PWM2.ccp0PinConfig.hideOutputInversion  = scripting.forceWrite(false);
+PWM2.ccp0PinConfig.onlyInternalResistor = scripting.forceWrite(false);
+PWM2.ccp0PinConfig.passedPeripheralType = scripting.forceWrite("Digital");
+PWM2.ccp0PinConfig.$name                = "ti_driverlib_gpio_GPIOPinGeneric6";
+PWM2.ccp1PinConfig.direction            = scripting.forceWrite("OUTPUT");
+PWM2.ccp1PinConfig.hideOutputInversion  = scripting.forceWrite(false);
+PWM2.ccp1PinConfig.onlyInternalResistor = scripting.forceWrite(false);
+PWM2.ccp1PinConfig.passedPeripheralType = scripting.forceWrite("Digital");
+PWM2.ccp1PinConfig.$name                = "ti_driverlib_gpio_GPIOPinGeneric7";
+
+PWM3.$name                              = "STEPPER_PULSE";
+PWM3.ccIndex                            = [0];
+PWM3.clockPrescale                      = 8;
+PWM3.timerCount                         = 62500;
+PWM3.enableRepeatCounter                = true;
+PWM3.repeatCounter                      = 1;
+PWM3.peripheral.$assign                 = "TIMA0";
+PWM3.peripheral.ccp0Pin.$assign         = "PB8";
+PWM3.PWM_CHANNEL_0.$name                = "STEPPER_ST";
+PWM3.PWM_CHANNEL_0.dutyCycle            = 50;
+PWM3.ccp0PinConfig.$name                = "ti_driverlib_gpio_GPIOPinGeneric13";
+PWM3.ccp0PinConfig.direction            = scripting.forceWrite("OUTPUT");
+PWM3.ccp0PinConfig.hideOutputInversion  = scripting.forceWrite(false);
+PWM3.ccp0PinConfig.internalResistor      = "PULL_UP";
+PWM3.ccp0PinConfig.onlyInternalResistor  = scripting.forceWrite(false);
+PWM3.ccp0PinConfig.passedPeripheralType  = scripting.forceWrite("Digital");
+PWM3.ccp0PinConfig.enableConfig          = true;
 
 const SYSCTL                 = scripting.addModule("/ti/driverlib/SYSCTL", {}, false);
 SYSCTL.forceDefaultClkConfig = true;

@@ -7,24 +7,24 @@
 #define MOTION_WHEEL_KP                       0.6f     /* 左右 Kp 的公共参考值。 */
 #define MOTION_WHEEL_KI                       0.0f    /* 消除稳态轮速误差；当前关闭。 */
 #define MOTION_WHEEL_INTEGRAL_LIMIT           0.0f    /* KI 开启后限制积分累积。 */
-#define MOTION_WHEEL_FEEDFORWARD_PWM_PER_MMPS 0.43702f /* 左右前馈斜率的算术平均值。 */
+#define MOTION_WHEEL_FEEDFORWARD_PWM_PER_MMPS 0.45181f /* 左右前馈斜率的算术平均值。 */
 #define MOTION_WHEEL_STATIC_FRICTION_PWM      21.0445f /* 左右静摩擦补偿的算术平均值。 */
 #define MOTION_WHEEL_MAX_COMMAND_PWM          1000.0f /* 每侧车轮最终 PWM 上限。 */
 
-/* 2026-07-20 正向实测标定值：
- * - 开环 PWM150~600 的 21 个升降稳态点分别拟合左右前馈与静摩擦；
- * - Kp 0.5~0.9 细网格中左右均以 0.6 综合误差最低；
- * - Ki 的小幅收益尚未通过重复交叉试验确认，因此安全默认继续关闭。
- * 左右电机、减速箱和静摩擦不同，默认值必须分别固化。 */
+/* 2026-07-30 新机械参数的初始换算值：
+ * - 旧 1:20、48 mm 轮胎的前馈来自 2026-07-20 开环实测；
+ * - 新 1:28、65 mm 轮胎按 (28/20)*(48/65)=1.033846 缩放前馈；
+ * - Kp、Ki 和静摩擦无法仅由减速比与轮径推导，暂时保留旧实测值。
+ * 更换电机后必须重新执行左右轮独立实车标定。 */
 #define MOTION_WHEEL_LEFT_KP                       0.6f
 #define MOTION_WHEEL_LEFT_KI                       0.0f
 #define MOTION_WHEEL_LEFT_INTEGRAL_LIMIT           0.0f
-#define MOTION_WHEEL_LEFT_FEEDFORWARD_PWM_PER_MMPS 0.43114f
+#define MOTION_WHEEL_LEFT_FEEDFORWARD_PWM_PER_MMPS 0.44573f
 #define MOTION_WHEEL_LEFT_STATIC_FRICTION_PWM      19.884f
 #define MOTION_WHEEL_RIGHT_KP                       0.6f
 #define MOTION_WHEEL_RIGHT_KI                       0.0f
 #define MOTION_WHEEL_RIGHT_INTEGRAL_LIMIT           0.0f
-#define MOTION_WHEEL_RIGHT_FEEDFORWARD_PWM_PER_MMPS 0.44289f
+#define MOTION_WHEEL_RIGHT_FEEDFORWARD_PWM_PER_MMPS 0.45788f
 #define MOTION_WHEEL_RIGHT_STATIC_FRICTION_PWM      22.205f
 
 /* 运行时可调参数：上电恢复左右各自的 #define 默认值，由 K 命令经 Param 模块读写。

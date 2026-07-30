@@ -1,3 +1,9 @@
+#ifndef MAIN_STEPPER_TEST_MODE
+#define MAIN_STEPPER_TEST_MODE 1U
+#endif
+
+#if MAIN_STEPPER_TEST_MODE
+
 #include "Application/Comms/K230Link.h"
 #include "Hardware/Board/Key.h"
 #include "Hardware/Display/OLED.h"
@@ -320,3 +326,15 @@ int main(void)
         }
     }
 }
+
+#else
+
+#include "Application/Core/Main26H.h"
+
+int main(void)
+{
+    Main26H_Run();
+    return 0;
+}
+
+#endif

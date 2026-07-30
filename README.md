@@ -9,204 +9,190 @@
 | 资源 | 当前配置 | 占用模块 | 作用 |
 |---|---:|---|---|
 | CPUCLK / SYSCLK | 32 MHz | 全工程 | SysConfig 默认时钟源；延时、总线外设和 SysTick 的基准时钟 |
-| SysTick | 32 MHz / 320000 = 100 Hz | `System/Tick`、当前测试 `main`、`Stepper_Update` | 10 ms 系统节拍；`Stepper_Update()` 接收实际累计 Tick |
-| TIMG8 | 32 MHz，周期 1600 = 20 kHz | `Hardware/Motor/PWM`、`MotionWheel`、`MotionManager`、`Accomplish/25H` | 25H 通过 MotionManager 依次选择巡线、定距直线和绝对角转向，再由 MotionWheel 输出双轮 PWM |
-| TIMA0 CCP0 | BUSCLK / 8 = 4 MHz，重复计数器 | `Hardware/Motor/Stepper` | PB8 输出 ST；多步段使用 REPC 中断，单步段使用 ZERO 中断；范围 64~16000 ST/s |
-| TIMG12 CCP0 | BUSCLK / 1 = 32 MHz，周期 16.384 ms，LOAD=524287 | `Hardware/Motor/Stepper` | PB13 对 MT6816 PWM 做脉宽/周期联合捕获；使用 CC1_DN 和 ZERO 中断 |
+| SysTick | 32 MHz / 320000 = 100 Hz | `System/Tick`、`Application/Core/App`、`Graydetect_Update`、`MotionManager`、`Mission`、`Accomplish/25H`、`Accomplish/26H` | 10 ms 系统节拍；`App_Update()` 每拍采样一次六路红外 I2C 状态并生成 dt；26H 用整数 Tick 计时并驱动单圈巡线状态机 |
+| TIMG8 | 32 MHz，周期 1600 = 20 kHz | `Hardware/Motor/PWM`、`MotionWheel`、`MotionManager`、`Accomplish/25H`、`Accomplish/26H` | MotionManager 经 MotionWheel 输出双轮 PWM；26H 以平滑巡线速度曲线完成 A 点单圈 |
+| TIMG7 | 32 MHz / 32 = 1 MHz，周期 20000 = 50 Hz | `Application/Servo` | PA26/PA27 分别输出横向/纵向普通舵机 PWM；`D`/`O` 命令更新比较值 |
+| TIMA0 CCP0 | BUSCLK / 8 = 4 MHz，重复计数器，PB8 | `Hardware/Motor/Stepper` | MS42CG ST 脉冲；当前测试入口已启用 |
+| TIMG12 CCP0 | 捕获组合模式，PB13 | `Hardware/Motor/Stepper` | MT6816 PWM 单圈绝对角捕获；当前测试入口已启用 |
 | I2C0 | BUSCLK 32 MHz，SCL 400 kHz | `Hardware/Display/OLED` | OLED 控制器通信 |
-| UART0 | BUSCLK 32 MHz，115200 baud，8N1，RX + DMA TX 中断，IRQ 优先级 3 | `Hardware/Comms/Serial`、`Application/Comms/K230Link` | PA10/PA11 接 K230；逻辑接口为 `Serial3`，TX 使用 DMA CH2 |
-| UART1 | 当前 SysConfig 未实例化 | `Serial2` 停用桩 | DMA CH1当前空闲 |
+| UART0 | BUSCLK 32 MHz，115200 baud，8N1，RX + DMA TX 中断，IRQ 优先级 3 | `Hardware/Comms/Serial`、`Application/Comms/K230Link` | PA10/PA11 接 K230；逻辑接口为 `Serial3`，TX 使用 DMA CH2；RX 异常积压时熔断以保护行车实时性 |
+| UART1 | 当前 SysConfig 未实例化 | `Serial2` 停用桩、`Application/Comms/CarLink` 软件层 | PB6/PB7 未占用；DMA CH1 空闲，CarLink 当前没有物理链路 |
 | UART2 | BUSCLK 32 MHz，115200 baud，8N1，RX + DMA TX 中断 | `Hardware/Comms/Serial`、`Application/Comms/BluetoothDebug`、`App`、`Mission` | PA21/PA22 接 DAPLink，作为 PC/网页链路；逻辑接口为 `Serial1`，TX 使用 DMA CH0 |
-| GPIO 软件 I2C | CPU 延时产生时序 | `Hardware/Sensors/MPU6050`、`Application/State/Heading`、`Accomplish/25H` | 提供连续多圈航向；25H 保存 KEY1 启动基准，左转绝对目标依次为基准减 90°、180°、270°……；不占用 I2C 外设实例 |
-| GPIOA GROUP1 IRQ | A/B 相双边沿，共享唯一入口 | `Hardware/Motor/Encoder`、`Hardware/Motor/Stepper`、`MotionWheel` | PA13/PA29解码步进编码器，PA15/PA16/PA17/PA24解码左右轮编码器；统一由`GROUP1_IRQHandler`处理 |
-
-上表是`main.syscfg`的资源分配，表示对应引脚和外设不能再分配给其他模块。当前测试`main`实际启动SysTick、TIMA0、TIMG12、I2C0 OLED、UART0/DMA CH2、步进AB和左右轮AB中断；TIMG8、UART2、DMA CH0、MPU6050和灰度均不初始化。灰度GPIO组已从SysConfig移除，`GRAYDETECT_ENABLED=0`。
-
-### 1.1 中断入口与当前状态
-
-| 中断入口 | 触发源 | 处理函数 | 当前测试 |
-|---|---|---|---|
-| SysTick | 10 ms周期到达 | `System/Tick.c::SysTick_Handler` | 已启用，驱动主循环和`Stepper_Update()` |
-| GPIOA GROUP1 | PA13/PA29步进AB或PA15/PA16/PA17/PA24左右轮AB任一边沿 | `Hardware/Motor/Encoder.c::GROUP1_IRQHandler` | 已启用，同时解码步进和左右轮编码器 |
-| TIMA0 | 多步段REPC事件或最后单步ZERO事件 | `Hardware/Motor/Stepper.c::TIMA0_IRQHandler` | 已启用，完成ST计数和下一脉冲段调度 |
-| TIMG12 | CCP1下降沿捕获或计数器ZERO溢出 | `Hardware/Motor/Stepper.c::TIMG12_IRQHandler` | 已启用，采集MT6816高电平宽度和周期 |
-| UART0 | K230 RX或DMA CH2 TX完成 | `Hardware/Comms/Serial.c::UART0_IRQHandler` | 已启用，接收`BALL_POSITION`并发送握手帧 |
-| UART2 | DAPLink RX或DMA CH0 TX完成 | `Hardware/Comms/Serial.c::UART2_IRQHandler` | 已配置但当前`main`未初始化 |
-
-OLED使用I2C0轮询发送，不依赖I2C0中断。UART1和DMA CH1没有实例，也没有可触发的中断入口。
+| GPIO 软件 I2C（PB2/PB3） | CPU 延时产生时序 | `Hardware/Sensors/MPU6050`、`Application/State/Heading`、`Accomplish/25H` | MPU6050 的 SCL/SDA；不占用 I2C 外设实例 |
+| GPIO 软件 I2C（PA25/PA14） | 约 100 kHz、开漏式时序 | `Hardware/Sensors/Graydetect`、`Application/Control/MotionLine`、`Application/Debug/DebugDisplay` | 六路红外模块的 SDA/SCL；读取地址 `0x5C`、状态寄存器 `0x05` |
+| GPIOA GROUP1 IRQ | A/B 相双边沿，共享唯一入口 | `Hardware/Motor/Encoder`、`MotionWheel` | PA15/PA16/PA17/PA24 解码左右轮编码器；PA13/PA29 为已预留的步进 AB 反馈，只有启用步进后才打开其中断 |
 
 ## 2. Pin 口占用
 
 | Pin | 方向 / 复用 | 占用对象 | 程序说明 |
 |---|---|---|---|
-| PA10 | UART0 TX | K230 RX | MCU向K230发送握手帧，逻辑接口`Serial3`，115200 baud |
-| PA11 | UART0 RX、上拉 | K230 TX | 当前测试接收钢珠位置帧；未连接时保持UART空闲高电平 |
+| PA10 | UART0 TX | K230 RX | MCU 向 K230 发送握手与拍照请求；逻辑接口 `Serial3`，115200 |
+| PA11 | UART0 RX、上拉 | K230 TX | 接收 K230 帧；未连接时保持 UART 空闲高电平，逻辑接口 `Serial3`，115200 |
 | PA12 | GPIO 输出 | 右电机 AIN2 | TB6612 A 通道方向 |
-| PA13 | GPIO输入、上拉、双边沿中断 | MT6816 AB-A | GPIOA GROUP1 IRQ，四倍频正交解码 |
-| PA15 | GPIO 输入、上拉、双边沿中断 | 右编码器 A | 当前测试累计右轮正交计数并显示 |
-| PA16 | GPIO 输入、上拉、双边沿中断 | 右编码器 B | 当前测试累计右轮正交计数并显示 |
-| PA17 | GPIO 输入、上拉、双边沿中断 | 左编码器 A | 当前测试累计左轮正交计数并显示 |
+| PA13 | GPIO 输入、上拉 | MS42CG AB-A | 步进反馈 A，双边沿中断 |
+| PA14 | GPIO 输入 / 软件开漏 | 六路红外 SCL | 软件 I2C 时钟；仅拉低或释放，绝不主动输出高电平 |
+| PA15 | GPIO 输入、上拉、双边沿中断 | 右编码器 A | 右轮正交反馈 |
+| PA16 | GPIO 输入、上拉、双边沿中断 | 右编码器 B | 右轮正交反馈 |
+| PA17 | GPIO 输入、上拉、双边沿中断 | 左编码器 A | 左轮正交反馈 |
 | PA19 | SWDIO | 下载调试 | 不作为普通 GPIO 使用 |
 | PA20 | SWCLK | 下载调试 | 不作为普通 GPIO 使用 |
 | PA21 | UART2 TX | DAPLink RX | MCU 向 PC/网页发送回应和遥测；逻辑接口 `Serial1`，115200 |
 | PA22 | UART2 RX、上拉 | DAPLink TX | 接收 PC/网页命令；逻辑接口 `Serial1`，115200 |
-| PA24 | GPIO 输入、上拉、双边沿中断 | 左编码器 B | GPIOA GROUP1 IRQ；当前测试累计左轮计数 |
+| PA24 | GPIO 输入、上拉、双边沿中断 | 左编码器 B | GPIOA GROUP1 IRQ；`MotionWheel` 左轮反馈 |
+| PA25 | GPIO 输入 / 软件开漏 | 六路红外 SDA | 软件 I2C 数据；仅拉低或释放，绝不主动输出高电平 |
+| PA26 | TIMG7 CCP0 | 横向舵机 PWM | 50 Hz；`D<number>` 更新角度 |
+| PA27 | TIMG7 CCP1 | 纵向舵机 PWM | 50 Hz；`O<number>` 更新角度 |
 | PA28 | I2C0 SDA | OLED | 400 kHz |
-| PA29 | GPIO输入、上拉、双边沿中断 | MT6816 AB-B | 与PA13共同进行4096 count/rev正交解码 |
-| PA30 | GPIO 输入、上拉 | KEY1 | 当前测试程序切换步进EN；与KEY4组合为急停 |
+| PA29 | GPIO 输入、上拉 | MS42CG AB-B | 步进反馈 B，双边沿中断 |
+| PA30 | GPIO 输入、上拉 | KEY1 | 低电平按下，按键位图 bit0；在 26H 等待/完成/错误页按下时启动或重试单圈 |
 | PA31 | I2C0 SCL | OLED | 400 kHz |
 | PB0 | GPIO 输出 | 左电机 BIN1 | TB6612 B 通道方向；由 MotionManager 当前模式经 MotionWheel 输出 |
 | PB1 | GPIO 输出 | 左电机 BIN2 | TB6612 B 通道方向；由 MotionManager 当前模式经 MotionWheel 输出 |
 | PB2 | 开漏式 GPIO | MPU6050 SCL | 软件 I2C 时钟 |
 | PB3 | 开漏式 GPIO | MPU6050 SDA | 软件 I2C 数据 |
-| PB8 | TIMA0 CCP0输出 | MS42CG ST | 上升沿有效，50%占空比，64~16000 ST/s |
-| PB9 | GPIO输出 | MS42CG DIR | 默认高电平为软件正方向，可用极性宏反转 |
-| PB10 | GPIO 输入、上拉 | KEY4 | 当前测试程序正常减速停止；与KEY1组合为急停 |
-| PB11 | GPIO 输入、上拉 | KEY2 | 当前测试程序移动到最高限位 |
-| PB12 | GPIO输出 | MS42CG EN | 高电平使能；初始化外设时先保持低电平，随后自动拉高 |
-| PB13 | TIMG12 CCP0输入 | MT6816绝对角PWM | 32 MHz脉宽/周期联合捕获，兼容约971.1 Hz和485.6 Hz两档 |
-| PB14 | GPIO 输入、上拉 | KEY3 | 当前测试程序移动到最低限位 |
+| PB5 | 未分配 | 旧灰度 CH7 | 旧八路灰度已停用，Pin 已从 `main.syscfg` 释放 |
+| PB6 | 未分配 | - | 预留；不再是步进 DIR |
+| PB7 | 未分配 | - | 预留；不再是步进 EN |
+| PB8 | TIMA0 CCP0 输出 | MS42CG ST | 步进脉冲输出，3200 ST/rev |
+| PB9 | GPIO 输出 | MS42CG DIR | 角度增大为上升，角度减小为下降 |
+| PB10 | GPIO 输入、上拉 | KEY4 | 低电平按下，按键位图 bit3；App 生成按下沿事件，具体含义由 Mission 决定 |
+| PB11 | GPIO 输入、上拉 | KEY2 | 低电平按下，按键位图 bit1；单独按下启动要求 3 摆球，与 KEY1 同时按下为物理急停 |
+| PB12 | GPIO 输出 | MS42CG EN | 高电平使能 |
+| PB13 | TIMG12 CCP0 捕获 | MS42CG 绝对角 PWM | MT6816 单圈绝对角 |
+| PB14 | GPIO 输入、上拉 | KEY3 | 低电平按下，按键位图 bit2；App 生成按下沿事件，具体含义由 Mission 决定 |
 | PB15 | TIMG8 CCP0 | 右电机 PWM | TB6612 A 通道，20 kHz；由 MotionManager 当前模式经 MotionWheel 输出 |
 | PB16 | TIMG8 CCP1 | 左电机 PWM | TB6612 B 通道，20 kHz；由 MotionManager 当前模式经 MotionWheel 输出 |
 | PB17 | GPIO 输出 | 蜂鸣器 | 低电平有效 |
 | PB23 | GPIO 输出 | LED1 | 高电平点亮 |
 | PB25 | GPIO 输出 | 右电机 AIN1 | TB6612 A 通道方向 |
+| PB26 | 未分配 | 旧灰度 CH1 | 旧八路灰度已停用，Pin 已从 `main.syscfg` 释放 |
 | PB27 | GPIO 输出 | LED2 | 高电平点亮 |
 
 ### 2.1 硬件连接检查
 
-- `main.syscfg` 已通过SysConfig校验；步进使用TIMA0、TIMG12和GPIOA GROUP1，不与UART0、UART2、I2C0、TIMG8或SWD冲突。
-- 灰度GPIO组已整体移除；`Graydetect`保留兼容函数，但所有读取固定返回0，`MotionLine`和25H巡线当前不可用。
-- `SERVO_ENABLED=0`，舵机PWM实例未配置；TIMA0当前专用于PB8步进ST。
-- DAPLink保留PA21/PA22（UART2、DMA CH0）；K230迁移到PA10/PA11（UART0、DMA CH2）。
-- 原UART1/HC05配置已移除，`Serial2`在当前配置中为停用桩，DMA CH1空闲。
-- PA19/PA20继续保留给SWD；PA26/PA27虽然未由当前SysConfig初始化，但按现有接线保留给舵机。PA0、PA8、PA14、PA25、PB5、PB6、PB7和PB26当前未分配。
+- `main.syscfg` 中没有重复分配的 Pin；UART0、UART2、I2C0、TIMA0、TIMG7、TIMG8、TIMG12、两组软件 I2C 和 SWD 互不冲突。
+- 旧八路灰度 GPIO 已废弃；其中 PA13、PA29、PB8、PB9、PB12、PB13 已改为 MS42CG 的新专用资源，不能再作为传感器输入使用。
+- 六路红外接线固定为：模块 `+5V -> +5V`、`GND -> GND`、`SDA -> PA25`、`SCL -> PA14`。教程线序对应红、黑、蓝、绿。
+- 模块的 SDA/SCL 空闲高电平必须是 **3.3 V**；若模块板载上拉到 5 V，必须先加双向 I2C 电平转换器，不能直接接入 PA25/PA14。
+- 模块地址为 `0x5C`，每拍读取寄存器 `0x05` 的低 6 位：bit0=CH1，…，bit5=CH6；`1` 表示已学习的目标颜色。先按教程完成背景长按学习、目标短按学习。
+- **安装方向**：实车俯视（探头朝前）时 CH1 在左、CH6 在右，对应 `GRAYDETECT_CHANNEL1_IS_RIGHT = 0`。翻面安装只需把该宏改回 `1`，`MotionLine.c` 里两张权重表都已备好，不要去改权重符号。方向接反会让巡线修正朝错误一侧、车直接冲出赛道，上电首测务必先确认：手动把车偏到线左侧，右轮应加速。
+- DAPLink 接 PA21/PA22（UART2），承载 PC/网页命令、回应和遥测；K230 迁移到 PA10/PA11（UART0、DMA CH2）。
+- 原 UART1/HC05 配置已移除，`Serial2` 保留为停用桩；MS42CG 使用 PB8/PB9/PB12、PA13/PA29、PB13。步进驱动和 MT6816 反馈均已启用。
+- F32C/Gimbal 仍停用；PA26/PA27 舵机 PWM 继续由 TIMG7 提供。
 
 ## 3. 当前程序说明
 
-当前`main.c`是步进和K230钢珠数据联合测试固件，运行时显式初始化OLED、四个按键、步进ST/DIR/EN、MT6816 AB/PWM反馈、左右轮AB编码器、K230 UART0/DMA CH2和100 Hz SysTick。直流电机PWM与方向、MPU6050、舵机、UART2和Mission源码仍参与工程编译，但测试`main`不会调用其初始化函数；灰度模块在编译期明确停用。
+`main.c` 中 `MAIN_STEPPER_TEST_MODE` 当前默认为 `1U`，烧录后运行 OLED、按键、步进电机、MT6816、K230 和左右轮编码器测试，不初始化六路红外、MPU6050、舵机或直流电机。六路红外与完整 26H 功能已经保留在工程中；需要切换时把该宏改为 `0U`，入口将调用 `Application/Core/Main26H.c`。
 
-### 3.1 按键与OLED
+六路红外资源已经恢复为 `PA25=SDA、PA14=SCL`，但只有完整 26H 入口中的 `App_Init()` 会初始化并采样它们。
 
-| 输入/显示 | 含义 |
-|---|---|
-| KEY1 | 切换EN；自动启动配置下上电后默认为`E=1`，表示PB12输出高电平 |
-| KEY2 | 角度增加，机构上升，移动到`STEPPER_MAX_ANGLE_DEG`最高限位 |
-| KEY3 | 角度减小，机构下降，移动到`STEPPER_MIN_ANGLE_DEG`最低限位 |
-| KEY4 | 正常减速停止 |
-| KEY1+KEY4 | 立即停止ST，EN保持当前状态 |
-| `KEY:0000` | KEY1到KEY4的去抖后状态，按下显示1，松开显示0 |
-| `SAB` | 步进电机AB多圈位置，4096 count/rev |
-| `ST` | 已记账的软件绝对ST位置；上升时增加，下降时减小 |
-| `BALL` | K230钢珠相对位置，范围`-50.00~+50.00`；未收到合法位置帧显示`WAIT`，当前帧丢球显示`LOST`；右侧`H1/H0`表示双向握手完成/未完成 |
-| `LENC` | 左轮编码器自本次上电初始化后的累计计数 |
-| `RENC` | 右轮编码器自本次上电初始化后的累计计数 |
-| `PWM` | MT6816 PWM单圈绝对角`000.0~359.9°`；捕获帧无效或超时显示`LOST` |
+完整 `App/26H` 入口启用 PC/网页链路、K230Link、六路红外、MPU6050、舵机、底盘和步进摆杆。KEY1 启动 H 题要求 2 的单圈巡线；该入口当前由 `MAIN_STEPPER_TEST_MODE=1U` 暂不执行。
 
-上电时先完成ST定时器和捕获输入的安全配置，再自动拉高EN。连续取得3帧有效PWM并建立绝对角坐标后，电机使用起步200 ST/s、最高3200 ST/s、加速度6400 ST/s²的梯形曲线自动移动到`139.7°`初始相位。工程统一约定角度增加为上升、角度减小为下降。运动命令精确按ST上升沿计数；多步段使用TIMA0重复计数中断，最后单步使用ZERO中断。
+### 3.2 100 Hz 主循环与 26H 单圈巡线
 
-#### 3.1.1 K230钢珠串口
+完整26H模式加载`Accomplish/26H.c`独立控制器，实现H题要求2；当前默认步进测试模式不执行该控制器。KEY1在READY、完成或错误后按下时清零累计Tick并启动平滑巡线。正常巡线的左右差速由六路红外权重P/D生成；回到A点前平滑降速，确认横向启停线后软停并冻结计时。**KEY1+KEY2 同时按下**为物理急停。
 
-当前K230程序`D:\code\k230_26H`每完成一个图像帧发送一次`BALL_POSITION`：
+题面 A 点是一条垂直于环线、长 5 cm 的黑色启停线，停车误差按车身指定测试点相对于该线中心的距离判定，而不是红外条的位置。`K30`（`h2off`，单位 mm）控制“首次确认横线后，继续巡线多少距离再开始软停”；其初值为 0，必须在实车上标定。车停在基准线之前就增大 `K30`，停过基准线就减小它；完成标定后把稳定值写回 `ACCOMPLISH_26H_FINISH_ROLLOUT_MM`。
 
-```text
-AA 55 | VER=01 | TYPE=14 | SEQ | LEN=02 | position_x100:int16_LE | CRC8
-```
+`App_Init()` 继续初始化并校准 MPU6050，`App_Update()` 继续更新 Heading 和里程，并在此后采样一次六路红外状态；保留的航向运动和调试命令仍可使用。正常 OLED 页面第 0 行改为 `T:<秒>.<百分秒>s`，开机 MPU6050 校准页面继续保留。
 
-`position_x100`是钢珠沿水管中心轴的相对位置乘以100：`-5000/0/+5000`分别表示左端`-50.00`、中心`0.00`、右端`+50.00`。`-32768`是当前图像帧未检测到钢珠的保留哨兵，不可当作位置0。通过帧头、版本、长度和CRC校验的`BALL_POSITION`会直接更新显示，不再依赖双向握手完成；握手仍用于K230启动协商并通过OLED的`H`状态诊断。串口为115200 8N1；K230 GPIO11/TX2接PA11/RX，GPIO12/RX2接PA10/TX，两板共地。
+### 3.2.1 26H 摆杆滚球（要求 3）
 
-### 3.2 MS42CG硬件库
+**KEY2 单独按下**启动要求 3：钢球从摆杆中心点 O 运行到 +5 cm，到位确认后折返到 -5 cm 并持续保持。要求 3 与要求 2 是两个独立测试项，不会同时进行，因此摆球不驱动底盘、单圈巡线也不驱动摆杆；KEY1+KEY2 的物理急停会同时停掉两者。
 
-公开头文件为`Hardware/Motor/Stepper.h`。应用层不需要调用`Encoder_InitStepper()`；AB底层初始化由`Stepper_Init()`完成。
+分四层，每层只做一件事：`BallSensor` 把 K230 的 `BALL_POSITION` 换算成以 O 为原点的毫米位置并估计滚动速度；`BallBalance` 用梯形速度轨迹加 PD 和车体加速度前馈算出摆杆倾角；`BeamActuator` 把倾角换算成步进的绝对角度；`Application/Control/BallSequence` 只管 O→+5→-5 的序列、到位确认和超时保护。K230 的 `-50.00~+50.00`覆盖250 mm水管，因此端点对应`-125~+125 mm`。
 
-| 函数 | 作用与约束 |
-|---|---|
-| `Stepper_Init()` | 初始化AB解码、PWM捕获状态和ST控制；自动启动开启时在安全配置完成后拉高EN；调用前必须完成GPIO、TIMA0和TIMG12的供电、PinMux和外设配置 |
-| `Stepper_Update(elapsedTicks)` | 处理PWM新帧和丢失超时，并在首次建立绝对参考后发起自动初始相位运动；每个tick固定为10 ms，应由100 Hz主循环传入实际累计tick |
-| `Stepper_Enable(enable)` | 高电平使能；传`false`时立即停脉冲并拉低EN |
-| `Stepper_MoveBySteps(steps, profile)` | 相对移动整数ST；忙时或最终目标超出限位时拒绝新命令 |
-| `Stepper_MoveToSteps(target, profile)` | 移动到受限的软件绝对步坐标 |
-| `Stepper_MoveByAngle(degrees, profile)` | 相对角度移动，按3200 ST/rev四舍五入到整数ST，并检查最终目标 |
-| `Stepper_MoveToAngle(degrees, profile)` | 移动到受限的软件绝对角坐标；限位边界向有效区间内量化 |
-| `Stepper_Stop()` | 按当前加速度正常减速停止，EN保持高 |
-| `Stepper_EmergencyStop()` | 立即停止TIMA0和ST输出，EN保持高 |
-| `Stepper_SetCurrentPosition(degrees)` | 空闲且已就绪时在限位范围内重设当前位置坐标，不产生运动 |
-| `Stepper_IsBusy()` | `MOVING`或`STOPPING`时返回`true` |
-| `Stepper_GetStatus(status)` | 原子读取控制位置、AB反馈、绝对角、误差和诊断状态 |
+三处关键保护已在实现中处理：目标位置先经过轨迹发生器；钢球速度按`BALL_POSITION`帧间实际时间估计，同一序号重复读取时不做差分；视觉失效后立即标记数据陈旧，闭环超过保护时间会回中报错。
 
-`Stepper_Profile_t`的`startStepRateHz`、`maxStepRateHz`范围为64~16000 ST/s，且最高速度不能低于起步速度；`accelerationStepsPerSec2`必须大于0。
-
-| 公共常量 | 当前值 | 含义 |
-|---|---:|---|
-| `STEPPER_STEPS_PER_REVOLUTION` | `3200U` | 16细分下一圈ST上升沿数 |
-| `STEPPER_ENCODER_COUNTS_PER_REVOLUTION` | `4096U` | AB四倍频后每圈计数 |
-| `STEPPER_MIN_STEP_RATE_HZ` | `64U` | 最低允许ST频率 |
-| `STEPPER_MAX_STEP_RATE_HZ` | `16000U` | 最高允许ST频率 |
-| `STEPPER_UPDATE_PERIOD_MS` | `10U` | `Stepper_Update()`一个tick对应的时间 |
-| `STEPPER_AUTO_START_ENABLED` | `1U` | `1`时上电自动使能，并在绝对角就绪后移动到初始相位 |
-| `STEPPER_INITIAL_ANGLE_DEG` | `139.7f` | 上电自动移动的绝对目标角 |
-| `STEPPER_MIN_ANGLE_DEG` | `80.9f` | 所有运动命令允许的最低绝对目标角 |
-| `STEPPER_MAX_ANGLE_DEG` | `210.0f` | 所有运动命令允许的最高绝对目标角 |
-| `STEPPER_STARTUP_START_RATE_HZ` | `200U` | 自动启动及当前按键测试曲线的起步速度 |
-| `STEPPER_STARTUP_MAX_RATE_HZ` | `3200U` | 自动启动及当前按键测试曲线的最高速度 |
-| `STEPPER_STARTUP_ACCELERATION_STEPS_S2` | `6400U` | 自动启动及当前按键测试曲线的加速度 |
-
-| 返回值 | 含义 |
-|---|---|
-| `STEPPER_RESULT_OK` | 命令已接受或操作完成 |
-| `STEPPER_RESULT_INVALID_ARGUMENT` | 空指针、速度/加速度越界或角度/位置溢出 |
-| `STEPPER_RESULT_BUSY` | 正在运动或减速，拒绝新运动命令 |
-| `STEPPER_RESULT_DISABLED` | EN未使能 |
-| `STEPPER_RESULT_NOT_READY` | 尚未连续收到3帧有效PWM，未建立第0圈绝对基准 |
-| `STEPPER_RESULT_LIMIT` | 命令最终目标或当前位置重设值超出配置限位 |
-
-上述角度参数直接暴露在`Hardware/Motor/Stepper.h`，更换机械结构时只需修改该头文件。角度坐标约定为增加时机构上升、减小时机构下降。由于3200 ST/rev只能以`0.1125°`为单位定位，当前初始目标`139.7°`实际量化为`139.725°`；最低限位`80.9°`向内量化为`81.000°`，最高限位`210.0°`向内量化为`209.925°`，确保整数步命令不会越过配置边界。
-
-状态结构中的`targetSteps/emittedSteps`以ST为单位；`encoderCounts/trackingErrorCounts`以4096 count/rev为单位；`absoluteCode/absoluteAngleDeg`是最近有效的单圈PWM结果；`multiTurnAngleDeg`由AB累计位置换算。限位只约束软件运动命令，不依据AB反馈进行实时硬限位；PWM丢失或AB非法跳变只更新状态，不会闭环纠偏、自动停机或改变目标。
-
-最小调用流程：
+摆杆由步进电机驱动，MT6816 PWM和AB反馈均启用。`139.7°`是水平绝对角，软限位为`80.9°~210.0°`。控制器正倾角与机构电机角方向相反：球位为正且需要回到O点时，执行器会增大电机绝对角并抬高正位置一侧。`Stepper_TrackToSteps()`/`TrackToAngle()`支持连续重定向，且同样受软限位约束。
 
 ```c
+#include "Accomplish/26H.h"
+#include "Application/Core/App.h"
+#include "System/Interrupt.h"
+
 int main(void)
 {
-    __disable_irq();
-    SYSCFG_DL_init();
-    Tick_Init();
-    Stepper_Init();
+    App_UpdateContext_t updateContext;
+
+    App_Init();
+    Accomplish26H_Init();
     Interrupt_Enable();
 
     for (;;)
     {
-        uint8_t elapsedTicks = Tick_PollCount();
-
-        if (elapsedTicks != 0U)
+        if (App_Update(&updateContext) != 0U)
         {
-            Stepper_Update(elapsedTicks);
+            Accomplish26H_Update(&updateContext);
         }
     }
 }
 ```
 
-当前测试`main.c`为了确保其他硬件不被初始化，没有调用全局`SYSCFG_DL_init()`，而是显式初始化所需GPIO、TIMA0、TIMG12、I2C0、UART0、DMA CH2和SysTick；该文件是选择性初始化的实际参考。
+完整26H入口的`App_Init()`初始化整车、OLED、MPU6050、左右轮编码器、串口、K230Link、六路红外和步进接口。`Stepper_Init()`连续取得3帧有效PWM后建立绝对角基准并自动运动到`139.7°`水平位置；`BeamActuator`保留该绝对坐标，不再把当前位置重写为0°。
 
-### 3.3 完整应用保留的调试串口任务与命令协议
+```text
+Heading -> Odometry -> 六路红外 I2C -> Stepper -> 按键边沿 -> CarLink -> K230Link
+        -> BallSensor（须在 K230Link 之后）-> BluetoothDebug
+        -> C0 全局停车（同时停摆杆闭环）-> MotionManager -> K230 ACK -> Beep -> OLED
+        -> Accomplish26H_Update -> BallSequence_Update -> BeamActuator_Update
+```
 
-本节记录仍保留在源码中的完整应用协议，不是当前步进测试`main`的运行路径。命令走逻辑接口`Serial1`，物理链路是UART2的PA21/PA22 DAPLink串口（115200 8N1）。源码模块名`BluetoothDebug`是历史名称。
+`BallSensor_Update()` 必须排在 `K230Link_Update()` 之后，钢球位置来自本拍刚解析的 `BALL_POSITION(0x14)` 帧；`BeamActuator_Update()` 必须排在任务层之后，让本拍算出的倾角当拍下发给步进。
+
+保留的 Mission 使用静态状态图，不使用 `malloc`。每个状态含 `onEnter/onUpdate/onExit`、有序转换表和 `interruptible`。动作运行时只检查打断转换；动作完成后只检查正常转换；每拍最多转换一次。被打断状态调用退出回调并停车，不保存或恢复原进度。当前 `main.c` 不加载 Mission。
+
+`Accomplish/25H.c` 静态状态图继续保留，但当前不加载。它的 KEY1 巡线、150 mm 直行和连续绝对左转行为没有改动。
+
+OLED 每 10 个系统节拍刷新一次，即 10 Hz。页面内容为：
+
+| 行 | 显示内容 |
+|---|---|
+| 0 | 26H 单圈计时 `T:<秒>.<百分秒>s`；KEY1 起跑后递增，软停确认后保持最终成绩 |
+| 1 | 六路红外 `IR:CH1~CH6` 状态；`1` 代表检测到已学习目标颜色，`0` 代表未检测到；I2C 无 ACK 时显示 `IR:------` |
+| 2 | 四个按键 `KEY1 KEY2 KEY3 KEY4`，`1` 表示按下；KEY1 与 KEY2 同时为 `1` 时为物理急停并停止计时 |
+| 3 | 左轮累计路程 `LD`，单位 mm |
+| 4 | 左轮编码器实测速度 `LV`，单位 mm/s |
+| 5 | 右轮累计路程 `RD`，单位 mm |
+| 6 | 右轮编码器实测速度 `RV`，单位 mm/s |
+| 7 | 统一运动状态：`M:IDLE`、`M:LINE`、`M:STRAIGHT`、`M:TURN` 或 `M:ERROR`；要求 2 失败时显示 `H:E<n>`：`1` 启动、`2` 红外离线、`3` 运动层、`4` 漏终点、`5` 静止确认超时、`6` 超过 20 s、`7` 急停 |
+
+K230Link 当前通过逻辑接口 `Serial3`、物理 UART0 的 PA10/PA11 运行；未接模块时维持离线，以下为实际使用的帧格式：
+
+```text
+Heading -> Odometry -> Gimbal -> Key -> BluetoothDebug
+        -> C0 全局停止 -> MotionManager -> Beep -> OLED -> Accomplish26H_Update
+```
+
+- `VER=0x01`；`TYPE` 为 `READY=0x01`、`READY_ACK=0x02`、`TARGET=0x10`、`CAPTURE=0x20`、`CAPTURE_ACK=0x21`。
+- `SEQ` 为 8 位帧序号，`LEN` 最大为 32。
+- CRC 使用 CRC-8/ATM，多项式 `0x07`、初始值 0，校验范围为 `VER` 到 `PAYLOAD`。
+- TARGET 的 PAYLOAD 固定为 `valid:u8 + offsetX:int16_LE + offsetY:int16_LE`，共 5 字节。
+- CAPTURE（MCU → K230）的 PAYLOAD 为 `count:u8`，共 1 字节；`count` 为连拍张数，范围 `1~20`。
+- CAPTURE_ACK（K230 → MCU）的 PAYLOAD 为 `ok:u8 + index:uint16_LE`，共 3 字节；`ok=1` 表示成功，`index` 为存入 TF 卡的起始文件序号。
+- K230 `uart_io.py` 测试入口可在握手后持续发送 `valid=1、offsetX=123、offsetY=-45`。
+
+### 3.3 调试串口任务与命令协议
+
+本节的命令走逻辑接口 `Serial1`，物理链路是 **UART2 的 PA21/PA22 DAPLink 串口**（115200 8N1）；PB6/PB7 当前未被新的步进映射占用。源码模块名 `BluetoothDebug` 是历史名称；凡提到「蓝牙命令」处，均指本节这套 PC/网页命令协议。
 
 命令不区分大小写。推荐以 `\r` 或 `\n` 结束；也支持空格、逗号、分号作为分隔符。没有结束符时，接收空闲 3 个系统节拍（30 ms）后执行。每条命令都会返回 `OK ...` 或 `ERR ...`。
 
-`C` 命令进入单槽任务事件邮箱；App 每个有效节拍最多向 Mission 传递一个任务信号。普通信号不排队，同一拍只保留最后收到的一条；`C0` 具有最高优先级，待处理时不会被普通信号覆盖，并立即停车。
+`C` 命令进入单槽任务事件邮箱；App 每个有效节拍最多提供一个任务信号。普通信号不排队，同一拍只保留最后收到的一条；`C0` 具有最高优先级，待处理时不会被普通信号覆盖，并立即停车。当前 `C3` 启动要求 3 摆球，等效实体 `KEY2`；`C4` 停止摆球闭环并让摆杆回中。除 `C0/C3/C4` 外的非零信号继续保留给其他任务。
 
 | 命令 | 作用 | 输入范围与限位 | 示例 |
 |---|---|---|---|
-| `C<number>` | 发送 Mission 单次任务信号；`C0` 固定全局停车，`C1~C255` 当前未绑定 25H | `0~255`，超限返回 `ERR RANGE` | `C1` |
+| `C0` | 全局急停，停止底盘与摆球并冻结 26H 计时 | 始终有效且优先级最高 | `C0` |
+| `C3` | 启动要求 3 的 `O → +5 cm → -5 cm` 摆球序列，等效按下实体 `KEY2` | 钢球视觉必须就绪、底盘与摆球任务必须空闲；成功回 `OK BALL START` | `C3` |
+| `C4` | 结束要求 3，停止闭环并让摆杆回中；不是全局急停 | 成功回 `OK BALL STOP` | `C4` |
+| `C<number>`（其他非零值） | 发送保留的 Mission 单次任务信号 | `1~255`，当前任务未定义的编号不消费 | `C1` |
 | `L<number>` | 只更新左轮 PWM，右轮保持上次指令 | `-1000~1000`，超限自动夹紧 | `L10` |
 | `R<number>` | 只更新右轮 PWM，左轮保持上次指令 | `-1000~1000`，超限自动夹紧 | `R10` |
 | `U<number>` | 左右轮使用相同 PWM | `-1000~1000`；正数前进，负数后退 | `U100` |
 | `O<number>` | 纵向舵机移动到指定角度 | 当前限位 `0°~270°` | `O10` |
 | `D<number>` | 横向舵机移动到指定角度 | 当前限位 `0°~270°` | `D10` |
-| `G<number>` | 设置遥测 CSV 输出频率；`G0` 关闭输出 | `0~100` Hz（硬上限）；实际安全上限由当前字段掩码动态决定，超限返回 `ERR RANGE MAX=<当前安全上限>` | `G20` |
-| `M<number>` | 设置遥测**通道掩码**（12 位，见 3.3.2），改变时发一帧二进制 SCHEMA | `1~4095`（`0x0FFF`），`0` 或超限返回 `ERR RANGE`；成功回报新频率 `OK M=<mask> G=<hz>` | `M6`（TR+RV 略） |
+| `G<number>` | 设置二进制遥测输出频率；`G0` 关闭输出 | `0~100` Hz（硬上限）；实际安全上限由当前字段掩码动态决定，超限返回 `ERR RANGE MAX=<当前安全上限>` | `G20` |
+| `M<number>` | 设置遥测**通道掩码**（16 位，见 3.3.2），改变时发一帧二进制 SCHEMA | `1~65535`（`0xFFFF`），`0` 返回 `ERR RANGE`；成功回报新频率 `OK M=<mask> G=<hz>` | `M49152`（bpos+bref） |
 | `V<number>` | 设置调试巡航速度 | `20~800` mm/s，默认 200 | `V200` |
 | `F<number>` | 前进定距，终点速度 0 | `1~10000` mm，忙时 `ERR BUSY` | `F300` |
 | `B<number>` | 后退定距，终点速度 0 | `1~10000` mm，忙时 `ERR BUSY` | `B300` |
@@ -216,12 +202,12 @@ int main(void)
 | `P<number>` | 请求 K230 连拍并存 TF 卡 | `1~20`，链路未就绪返回 `ERR CAP NOLINK` | `P1` |
 | `W<number>` | 闭环恒速模式：双轮同目标速度、无规划斜坡、无航向修正，是轮速 PI 的标准阶跃激励；运动中重复发 `W` 直接改目标（不复位 PID，可链式阶跃）；`W0` 停止并释放电机 | `-800~800` mm/s；其他模式忙时 `ERR BUSY`，`W0` 只停恒速模式 | `W300` |
 | `N<number>` | 直接启动巡线（不经 Mission 状态图）；`N0` 停止 | `20~800` mm/s；其他模式忙时 `ERR BUSY`，`N0` 只停巡线模式；丢线后自动完成 | `N200` |
-| `K?` / `K<id>?` / `K<id>=<float>` | 运行时读写控制参数（见 3.3.1 参数表）：列表 / 读单个 / 写入（支持小数与负号，写入立即生效） | id `1~26`；越界返回 `ERR K RANGE MIN=<min> MAX=<max>`，格式错误返回 `ERR K FORMAT` | `K17=1.5` |
+| `K?` / `K<id>?` / `K<id>=<float>` | 运行时读写控制参数（见 3.3.1 参数表）：列表 / 读单个 / 写入（支持小数与负号，写入立即生效） | id `1~33`；越界返回 `ERR K RANGE MIN=<min> MAX=<max>`，格式错误返回 `ERR K FORMAT` | `K28=0.1` |
 | `E<number>` | 陀螺仪尺度标定：`E1` 开始（清零标定角），`E0` 取消 | 仅 `0/1`；运动中 `ERR BUSY`，MPU 离线 `ERR CAL OFFLINE` | `E1` |
 | `Y<number>` | 原地转 n 整圈回到起始朝向后结束标定，解算并应用尺度因子 | `1~20` 圈；未在标定中返回 `ERR CAL IDLE`，积分角过小返回 `ERR CAL SMALL`；成功回 `OK Y SCALE=<新因子> RAW=<积分角>` | `Y3` |
-| `X<mask>` | **板载捕获**：按通道掩码 arm，下一条运动命令自动触发，以 100 Hz 无损写入 RAM（期间不发串口） | 掩码见 3.3.2；通道数超 8 或掩码非法返回 `ERR X MASK MAXCH=8`；成功回 `OK X ARM=<mask> CAP=<最大样本数>` | `X7` |
-| `X0` | 停止捕获并分批 dump 全部数据 | 无数据返回 `ERR X EMPTY`；成功先回 `OK X DUMP=<n>`，随后输出 `CH,` 表头与 `C,` 数据行，末尾 `OK X END=<n>` | `X0` |
-| `Q` | 查询遥测能力与捕获状态；**上位机据此自适应频率，不再各存一份阈值** | 无参数（裸 `Q` 即可）；回 `OK Q MAX=<上限Hz> MASK=<掩码> RATE=<当前Hz> CAPST=<捕获状态> CAPN=<已采样本> CAPMAX=<容量>` | `Q` |
+| `Q` | 查询遥测能力；**上位机据此自适应频率，不再各存一份阈值** | 无参数（裸 `Q` 即可）；回 `OK Q MAX=<上限Hz> MASK=<掩码> RATE=<当前Hz>` | `Q` |
+
+> **`X` 命令已移除。** 板载捕获模块连同它的 24 KB RAM 缓冲一并删除，详见 3.3.0。`Q` 回应中原有的 `CAPST`/`CAPN`/`CAPMAX` 三个字段同时撤销；`car_debug.html` 的 Q 解析器本就把这三项写成可选组，无需改动。
 
 **`ERR MOTION 3` 的含义。** MotionManager 错误码 `3` 是 `SENSOR_NOT_READY`。若 `B/F/T/A` 都返回 `ERR MOTION 3`，同时 `Z2` 返回 `ERR Z OFFLINE`，说明动作命令没有真正启动，根因是 Heading 层未就绪，通常是 MPU6050 离线或初始化失败。此时 `yaw/navE` 遥测会作为无效字段发送，网页显示为空值，不再把默认 `0°` 当成有效航向；优先检查 MPU6050 供电、GND、PB2/PB3 软件 I2C 线序、上拉/开漏连接和地址 `0x68`。
 
@@ -229,13 +215,12 @@ int main(void)
 
 `L/R/U` 只在 MotionManager 空闲时执行，自动运动期间返回 `ERR BUSY`。数字仍是开环 PWM，不是 mm/s；OLED 上的 `LV/RV` 是编码器实测速度。
 
-**`G` 命令的上限是动态的。** `Serial1_SendByte()` 是阻塞发送，发送期间主循环完全停止。字段越多行越长，允许的最高频率越低：全字段（掩码 1023）时安全上限约 14 Hz，轮速调参子集（掩码 216 = speed+mode+target+pwm）约 30 Hz，只开 YAW（掩码 1）时可达 92 Hz。发送 `G<n>` 超过当前安全上限时，返回 `ERR RANGE MAX=<上限>` 而不是固定文本，用户可据此调整频率或先用 `M` 精简字段再提速。调参时应按网页「调参试验」的预设只开相关字段换高频。
+**`G` 命令的上限仍由当前掩码动态计算。** 发送已经改为 DMA，不再阻塞控制环；限流现在用于守住 115200 8N1 的串口总带宽。当前 16 个通道全开时 SAMPLE 帧为 75 字节，100 Hz 约 7.5 KB/s，仍在 70% 带宽预算内。网页会按调参阶段选字段并通过 `Q` 读取固件给出的真实上限。
 
 ### 3.3.0 二进制 DMA 遥测架构
 
 > **本节描述当前架构。** 遥测数据已从 ASCII CSV 改为二进制帧 + DMA 非阻塞发送。
-> 设计动机与协议规范见 `docs/superpowers/specs/2026-07-21-二进制DMA架构-design.md`；
-> 下文 3.3.2 及"遥测 CSV 格式"等 ASCII 描述是**历史架构**，已被本节取代。
+> 线上的帧定义以 `Application/Debug/TelemFrame.h` 和本节为准；下文“遥测 CSV 格式”等 ASCII 描述是**历史架构**，已被本节取代。
 
 **核心变化。** `Serial1`（当前落在物理 UART2）的发送从逐字节阻塞（`transmitDataBlocking`）改为 **DMA 搬运 + 环形缓冲**：主循环只往缓冲写、从不等硬件，DMA 完成中断推进下一段。发送不再占用主循环，遥测带宽预算从 20% 放宽到 70%。数据从 ASCII CSV（一个 float 占 11 字节）改为**二进制帧**（float32 只占 4 字节，压缩 2.5×）。两者叠加，单侧实时流上限从阻塞 ASCII 的 57 Hz 提到约 **450 Hz** 理论值，实际夹在 100 Hz 硬上限——**远超 100 Hz 控制环，实时流本身即无损**。
 
@@ -247,26 +232,19 @@ int main(void)
 
 - `0xAA` 是非 ASCII 可打印字符，绝不出现在文本回应里；网页见 `0xAA` 进二进制解析，否则累积成 ASCII 文本行。
 - `CRC8` 为 CRC-8/ATM（多项式 `0x07`，初值 0），覆盖 `VER` 到 `PAYLOAD`。
-- 帧类型：`SCHEMA=0x30`（掩码变化时先发，含列名+单位码）、`SAMPLE=0x31`（ms + 各通道 float32）、`CAP_META=0x32`/`CAP_SAMPLE=0x33`/`CAP_END=0x34`（板载捕获 dump）。
+- 帧类型：`SCHEMA=0x30`（掩码变化时先发，含列名+单位码）、`SAMPLE=0x31`（ms + 各通道 float32）。`0x32`~`0x34` 曾是板载捕获的 `CAP_META`/`CAP_SAMPLE`/`CAP_END`，模块删除后这三个类型号保留不复用，避免旧版网页把新帧误认成捕获数据。
 
-**命令仍走 ASCII。** `K/W/N/M/G/F/B/T/A/Z/X/Q/E/Y/P/C/L/R/U/O/D` 及其 `OK`/`ERR` 回应保持文本——低频、要人读、任何串口助手可直接调试。只有高频遥测数据二进制化。
+**命令仍走 ASCII。** `K/W/N/M/G/F/B/T/A/Z/Q/E/Y/P/C/L/R/U/O/D` 及其 `OK`/`ERR` 回应保持文本——低频、要人读、任何串口助手可直接调试。只有高频遥测数据二进制化。
 
-**双通道仍在，但定位变了：**
+**单通道：实时流。** `M` 设掩码、`G` 设频率，`SCHEMA` + `SAMPLE` 两种帧，边跑边发（DMA 不阻塞），可达 100 Hz 与控制环同频，容量无限。监视、遥控采数据、调参全部够用。
 
-| | 通道 A：实时流 | 通道 B：板载捕获 |
-|---|---|---|
-| 命令 | `M` 掩码 + `G` 频率 | `X<mask>` arm / `X0` dump |
-| 帧类型 | `SCHEMA` + `SAMPLE` | `CAP_META` + `CAP_SAMPLE` + `CAP_END` |
-| 频率 | 可达 100 Hz（DMA 后与控制环同频） | 固定 100 Hz |
-| 传输时机 | 边跑边发（DMA 不阻塞） | 记录期间不发，动作结束后 dump |
-| 容量 | 无限（持续流） | 24 KB RAM，可变长度 |
-| 用途 | 监视、遥控采数据、**调参**（已够用） | 超长录制、绝对零丢包的瞬态 |
+**板载捕获（通道 B）已删除。** 它在第一次架构（ASCII 双通道）里引入，唯一理由是"实时流 30 Hz 低于控制环 100 Hz"。二进制 + DMA 之后实时流本身就是 100 Hz 无损，捕获只剩两个边缘场景（录得比串口实时率更久、绝对零丢包），却要独占 **24 KB RAM——32 KB SRAM 的 75%**。
 
-**为什么捕获降级。** 第一次架构（ASCII 双通道）引入板载捕获，唯一理由是"实时流 30 Hz 低于控制环 100 Hz"。二进制 + DMA 后实时流本身就是 100 Hz 无损，捕获不再是调参必需，而是两种补充场景：① 想录得比串口实时率更久（**单通道 8 字节/样本，24 KB 可录约 30 秒**）；② 想要绝对零丢包（防 Web Serial 偶发丢包）。这与 ODrive 板载 oscilloscope、Betaflight Blackbox 同源。
+这不是"占地方"而已：`.stack` 被 SysConfig 硬编码为 512 字节且位于 SRAM 顶部向下生长，紧邻其下就是 `.data`。捕获缓冲把栈可用余量压到 1587 字节，而实测最深调用链约 1900 字节，栈越界改写了 `.data` 里的 `Heading::s_scale`、`Odometry_CountsPerMM` 和各运动模块的增益，表现为整车卡死（OLED 航向角固定、`LD/RD/LV/RV` 恒为 0、灰度却正常刷新）。删除后 SRAM 占用从 96.7% 降到 21.7%，栈可用余量 26175 字节。
 
-### 3.3.2 通道掩码（M 与 X 命令共用）
+### 3.3.2 通道掩码（`M` 命令）
 
-实时流与捕获**共用同一套 12 通道位定义**（`TELEMETRY_CH_*`）。`M<mask>` 设实时流通道，`X<mask>` arm 捕获通道。捕获最多 **8 通道**（`CAPTURE_MAX_CHANNELS`），超出返回 `ERR X MASK MAXCH=8`。
+16 通道位定义见 `TELEMETRY_CH_*`，由 `M<mask>` 选择实时流通道。
 
 | 位 | 通道 | 单位 | 来源 |
 |---:|---|---|---|
@@ -279,27 +257,15 @@ int main(void)
 | `0x040` | `yaw` | 度 | 连续累计航向角；Heading 离线时该字段无效/空值 |
 | `0x080` | `navE` | 度 | 转向角误差；Heading 离线时该字段无效/空值 |
 | `0x100` | `lerr` | — | 巡线权重误差 |
-| `0x200` | `gray` | 位图 | 灰度硬件已停用，当前固定为0 |
+| `0x200` | `gray` | 位图 | 兼容字段名；低 6 位为六路红外 CH1~CH6 状态 |
 | `0x400` | `LD` | mm | 左轮累计路程 |
 | `0x800` | `RD` | mm | 右轮累计路程 |
+| `0x1000` | `vx` | — | K230 最近视觉带偏差，车道偏右为正 |
+| `0x2000` | `vad` | mm/s | 视觉差速修正量，正值表示右转 |
+| `0x4000` | `bpos` | mm | 要求 3 钢球实测位置；视觉未就绪时为无效值 |
+| `0x8000` | `bref` | mm | 要求 3 梯形轨迹参考位置，与 `bpos` 同一控制拍采样 |
 
-`TELEMETRY_CH_ALL = 0x0FFF`。位序即帧列序，一经发布不得重排。二进制 SAMPLE 帧字节数 = 7（帧开销）+ 4（ms）+ 通道数×4；全 12 通道 59 字节，100 Hz 时仅 5.9 KB/s，占 115200 波特带宽的一半。网页调参试验按阶段自动选最优通道并用 `Q` 命令问出真实上限。
-
-| 位 | 通道 | 内容 |
-|---:|---|---|
-| `0x001` | `TL` | 左轮目标速度 mm/s |
-| `0x002` | `LV` | 左轮实测速度 mm/s |
-| `0x004` | `PL` | 左轮输出 PWM |
-| `0x008` | `TR` | 右轮目标速度 mm/s |
-| `0x010` | `RV` | 右轮实测速度 mm/s |
-| `0x020` | `PR` | 右轮输出 PWM |
-| `0x040` | `yaw` | 连续累计航向角（度）；Heading 离线时无效/空值 |
-| `0x080` | `navE` | 转向角误差（度）；Heading 离线时无效/空值 |
-| `0x100` | `lerr` | 巡线权重误差 |
-
-常用组合：调左轮 `X7`（TL+LV+PL）、调右轮 `X56`（TR+RV+PR）、双轮对比 `X27`（TL+LV+TR+RV）、转向 `X208`（navE+yaw+LV+RV）。
-
-位序即 dump 时的列序，**一经发布不得重排，只能在尾部追加**——网页按 `CH,` 表头的列名解析，但固件写入顺序由位序决定。
+`TELEMETRY_CH_ALL = 0xFFFF`。位序即帧列序，一经发布不得重排。二进制 SAMPLE 帧字节数 = 7（帧开销）+ 4（ms）+ 通道数×4；全 16 通道 75 字节，100 Hz 时约 7.5 KB/s。要求 3 调参使用 `M49152`（`0x4000|0x8000`），只发送 `bpos/bref`，可稳定跑到 100 Hz。
 
 ### 3.3.1 运行时参数表（K 命令）
 
@@ -322,7 +288,7 @@ int main(void)
 | 13 | `nsa` | `NAV_SLOWDOWN_ANGLE_DEG` | ° | 5~180 |
 | 14 | `ntl` | `NAV_ANGLE_TOLERANCE_DEG` | ° | 0.5~20 |
 | 15 | `gsc` | 陀螺仪尺度因子（`Heading_Get/SetScale`，默认 1.0） | 比例 | 0.5~2 |
-| 16 | `cpm` | `Odometry_CountsPerMM`（默认 6.23） | 计数/mm | 0.5~50 |
+| 16 | `cpm` | `Odometry_CountsPerMM`（默认 6.44086） | 计数/mm | 0.5~50 |
 | 17 | `lwkp` | `MotionWheel_TuneLeftKp` | PWM/(mm/s) | 0~50 |
 | 18 | `lwki` | `MotionWheel_TuneLeftKi` | PWM/mm | 0~50 |
 | 19 | `lwil` | `MotionWheel_TuneLeftIntegralLimit` | mm | 0~1000 |
@@ -333,8 +299,33 @@ int main(void)
 | 24 | `rwil` | `MotionWheel_TuneRightIntegralLimit` | mm | 0~1000 |
 | 25 | `rwff` | `MotionWheel_TuneRightFeedforwardPWMPerMMps` | PWM/(mm/s) | 0~10 |
 | 26 | `rwsf` | `MotionWheel_TuneRightStaticFrictionPWM` | PWM | 0~500 |
+| 27 | `vkp` | `MotionLane_TuneKp` | 比例 | 0~5 |
+| 28 | `vkd` | `MotionLane_TuneKdYaw` | 比例 | 0~10 |
+| 29 | `vra` | `MotionLane_TuneMaxAdjustRatio` | 比例 | 0.05~1 |
+| 30 | `h2off` | `Accomplish26H_TuneFinishRolloutMM` | mm | 0~300 |
+| 31 | `bkp` | `BallBalance_TuneKp` | 度/mm | 0~2 |
+| 32 | `bkd` | `BallBalance_TuneKd` | 度/(mm/s) | 0~1 |
+| 33 | `bgk` | `BallBalance_TuneGravityCoupling` | (mm/s²)/度 | 10~400 |
+| 34 | `bhl` | `BallSensor_TuneHalfLengthMM` | mm | 50~200 |
+| 35 | `bgr` | `BeamActuator_TuneGearRatio` | 倍 | 0.1~50 |
+| 36 | `bzo` | `BeamActuator_TuneZeroOffsetDeg` | 度 | -20~20 |
+| 37 | `h2cru` | `Accomplish26H_TuneCruiseSpeedMMps` | mm/s | 20~1000 |
+| 38 | `h2fin` | `Accomplish26H_TuneFinishCrawlSpeedMMps` | mm/s | 10~1000 |
+| 39 | `h2clr` | `Accomplish26H_TuneStartClearDistanceMM` | mm | 0~1000 |
+| 40 | `h2lap` | `Accomplish26H_TuneNominalLapDistanceMM` | mm | 1000~20000 |
+| 41 | `h2app` | `Accomplish26H_TuneFinishApproachDistanceMM` | mm | 0~5000 |
+| 42 | `h2arm` | `Accomplish26H_TuneFinishMarkerArmDistanceMM` | mm | 0~20000 |
+| 43 | `h2max` | `Accomplish26H_TuneMaxLapDistanceMM` | mm | 1000~25000 |
+| 44 | `lacc` | `MotionLine_TuneAccelerationMMps2` | mm/s² | 10~5000 |
+| 45 | `ldec` | `MotionLine_TuneDecelerationMMps2` | mm/s² | 10~5000 |
+| 46 | `lcra` | `MotionLine_TuneMaxAdjustRatio`（兼容别名） | 比例 | 0.01~1 |
+| 47 | `lckd` | `MotionLine_TuneWeightKd`（兼容别名） | mm/s 每 权重/s | 0~100 |
+| 48 | `lcv` | `MotionLine_TuneCurveSpeedMMps` | mm/s | 20~1000 |
+| 49 | `lch` | `MotionLine_TuneCurveHoldDistanceMM` | mm | 100~5000 |
 
-id 一经发布不得重排，新增参数只能在尾部追加。K1~K5 为旧上位机保留：写入会同时覆盖左右轮，读取返回两侧当前值的平均数；新调参应使用 K17~K26 分别设置左右轮。基础前馈公式为 `PWMbase = speed×ff + sign(speed)×sf`，再叠加该轮 PI 与上层 trim，最终夹到 ±1000；网页会按当前 W 目标实时显示左右基础 PWM 并提示饱和。`lkd` 是巡线权重变化率阻尼：默认 0 时巡线行为与纯离散权重差速完全一致，弧线段左右摆动明显时少量增加抑制震荡。`gsc` 由 `E1`→原地转 N 圈→`Y<n>` 标定流程自动写入；`cpm` 建议用网页里程标定向导（记起点→`F1000`→填卷尺实测→自动换算写入）。
+id 一经发布不得重排，新增参数只能在尾部追加。K1~K5 为旧上位机保留：写入会同时覆盖左右轮，读取返回两侧当前值的平均数；新调参应使用 K17~K26 分别设置左右轮。基础前馈公式为 `PWMbase = speed×ff + sign(speed)×sf`，再叠加该轮 PI 与上层 trim，最终夹到 ±1000。K37~K49 与 `h2off`、`lra`、`lkd` 都在下一次 KEY1/N 启动时快照，当前运行中写入不会切换本圈参数；`lcra/lckd` 为向后一致保留的 `lra/lkd` 别名，巡线始终只有一套 P/D。`lcv` 是入弯后固定的低速上限，编码器从减速区入口累计 `lch` 后才允许恢复巡航。`ldec` 沿用 MotionLine 现有统一减速度，同时负责终点降速和最终软停，不增加额外状态机配置。`gsc` 由 `E1`→原地转 N 圈→`Y<n>` 标定流程自动写入；`cpm` 建议用网页里程标定向导。
+
+K31~K36 是要求 3 摆球的标定量，**全部为未实测的初值**，必须按下面顺序在实车上标定，每轮只改一个：先 `bgr`（实测齿轮比）和 `bzo`（摆杆水平零点），再 `bhl`（钢球放 0/±25/±50 mm 处读数反推半杆长），然后 `bgk`（给固定倾角、量钢球加速度反推重力耦合系数），最后才是 `bkd`（压过冲）和 `bkp`。**不要加积分项**：钢球是双积分对象，加 I 极易失稳；静摩擦死区应靠加大 `bkd` 解决。
 
 **遥测 CSV 格式（⚠️ 历史架构，已被 3.3.0 的二进制帧取代）。** 以下 ASCII CSV 描述对应第一次架构；当前固件发二进制 SCHEMA/SAMPLE 帧，通道定义见 3.3.2。保留本段仅为理解演进历史。每次字段掩码改变时输出一行表头 `H,...`，随后每隔 `1000/G` ms 输出一行数据：
 
@@ -342,7 +333,7 @@ id 一经发布不得重排，新增参数只能在尾部追加。K1~K5 为旧�
 |---|---|---|---|
 | `ms` | 固定输出 | 1 | 自上电以来的系统节拍累计毫秒数 |
 | `yaw` | `TELEMETRY_FIELD_YAW` = `0x01` | 1 | Z 轴连续累计航向角（度，`%.2f`），不做 ±180° 归一化 |
-| `gray`,`keys` | `TELEMETRY_FIELD_SENSOR` = `0x02` | 2 | `gray`当前固定为`00`；`keys`是按键位图，十进制 |
+| `gray`,`keys` | `TELEMETRY_FIELD_SENSOR` = `0x02` | 2 | `gray` 是兼容字段名，低 6 位为六路红外 CH1~CH6 状态，**十六进制两位**；`keys` 是按键位图，十进制 |
 | `LD`,`RD` | `TELEMETRY_FIELD_DISTANCE` = `0x04` | 2 | 左右轮累计路程 mm（`%.1f`） |
 | `LV`,`RV` | `TELEMETRY_FIELD_SPEED` = `0x08` | 2 | 左右轮实测速度 mm/s（`%.1f`） |
 | `mode` | `TELEMETRY_FIELD_MODE` = `0x10` | 1 | 运动模式文本：`IDLE`/`LINE`/`STRAIGHT`/`TURN`/`BRAKE`/`SPEED`/`ERROR`；模式保留但动作已完成时输出 `DONE`（供上位机自动判定一次调参试验结束） |
@@ -378,7 +369,7 @@ id 一经发布不得重排，新增参数只能在尾部追加。K1~K5 为旧�
 2. 航向层锁定启动瞬间的 MPU6050 连续累计偏航角，使用 PD 生成左右轮差速 PWM 修正，不做 ±180° 归一化。
 3. 公共 `MotionWheel` 分别对左右轮编码器实测速度执行 PI，叠加速度前馈、静摩擦补偿和航向修正，再统一限幅输出。
 
-以下是保留的25H历史调用顺序；灰度停用期间不能执行该流程：
+调用顺序：
 
 ```text
 等待 KEY1
@@ -407,17 +398,19 @@ id 一经发布不得重排，新增参数只能在尾部追加。K1~K5 为旧�
 3. 低速测试航向 `kp`；若偏差被放大，将 `correctionSign` 从 `1` 改为 `-1` 或反向。随后少量增加 `kd` 抑制摆动。
 4. 最后调整加速度、最大减速度、减速起点比例、每次任务的终点速度和距离允许误差。
 
-完整应用的旧OLED页面仍保留灰度字段，但停用期间固定显示0。当前步进测试使用第3.1节的专用OLED页面。
+OLED 默认显示 26H 单圈计时、六路红外 CH1~CH6、四个按键、左右轮路程/速度和当前运动状态。Gimbal 显式使能后切换为 F32C 双轴角度页。
 
 | 蓝牙命令 | 作用 | 当前限制 |
 |---|---|---|
-| `C0` | 全局停车并复位 Mission | 始终有效，同时失能 Gimbal |
-| `C1~C255` | Mission 单次事件 | 当前 25H 未绑定 |
+| `C0` | 全局停车 | 始终有效，同时冻结 26H 计时并失能 Gimbal |
+| `C3` | 启动要求 3 摆球，等效实体 `KEY2` | 视觉、底盘和摆球任务必须就绪/空闲 |
+| `C4` | 停止要求 3 并让摆杆回中 | 仅停止摆球，不替代 `C0` 全局急停 |
+| 其他非零 `C` 信号 | Mission 单次事件 | 当前任务未定义的编号不消费 |
 | `L<number>` | 设置左轮开环 PWM | MotionManager 空闲时有效，范围 `-1000~1000` |
 | `R<number>` | 设置右轮开环 PWM | MotionManager 空闲时有效，范围 `-1000~1000` |
 | `U<number>` | 设置双轮相同开环 PWM | MotionManager 空闲时有效，范围 `-1000~1000` |
-| `O<number>` | 记录纵向舵机角度 | 舵机 PWM 当前停用；只更新 `0°~270°` 的记录值 |
-| `D<number>` | 记录横向舵机角度 | 舵机 PWM 当前停用；只更新 `0°~270°` 的记录值 |
+| `O<number>` | 设置纵向舵机角度 | PA27 输出 50 Hz PWM，范围 `0°~270°` |
+| `D<number>` | 设置横向舵机角度 | PA26 输出 50 Hz PWM，范围 `0°~270°` |
 
 ## 4. 工程文件类型与职责
 
@@ -426,18 +419,21 @@ id 一经发布不得重排，新增参数只能在尾部追加。K1~K5 为旧�
 | 文件 / 目录 | 类型 | 职责 |
 |---|---|---|
 | `Application/Core/App.c/.h` | 应用运行层 | 完整整车初始化、固定更新链和 Mission 上下文 |
-| `Application/Core/TestApp.c/.h` | 可选测试运行层 | 跳过 OLED、MPU6050、灰度和里程的快速测试入口；当前未使用 |
+| `Application/Core/TestApp.c/.h` | 可选测试运行层 | 跳过 OLED、MPU6050、六路红外和里程的快速测试入口；当前未使用 |
 | `Application/Comms/BluetoothDebug.c/.h` | 应用通信层 | 解析 `C/L/R/U/O/D` 命令并提供任务事件 |
-| `Application/Comms/K230Link.c/.h` | 应用通信层 | 通过逻辑接口`Serial3`（物理UART0）运行K230帧、CRC8、握手、拍照ACK、目标和钢珠位置解析；每拍RX解析有固定预算 |
+| `Application/Comms/K230Link.c/.h` | 应用通信层 | 通过逻辑 `Serial3`、物理 UART0 运行 K230 帧、CRC8、握手、拍照 ACK 和目标解析；每拍 RX 解析有固定预算 |
 | `Application/Control/MotionManager.c/.h` | 统一运动调度 | 保证同一时刻只有直线、巡线、转向或刹车之一控制双轮 |
 | `Application/Control/MotionStraight.c/.h` | 直线控制 | 定距速度规划、连续航向保持和可选终点速度 |
-| `Application/Control/MotionLine.c/.h` | 巡线控制 | 源码保留；灰度停用期间没有有效输入，不能用于实车巡线 |
+| `Application/Control/MotionLine.c/.h` | 巡线控制 | 六路红外 CH1~CH6 的离散权重差速和连续丢线确认 |
+| `Application/Control/BallSensor.c/.h` | 钢球位置观测 | K230 千分比换算成毫米球位、按帧间隔估计滚动速度、视觉新鲜度 |
+| `Application/Control/BallBalance.c/.h` | 摆杆滚球控制 | 梯形速度轨迹、PD 与车体加速度前馈，输出摆杆倾角 |
+| `Application/Control/BeamActuator.c/.h` | 摆杆倾角执行 | 倾角到步进角度的换算，独占传动比、零点、软限位和限斜率 |
 | `Application/Control/MotionWheel.c/.h` | 公共轮速控制 | 双轮 PI、前馈、差速修正和 PWM 限幅 |
 | `Application/Control/Nav.c/.h` | 转向控制 | 双轮反向旋转到连续绝对角或相对角 |
 | `Application/Control/PID.c/.h` | 通用控制器 | 位置式 PID 计算、复位和调参 |
 | `Application/Debug/DebugDisplay.c/.h` | 显示编排 | OLED 零漂页、整车页和 Gimbal 页 |
 | `Application/Gimbal/Gimbal.c/.h` | 云台应用层 | 管理 X/Y 地址、T 型多圈位置目标、反馈和到位状态 |
-| `Application/Servo/Servo.c/.h` | 舵机控制 | 当前停用硬件 PWM；保留双路角度限位和记录接口 |
+| `Application/Servo/Servo.c/.h` | 舵机控制 | TIMG7 双路 50 Hz PWM、角度限位与脉宽换算 |
 | `Application/State/Heading.c/.h` | 航向状态 | MPU6050 零漂、连续偏航积分和尺度标定 |
 | `Application/State/Odometry.c/.h` | 里程状态 | 编码器增量到双轮路程与速度的换算 |
 
@@ -446,15 +442,15 @@ id 一经发布不得重排，新增参数只能在尾部追加。K1~K5 为旧�
 | 文件 / 目录 | 类型 | 职责 |
 |---|---|---|
 | `Hardware/Board/` | 板级驱动 | 按键、LED 和蜂鸣器 |
-| `Hardware/Comms/Serial.c/.h` | UART 驱动 | `Serial1`使用UART2/CH0，`Serial3`使用UART0/CH2；`Serial2`在当前配置中为无硬件停用桩 |
+| `Hardware/Comms/Serial.c/.h` | UART 驱动 | `Serial1` 使用 UART2/CH0，`Serial3` 使用 UART0/CH2；`Serial2` 在当前配置中为无硬件停用桩 |
 | `Hardware/Display/OLED.c/.h` | OLED 驱动 | I2C0 显存、文本、数字、图像和图形绘制 |
 | `Hardware/Display/OLED_Data.c/.h` | 字模数据 | ASCII、中文字模和图像数据 |
 | `Hardware/Motor/Motor.c/.h` | 有刷电机驱动 | TB6612 方向、PWM、释放和主动刹车 |
 | `Hardware/Motor/PWM.c/.h` | PWM 驱动 | TIMG8 双通道占空比换算 |
-| `Hardware/Motor/Encoder.c/.h` | 编码器驱动 | 在共享GPIOA入口中解码左右轮AB；步进AB底层桥接接口放在内部头文件`EncoderStepper.h` |
-| `Hardware/Motor/Stepper.c/.h` | 步进电机驱动 | MS42CG非阻塞梯形运动、ST/DIR/EN控制、MT6816 AB多圈位置与PWM单圈绝对角 |
+| `Hardware/Motor/Encoder.c/.h` | 编码器驱动 | 在共享 GPIOA GROUP1 入口中解码左右轮与步进 AB |
+| `Hardware/Motor/Stepper.c/.h` | 步进电机接口 | PB8/PB9/PB12驱动，PA13/PA29/PB13反馈，带绝对角基准、限位和梯形运动 |
 | `Hardware/Motor/F32C.c/.h` | 无刷电机协议 | F32C 命令编码、校验和反馈解码 |
-| `Hardware/Sensors/Graydetect.c/.h` | 灰度兼容桩 | `GRAYDETECT_ENABLED=0`；不初始化GPIO，所有读取返回0 |
+| `Hardware/Sensors/Graydetect.c/.h` | 六路红外驱动 | 软件 I2C 读取 `0x5C:0x05`，缓存 CH1~CH6 状态和区域误差；历史文件名/API 保持兼容 |
 | `Hardware/Sensors/MPU6050.c/.h` | IMU 驱动 | 软件 I2C 初始化和原始数据读取 |
 | `System/Delay.c/.h` | 系统基础 | 微秒、毫秒和秒级阻塞延时 |
 | `System/Tick.c/.h` | 系统基础 | 100 Hz 累计节拍 |
@@ -466,7 +462,9 @@ id 一经发布不得重排，新增参数只能在尾部追加。K1~K5 为旧�
 |---|---|---|
 | `Application/Mission/Mission.c/.h` | 通用任务执行层 | 校验并执行静态状态图、回调和有序转换 |
 | `Accomplish/25E.c/.h` | 题目状态图 | 25E 参数、状态、回调和转换表 |
-| `Accomplish/25H.c/.h` | 保留题目状态图 | 依赖灰度输入，当前停用且未由测试`main`加载 |
+| `Accomplish/26H.c/.h` | 当前题目控制器 | KEY1 启动单圈巡线、A 点终点软停、100 Hz 整数计时和组合急停冻结 |
+| `Application/Control/BallSequence.c/.h` | 要求 3 摆球序列 | KEY2 启动 O→+5cm→-5cm、到位确认后折返、超时与视觉失效保护 |
+| `Accomplish/25H.c/.h` | 保留题目状态图 | KEY1 启动的巡线、150 mm 直行和连续绝对左转循环 |
 | `Accomplish/Brushless_Motor_Test.c/.h` | 可选测试状态图 | F32C 双轴多圈位置循环测试；当前未加载 |
 | `状态机.md` | 使用说明 | 新建 Accomplish 状态图的编写流程 |
 
@@ -474,7 +472,8 @@ id 一经发布不得重排，新增参数只能在尾部追加。K1~K5 为旧�
 
 | 文件 | 类型 | 职责 |
 |---|---|---|
-| `main.c` | C 源文件 | 当前联合测试入口；显式初始化OLED、按键、步进、左右轮编码器、K230 UART0/DMA CH2和SysTick |
+| `main.c` | C 源文件 | `MAIN_STEPPER_TEST_MODE=1U`选择当前步进测试入口 |
+| `Application/Core/Main26H.c/.h` | C 源文件 / 头文件 | 保留完整26H巡线与摆球入口，测试宏改为0时调用 |
 | `main.syscfg` | TI SysConfig | 时钟、PinMux、GPIO、UART、I2C、PWM 和 SysTick 配置 |
 | `.project`、`.cproject`、`.settings/` | CCS 元数据 | 工程、编译器、SDK 和 IDE 配置 |
 | `targetConfigs/*.ccxml` | CCS 目标配置 | MSPM0G3507 调试连接 |
@@ -489,39 +488,38 @@ uint8_t App_Update(App_UpdateContext_t *context); /* 有新 Tick 时更新整车
 
 void TestApp_Init(void);                          /* 初始化可选快速测试通道。 */
 uint8_t TestApp_Update(App_UpdateContext_t *context); /* 更新测试通道并填写同类型上下文。 */
-```
 
 - `To` 接口输入连续累计绝对角；例如当前为 370°，输入 90° 会按直接误差回到 90°，不会自动选择 ±180° 最短路径。
 - `By` 接口输入相对转角；正负方向由 `NAV_ROTATION_COMMAND_SIGN` 与实车安装共同决定，可输入大于 360° 的多圈角度。
 - 首次测试使用 60~80 mm/s。若启动后角度误差持续增大，只翻转 `NAV_ROTATION_COMMAND_SIGN`。
 - Nav 到角后先把轮速斜坡降到零，再要求连续 `NAV_SETTLE_TICKS` 个周期处于允许误差内，避免单次采样抖动误判完成。
 
-25H源码仍保留原巡线状态图，但`GRAYDETECT_ENABLED=0`时不能运行。恢复灰度SysConfig和驱动后，其目标序列仍为`startYaw-90°`、`startYaw-180°`、`startYaw-270°`……
+保留的 25H 在 KEY1 启动巡线时记录连续航向作为 0°基准。每次左侧双灰度触发后均先完成 150 mm 直行和固定时长的零速目标保持，再把下一绝对目标减去 90°并调用 `MotionManager_TurnTo()`；因此目标序列为 `startYaw-90°`、`startYaw-180°`、`startYaw-270°`……，不是在进入 TURN 时临时调用相对角接口。
 
 ## 4. 工程文件类型与职责
 
 | 文件或目录 | 类型 | 职责 |
 |---|---|---|
-| `main.c` | C 源文件 | 当前步进、K230钢珠数据和左右轮编码器联合测试入口；完整`App`/`Mission`入口源码保留但未运行 |
+| `main.c` | C 源文件 | 当前默认运行步进测试；可通过顶部宏切换到完整26H入口 |
 | `main.syscfg` | TI SysConfig | 时钟树、GPIO、UART、I2C、PWM、SysTick 和 PinMux 的唯一配置源 |
 | `car_debug.html` | 单文件调试网页 | 浏览器端上位机：Web Serial 连接无线串口，发送第 3.3 节命令、解析遥测 CSV、实时画曲线并导出。无外部依赖，不参与固件编译 |
 | `tests/*.mjs` | Node 测试脚本 | 无依赖，`node tests/<文件>` 直接跑。覆盖遥测解析、页面启动、固件-网页协议契约与教程源码一致性；清单见 4.2 节末 |
 | `tutorial/sync-sources.mjs` | Node 工具脚本 | 按 `data-source`/`data-lines` 把教程内联源码重新对齐到当前源文件；源码位移时按内容自动重定位行号 |
 | `.project`、`.cproject`、`.settings/` | CCS 工程元数据 | 工程名、TI Arm Clang 选项、SDK/SysConfig 依赖和 IDE 设置 |
 | `targetConfigs/*.ccxml` | CCS 目标配置 | MSPM0G3507 调试连接配置 |
-| `Application/Comms/` | 应用层 C 模块 | 蓝牙调试命令；K230 二进制帧、CRC8、握手、目标和钢珠位置解析 |
+| `Application/Comms/` | 应用层 C 模块 | 蓝牙调试命令；K230 二进制帧、CRC8、握手和目标解析 |
 | `Application/Core/` | 应用运行层 C 模块 | 固定硬件初始化、零漂、100 Hz 后台服务、按键和蓝牙事件采集 |
 | `Application/Mission/` | 通用任务执行层 C 模块 | 校验并执行题目层提供的静态状态图、生命周期回调、有序条件转换和打断处理 |
-| `Accomplish/` | 具体题目实现 C 模块 | 状态图源码保留；当前步进测试`main`不加载Mission，依赖灰度的25H不可运行 |
+| `Accomplish/` | 具体题目实现 C 模块 | 位于工程根目录；当前启用独立计时控制器 `26H.c/.h`，并保留 `25E.c/.h`、`25H.c/.h` 与刹车测试 `Test.c/.h` |
 | `Application/Control/` | 运动控制层 C 模块 | MotionManager、通用 PID、公共双轮速度闭环、直线、巡线、目标角转向和短暂主动刹车 |
 | `Application/Debug/` | 应用层 C 模块 | OLED 调试页面编排、CSV 遥测输出与运行时调参注册表 |
-| `Application/Servo/` | 舵机硬件模块 | 当前关闭 PWM 硬件，仅保留角度限位和记录接口 |
+| `Application/Servo/` | 舵机硬件模块 | PA26/PA27 上的 TIMG7 双路 50 Hz PWM、角度限位和脉宽换算 |
 | `Application/State/` | 状态层 C 模块 | Z 轴航向角解算、编码器里程与速度状态 |
 | `Hardware/Board/` | 板级驱动 | 按键、LED、蜂鸣器 |
-| `Hardware/Comms/` | 通信驱动 | `Serial1`/UART2 DAPLink与`Serial3`/UART0 K230的中断接收、环形缓冲和DMA发送；`Serial2`/UART1当前停用 |
+| `Hardware/Comms/` | 通信驱动 | `Serial1`/UART2 DAPLink 与 `Serial3`/UART0 K230 的中断接收、环形缓冲和 DMA 发送；`Serial2`/UART1 当前停用 |
 | `Hardware/Display/` | 显示驱动与数据 | OLED I2C 驱动、帧缓冲、字模和图像数据 |
-| `Hardware/Motor/` | 电机驱动 | TIMG8/TB6612双直流电机、左右轮编码器，以及TIMA0/TIMG12驱动的MS42CG/MT6816步进库 |
-| `Hardware/Sensors/` | 传感器驱动 | 灰度停用兼容桩和MPU6050软件I2C源码 |
+| `Hardware/Motor/` | 电机驱动 | TIMG8/TB6612 双直流电机、左右轮编码器，以及等待新引脚的步进接口 |
+| `Hardware/Sensors/` | 传感器驱动 | PA25/PA14 软件 I2C 六路红外、PB2/PB3 软件 I2C MPU6050 |
 | `System/` | 系统基础模块 | 阻塞延时、100 Hz SysTick 计数和全局硬件中断开关 |
 | `Debug/`、`Release/` | 生成目录 | 目标文件、依赖文件、链接文件和固件输出；不手工修改 |
 | `.gitignore` | Git 配置 | 排除构建产物 |
@@ -533,38 +531,39 @@ uint8_t TestApp_Update(App_UpdateContext_t *context); /* 更新测试通道并�
 | 源文件 / 头文件 | 文件职责 |
 |---|---|
 | `Application/Comms/BluetoothDebug.c/.h` | 解析 `C/L/R/U/O/D/G/M/V/F/B/T/A/Z/P/W/N/K/E/Y` 命令，保存单槽任务事件，限制自动运动期间的开环电机调试；`K` 命令带文本参数缓冲转交 Param 模块 |
-| `Application/Core/App.c/.h` | 封装系统初始化和每拍固定更新，向 Mission 提供 dt、按键边沿和蓝牙信号 |
+| `Application/Core/App.c/.h` | 封装系统初始化和每拍固定更新，向当前控制器或保留的 Mission 提供 dt、按键边沿和蓝牙信号 |
 | `Application/Mission/Mission.c/.h` | 定义状态图公共类型，校验题目状态图并执行每拍最多一次的状态转换 |
 | `Accomplish/25E.c/.h` | 保存 25E 参数和状态图：每轮绝对目标在上一目标上增加 180°；当前未由 main 加载 |
-| `Accomplish/25H.c/.h` | 保存25H参数和状态图；依赖已停用的灰度硬件，当前不可运行 |
+| `Accomplish/26H.c/.h` | 完整 26H 模式加载；保存单圈巡线状态、终点判定、软停确认和 100 Hz 累计 Tick |
+| `Application/Control/BallSequence.c/.h` | 完整 26H 模式加载；要求 3 的摆球序列状态、到位折返判定和超时保护，只驱动摆杆不碰底盘 |
+| `Accomplish/25H.c/.h` | 保留 25H 参数和状态图：KEY1 启动巡线，左侧双黑线后直行 150 mm、固定时长零速保持，绝对左转目标每轮减少 90°并循环；当前未由 main 加载 |
 | `Accomplish/Test.c/.h` | 独立刹车测试状态图：KEY2 启动定距直行、短暂刹车并返回等待；需要测试时才在 main.c 临时加载 |
-| `Application/Comms/K230Link.c/.h` | 解析 `AA 55` 二进制帧和 CRC8，执行 READY/READY_ACK 双向握手，保存最新TARGET和BALL_POSITION |
+| `Application/Comms/K230Link.c/.h` | 解析 `AA 55` 二进制帧和 CRC8，执行 READY/READY_ACK 双向握手，保存最新 TARGET、LANE 和 BALL_POSITION |
 | `Application/Control/PID.c/.h` | 通用 PID 初始化、调参、复位和单步计算 |
 | `Application/Control/MotionStraight.c/.h` | 头文件顶部保存直线参数；源文件实现距离规划、5/6 末段减速、可选终点速度、MPU6050 航向 PD 和软停车状态机 |
 | `Application/Control/MotionWheel.c/.h` | 头文件顶部保存公共轮速参数；源文件实现 MotionStraight、MotionLine 与 Nav 共用的双轮速度 PI、前馈、差速修正合成和 PWM 限幅 |
-| `Application/Control/MotionLine.c/.h` | 巡线算法源码保留；灰度停用时没有有效输入，当前不可用于实车 |
+| `Application/Control/MotionLine.c/.h` | 头文件顶部保存巡线参数；源文件实现六路红外离散权重差速、连续丢线确认、丢线正常完成和状态管理；巡线层不使用 PID |
 | `Application/Control/MotionManager.c/.h` | 统一包装直线、巡线、转向和短暂刹车；自动停止旧模式并只更新当前模式 |
 | `Application/Control/Nav.c/.h` | 头文件顶部保存转向参数；源文件实现连续航向目标、双轮等速反向转向和到角稳定判定 |
 | `Application/Debug/DebugDisplay.c/.h` | 组织启动零漂提示、基础状态和 MotionLine 运行状态的 OLED 八行调试数据 |
-| `Application/Debug/Telemetry.c/.h` | 表驱动组装二进制 SCHEMA/SAMPLE 帧，按频率和 12 通道掩码经 `Serial1`/UART2（DMA）输出；暴露 `SampleChannels`/`SendSchema` 供捕获复用 |
-| `Application/Debug/TelemFrame.c/.h` | 二进制帧编码：CRC-8/ATM、帧构建、float32 小端打包；与 K230Link 同 CRC，供遥测与捕获共用 |
-| `Application/Debug/Param.c/.h` | 运行时调参注册表：K 命令后端，26 个参数的读写、范围校验、左右轮独立参数与 PID apply 钩子 |
-| `Application/Debug/Capture.c/.h` | 板载高速捕获：24 KB RAM 缓冲，可变长度二进制存储最多 8 通道（单通道约 30 秒）；与遥测共用通道表，dump 发 CAP_META/SAMPLE/END 二进制帧 |
-| `Application/Servo/Servo.c/.h` | 当前只执行纵向/横向角度限位和记录；`SERVO_ENABLED=0` 时不访问 PWM 硬件 |
+| `Application/Debug/Telemetry.c/.h` | 表驱动组装二进制 SCHEMA/SAMPLE 帧，按频率和 16 通道掩码经 `Serial1`/UART2（DMA）输出；`bpos/bref` 在要求 3 控制更新后同拍采样 |
+| `Application/Debug/TelemFrame.c/.h` | 二进制帧编码：CRC-8/ATM、帧构建、float32 小端打包；与 K230Link 同 CRC |
+| `Application/Debug/Param.c/.h` | 运行时调参注册表：K 命令后端，33 个参数的读写、范围校验、左右轮独立参数与要求 3 摆球标定量 |
+| `Application/Servo/Servo.c/.h` | 纵向/横向角度限位并换算为 500~2500 us 脉宽，写入 TIMG7 CCP1/CCP0 |
 | `Application/State/Heading.c/.h` | MPU6050 Z 轴零漂标定、角速度积分和尺度标定 |
 | `Application/State/Odometry.c/.h` | 读取编码器增量，累计左右路程并计算 mm/s 速度 |
 | `Hardware/Board/Beep.c/.h` | 蜂鸣器与 LED2 的非阻塞提示状态机 |
 | `Hardware/Board/Key.c/.h` | 四个低有效按键的非阻塞状态读取 |
 | `Hardware/Board/LED.c/.h` | LED1、LED2 的开、关、翻转接口 |
-| `Hardware/Comms/Serial.c/.h` | `Serial1`通过UART2/CH0连接DAPLink，`Serial3`通过UART0/CH2连接K230，TX均为DMA非阻塞发送；`Serial2`当前没有物理UART实例 |
+| `Hardware/Comms/Serial.c/.h` | `Serial1` 通过 UART2/CH0 连接 DAPLink，`Serial3` 通过 UART0/CH2 连接 K230，TX 均为 DMA 非阻塞发送；`Serial2` 当前没有物理 UART 实例 |
 | `Hardware/Display/OLED.c/.h` | OLED I2C 传输、128×64 帧缓冲、文本和图形绘制 |
 | `Hardware/Display/OLED_Data.c/.h` | ASCII/中文字模和公共位图常量 |
-| `Hardware/Motor/Encoder.c/.h` | 唯一`GROUP1_IRQHandler`内同时完成左右轮和步进AB四倍频正交解码 |
-| `Hardware/Motor/EncoderStepper.h` | `Stepper.c`访问共享编码器ISR状态的内部桥接头文件，不属于应用层公开API |
-| `Hardware/Motor/Stepper.c/.h` | 公开单轴步进API；控制PB8/PB9/PB12并读取PA13/PA29/PB13反馈 |
+| `Hardware/Motor/Encoder.c/.h` | 唯一 `GROUP1_IRQHandler` 内完成左右轮与步进AB四倍频正交解码 |
+| `Hardware/Motor/EncoderStepper.h` | 步进共享编码器 ISR 桥接头文件 |
+| `Hardware/Motor/Stepper.c/.h` | 公开单轴步进API；驱动、PWM绝对角和AB反馈均已启用 |
 | `Hardware/Motor/Motor.c/.h` | 左右物理电机到 TB6612 A/B 通道的映射、方向和制动 |
 | `Hardware/Motor/PWM.c/.h` | TIMG8 双通道占空比到比较值的换算 |
-| `Hardware/Sensors/Graydetect.c/.h` | 当前编译为停用桩；不访问GPIO并固定返回0 |
+| `Hardware/Sensors/Graydetect.c/.h` | 六路红外 CH1~CH6 状态位图、I2C 读取和加权偏差；文件名保留兼容 |
 | `Hardware/Sensors/MPU6050.c/.h` | PB2/PB3 软件 I2C、MPU6050 配置和原始数据读取 |
 | `System/Delay.c/.h` | 基于 32 MHz CPUCLK 的 us/ms/s 阻塞延时 |
 | `System/Tick.c/.h` | SysTick ISR 累计与主循环原子取出 100 Hz 节拍 |
@@ -583,7 +582,7 @@ uint8_t TestApp_Update(App_UpdateContext_t *context); /* 更新测试通道并�
 1. 用「任务→对象→阶段」导航选定要调什么（如 轮速 → 左轮 → P），点「开始试验」；
 2. 连接和阶段切换时，网页提前准备本阶段的**最优掩码**（调左轮只传 TL/LV/PL）并按固件 `Q` 回报的真实频率上限设频；
 3. 点「开始试验」后，网页先清空本次终端与曲线、记录参数快照，然后立即发激励命令，不再等待遥测准备链；
-4. 指标卡明确标注数据来源：直启流程使用 `实时流 xx Hz`，峰值可能漏采、仅供参考；若后续流程使用板载捕获，`板载 100 Hz 捕获` 表示与控制环同频、指标可信；
+4. 指标卡明确标注数据来源：使用 `实时流 xx Hz`，低于 100 Hz 控制环时峰值可能漏采、仅供参考；
 5. 每条记录可设为基准（虚线叠加对比）、导出 CSV，或一键复制 **AI 调参包**（含控制结构、参数、激励、列说明、自动指标和完整数据），直接粘给 AI 要下一组参数；
 6. 在阶段参数区就地微调（`−`/`+` 按钮或直接输入，写入立即生效），再跑下一次对比。
 
@@ -595,7 +594,7 @@ uint8_t TestApp_Update(App_UpdateContext_t *context); /* 更新测试通道并�
 
 - **频率上限由固件说了算，网页不各存一份阈值。** 改掩码后网页主动发 `Q` 查询，用固件回报的 `MAX` 自动设频；勾选字段的瞬间另有一份本地复算用于即时显示（公式与 `Telemetry.c` 相同），两者不一致就说明固件与网页失配。
 - **指标必须标注来源。** 直启流程优先让车先动，因此默认用实时流指标；实时流受串口带宽限制低于 100 Hz 控制环，阶跃峰值会落在采样点之间，界面必须让用户看见这次结论是基于哪种数据得出的。
-- **捕获与实时流分开解析、分开存储。** 前缀 `CH,`/`C,` 与 `H,`/`D,` 互不冲突，两者列集和采样率都不同，混在一起会让指标取到错误的时间基准。
+- **页面里的捕获解析分支已成死代码。** 固件的板载捕获模块已删除（见 3.3.0），`CH,`/`C,` 前缀与 `CAP_*` 帧类型不会再出现；`session.captureArmed` 恒为 `false`。清理页面时可一并删除，保留也不影响运行。
 - **舵机滑块节流 100 ms。** 拖动会逐像素触发事件，不节流会瞬间发出几十条命令占满串口，把遥测流挤垮。
 - **曲线按量纲分组共享刻度。** `LV/RV/TL/TR` 同为 mm/s、`PL/PR` 同为 PWM、`yaw/navT/navE` 同为度、`LD/RD` 同为 mm，各组内共用一套 min/max，目标与实测才能直接对比；不在分组表里的列仍各自独立归一化。
 - **`ms` 和 `mode` 不进曲线选择器。** 前者是横轴，画出来是单调直线；后者是文本。两者仍会写进导出的 CSV。
@@ -606,9 +605,8 @@ uint8_t TestApp_Update(App_UpdateContext_t *context); /* 更新测试通道并�
 
 | 测试 | 覆盖什么 |
 |---|---|
-| `test_csv_parse.mjs` | 从 `car_debug.html` 抽取解析器与纯函数源码运行——测的是页面里的真代码而非副本，避免两边漂移。含 CSV 解析、捕获行解析、阶跃指标、频率估算、标记分段 |
+| `test_csv_parse.mjs` | 从 `car_debug.html` 抽取解析器与纯函数源码运行——测的是页面里的真代码而非副本，避免两边漂移。含 CSV 解析、阶跃指标、频率估算、标记分段 |
 | `test_page_boot.mjs` | 用最小 DOM 桩**真正执行整段页面脚本**。`node --check` 只查语法，查不出 `let/const` 的初始化顺序错误（函数声明提升而变量不提升），那类错误只有打开页面才暴露；本测试把「打开就白屏」挡在提交前，并交叉校验 HTML 的 `id` 与脚本引用是否对得上 |
-| `test_capture_contract.mjs` | 板载捕获与 `X`/`Q` 命令的固件-网页协议：通道位序、dump 前缀、回应格式、RAM 预算、单侧掩码的实际增益 |
 | `test_wheel_tuning_contract.mjs` | 左右轮独立调参的参数表兼容性与网页联动 |
 | `test_heading_resample_contract.mjs` | `Z1`/`Z2` 的语义区分与错误分支 |
 | `test_tutorial.mjs` | 教程内联源码块与真实源文件逐字一致（防止改了源码而教程还在讲旧代码） |
@@ -633,9 +631,6 @@ void K230Link_Init(void);                         /* 初始化 K230 帧解析与
 void K230Link_Update(uint8_t elapsedTicks);        /* 按节拍推进握手并解析接收帧。 */
 uint8_t K230Link_IsReady(void);                    /* 返回双方握手是否完成。 */
 uint8_t K230Link_GetTarget(K230Link_Target_t *target); /* 读取最新目标数据。 */
-uint8_t K230Link_GetBallPosition(
-    K230Link_BallPosition_t *position);            /* 读取最新钢珠相对位置。 */
-```
 
 ```c
 typedef struct
@@ -646,18 +641,10 @@ typedef struct
     uint8_t sequence;
 } K230Link_Target_t;
 
-typedef struct
-{
-    uint8_t valid;
-    int16_t positionX100;
-    uint8_t sequence;
-} K230Link_BallPosition_t;
-
 void K230Link_Init(void);
 void K230Link_Update(uint8_t elapsedTicks);
 uint8_t K230Link_IsReady(void);
 uint8_t K230Link_GetTarget(K230Link_Target_t *target);
-uint8_t K230Link_GetBallPosition(K230Link_BallPosition_t *position);
 uint8_t K230Link_RequestCapture(uint8_t count);
 uint8_t K230Link_IsCapturePending(void);
 uint8_t K230Link_PopCaptureAck(uint8_t *ok, uint16_t *index);
@@ -672,9 +659,7 @@ uint8_t K230Link_PopCaptureAck(uint8_t *ok, uint16_t *index);
 | `K230Link.h` | `K230_LINK_MAX_PAYLOAD_LENGTH` | `32U` | 最大载荷长度 |
 | `K230Link.h` | `K230_LINK_READY_RETRY_TICKS` | `10U` | READY 重发周期，100 ms |
 | `K230Link.h` | `K230_LINK_RX_BUDGET_BYTES` | `128U` | 每个 10 ms 控制拍最多解析的 K230 RX 字节数 |
-| `K230Link.h` | `K230_LINK_MESSAGE_READY/READY_ACK/TARGET/BALL_POSITION` | `0x01/0x02/0x10/0x14` | 握手、旧目标和钢珠位置消息类型 |
-| `K230Link.h` | `K230_LINK_BALL_POSITION_SCALE` | `100` | `positionX100`到真实相对位置的定点缩放 |
-| `K230Link.h` | `K230_LINK_BALL_POSITION_MIN/MAX/INVALID` | `-5000/+5000/-32768` | 钢珠有效范围和丢球哨兵 |
+| `K230Link.h` | `K230_LINK_MESSAGE_READY`、`K230_LINK_MESSAGE_READY_ACK`、`K230_LINK_MESSAGE_TARGET` | `0x01/0x02/0x10` | 消息类型 |
 | `DebugDisplay.h` | `DEBUG_DISPLAY_REFRESH_TICKS` | `10U` | OLED 刷新周期，100 ms |
 
 ### 5.2 MotionManager
@@ -777,7 +762,7 @@ MotionLine_Error_t MotionLine_GetError(void);
 float MotionLine_GetLineError(void);
 ```
 
-灰度停用期间`MotionLine_GetLineError()`没有有效硬件输入，不能用于控制。该模块及调参变量仅为以后恢复灰度配置保留。
+`MotionLine_GetLineError()` 当前返回最近一次有效六路红外状态位图得到的离散权重，范围为 `-6~+6`，它不再是 PID 输入误差。四个 `Tune` 变量由 `MotionLine_Start()` 一次性快照：最大调整比例、权重变化率阻尼、统一加速度和统一减速度；运行中写入只影响下一次启动，差速修正总量仍限制在 ±巡航速度内。
 
 ### 5.6 `Application/Control/Nav.h`
 
@@ -876,15 +861,28 @@ const Mission_GraphDefinition_t *Accomplish25E_GetMissionGraph(void);
 const Mission_GraphDefinition_t *Accomplish25H_GetMissionGraph(void);
 ```
 
-该函数返回 25H 静态只读状态图。当前 `main.c` 调用该接口；题目参数全部位于 `Accomplish/25H.h` 开头。
+该函数返回保留的 25H 静态只读状态图。当前 `main.c` 不调用该接口；题目参数全部位于 `Accomplish/25H.h` 开头。
 
-### 5.6.5 `Accomplish/Test.h`
+### 5.6.5 `Accomplish/26H.h`
+
+```c
+void Accomplish26H_Init(void);
+void Accomplish26H_Update(const App_UpdateContext_t *context);
+uint8_t Accomplish26H_IsTiming(void);
+uint32_t Accomplish26H_GetElapsedTicks(void);
+Accomplish26H_State_t Accomplish26H_GetState(void);
+Accomplish26H_Error_t Accomplish26H_GetError(void);
+```
+
+这些接口实现当前独立单圈控制器，不经过 Mission；`main.c` 调用初始化和更新接口，OLED 读取累计 Tick。正常状态依次为 READY、离开 A、巡线、终点后软停和低速确认；I2C 离线、丢线/控制错误、超出最大圈长、急停或静止超时会进入 ERROR。
+
+### 5.6.6 `Accomplish/Test.h`
 
 ```c
 const Mission_GraphDefinition_t *AccomplishTest_GetMissionGraph(void);
 ```
 
-该函数返回独立的刹车测试状态图。测试时才在 `main.c` 临时加载；KEY2 会执行“定距直行 -> 短暂刹车 -> 等待”，不影响 25H 的正式流程。
+该函数返回独立的刹车测试状态图。测试时才在 `main.c` 临时加载；KEY2 会执行“定距直行 -> 短暂刹车 -> 等待”，不影响当前 26H 单圈流程。
 
 ### 5.7 `Application/Debug/DebugDisplay.h`
 
@@ -897,19 +895,26 @@ void DebugDisplay_Update(uint8_t elapsedTicks);
 ### 5.7.1 `Application/Debug/Telemetry.h`
 
 ```c
-#define TELEMETRY_DEFAULT_RATE_HZ        20U
-#define TELEMETRY_RATE_HARD_LIMIT_HZ       100U
-#define TELEMETRY_FIELD_YAW      0x01U
-#define TELEMETRY_FIELD_SENSOR   0x02U
-#define TELEMETRY_FIELD_DISTANCE 0x04U
-#define TELEMETRY_FIELD_SPEED    0x08U
-#define TELEMETRY_FIELD_MODE     0x10U
-#define TELEMETRY_FIELD_K230     0x20U
-#define TELEMETRY_FIELD_TARGET   0x40U
-#define TELEMETRY_FIELD_PWM      0x80U
-#define TELEMETRY_FIELD_NAV      0x100U
-#define TELEMETRY_FIELD_LINE     0x200U
-#define TELEMETRY_FIELD_ALL      0x3FFU
+#define TELEMETRY_DEFAULT_RATE_HZ    50U
+#define TELEMETRY_RATE_HARD_LIMIT_HZ 100U
+
+#define TELEMETRY_CH_TL     0x0001U
+#define TELEMETRY_CH_LV     0x0002U
+#define TELEMETRY_CH_PL     0x0004U
+#define TELEMETRY_CH_TR     0x0008U
+#define TELEMETRY_CH_RV     0x0010U
+#define TELEMETRY_CH_PR     0x0020U
+#define TELEMETRY_CH_YAW    0x0040U
+#define TELEMETRY_CH_NAVE   0x0080U
+#define TELEMETRY_CH_LERR   0x0100U
+#define TELEMETRY_CH_GRAY   0x0200U
+#define TELEMETRY_CH_LD     0x0400U
+#define TELEMETRY_CH_RD     0x0800U
+#define TELEMETRY_CH_VX     0x1000U
+#define TELEMETRY_CH_VAD    0x2000U
+#define TELEMETRY_CH_BPOS   0x4000U
+#define TELEMETRY_CH_BREF   0x8000U
+#define TELEMETRY_CH_ALL    0xFFFFU
 
 void Telemetry_Init(void);
 void Telemetry_Update(uint8_t elapsedTicks, uint8_t pressedKeys);
@@ -920,19 +925,19 @@ uint16_t Telemetry_GetFieldMask(void);
 uint8_t Telemetry_GetMaxRateHz(void);
 ```
 
-**为什么频率上限是动态的：** `Serial1_SendByte()` 使用 `DL_UART_Main_transmitDataBlocking()`，是**阻塞发送**——发送期间主循环完全停止，`Heading_Update`、`Odometry_Update`、`MotionManager_Update` 全部挂起。主循环为 100 Hz（每 tick 10 ms），115200 8N1 每字节需 86.8 µs；若允许全字段（约 160 字节）以 100 Hz 发送，主循环占用率会远超 100%，PID 周期将严重失准。因此上限必须根据当前掩码的**实际行长**动态计算，而非固定为 100。调试时只开 YAW 一个字段（行长 25 字节），安全上限可达 92 Hz；开全部 10 个字段时安全上限降至约 14 Hz。这也符合实际调试习惯：需要高频率的场景（如看 PID 阶跃响应）只开相关字段——网页「调参试验」的预设就是按这个原则生成的。
+**为什么仍保留动态频率上限：** DMA 发送不会再阻塞主循环，但物理串口仍只有 115200 8N1。固件按当前二进制 SAMPLE 帧长度计算带宽，并在 100 Hz 控制频率处硬限幅；全 16 通道为 75 字节/帧，100 Hz 约 7.5 KB/s。要求 3 只开 `bpos/bref` 时帧更短，网页会直接请求 100 Hz。
 
 **带宽常量跟随 SysConfig，不写死。** 计算上限用的两个常量定义在 `Telemetry.c` 内部而非头文件里，其中每秒字节数直接由波特率推导：
 
 ```c
 /* 8N1 每字节含起始位和停止位共 10 个位时。 */
 #define TELEMETRY_UART_BYTES_PER_SECOND  ((uint32_t)BLUETOOTH_UART_BAUD_RATE / 10U)
-#define TELEMETRY_MAX_BLOCKING_PERCENT   20U
+#define TELEMETRY_BANDWIDTH_PERCENT      70U
 ```
 
-这样改 UART1 波特率时限流会自动跟上。若写死数值，一旦改了波特率却漏改这里，限流就会按错误的带宽计算，而这种失配没有任何编译期提示：波特率被调低时会严重超发，阻塞发送把主循环连同运动控制一起拖垮。反过来，若忘记在 CCS 中重新生成 SysConfig（`Debug/ti_msp_dl_config.h` 仍是旧波特率），遥测只会自动降到很低的频率，不会超发——失效方向是安全的。
+这样修改 UART 波特率时限流会自动跟随；若实际带宽降低，`Q` 回报的最大频率和 `G` 的范围校验也会同步收紧。
 
-`Telemetry_Init()` 也会用 `Telemetry_GetMaxRateHz()` 把默认频率夹一次。当前默认掩码为全字段（安全上限约 14 Hz），默认请求 20 Hz 会在 `Init` 中被自动夹到上限；默认频率、默认掩码、波特率三者任一改动都会改变这个结果，而 `Init` 不经 `Telemetry_SetRateHz()` 校验，越界不会有任何提示，全靠这次显式夹紧。
+`Telemetry_Init()` 会用 `Telemetry_GetMaxRateHz()` 对默认频率再夹一次；默认频率、掩码或波特率变化后仍不会超发。
 
 ### 5.7.2 `Application/Debug/Param.h`
 
@@ -942,50 +947,13 @@ void Param_HandleCommand(const char *args);
 
 K 命令后端：`args` 为去掉 `K` 前缀的文本参数（`?` 列表 / `<id>?` 读 / `<id>=<float>` 写），直接经 UART1 回应。参数注册表见 3.3.1；表序即协议 id，一经发布不得重排，只能尾部追加。
 
-### 5.7.3 `Application/Debug/Capture.h`
+### 5.7.3 `Application/Debug/Capture.h`（已删除）
 
-```c
-#define CAPTURE_MAX_CHANNELS 4U
-#define CAPTURE_BUFFER_BYTES 20480U
-#define CAPTURE_CH_TL   0x0001U
-#define CAPTURE_CH_LV   0x0002U
-#define CAPTURE_CH_PL   0x0004U
-#define CAPTURE_CH_TR   0x0008U
-#define CAPTURE_CH_RV   0x0010U
-#define CAPTURE_CH_PR   0x0020U
-#define CAPTURE_CH_YAW  0x0040U
-#define CAPTURE_CH_NAVE 0x0080U
-#define CAPTURE_CH_LERR 0x0100U
-#define CAPTURE_CH_ALL  0x01FFU
+板载高速捕获模块连同 `X` 命令、`CAP_META`/`CAP_SAMPLE`/`CAP_END` 帧类型和 24 KB RAM 缓冲已整体移除，原因见 3.3.0：二进制 + DMA 之后实时流本身即 100 Hz 无损，而那 24 KB 把栈可用余量压到 1587 字节，导致栈越界改写 `.data` 中的整车参数。
 
-typedef enum
-{
-    CAPTURE_STATE_IDLE = 0,
-    CAPTURE_STATE_ARMED,
-    CAPTURE_STATE_RUNNING,
-    CAPTURE_STATE_FULL,
-    CAPTURE_STATE_DUMPING
-} Capture_State_t;
+需要它的历史实现时，在 `fix/ram-stack-overflow` 分支删除该模块的那个提交之前取。
 
-void Capture_Init(void);
-uint8_t Capture_Arm(uint16_t channelMask);
-void Capture_Trigger(void);
-void Capture_Update(uint32_t elapsedMs);
-void Capture_Stop(void);
-uint16_t Capture_StartDump(void);
-void Capture_DumpNext(void);
-Capture_State_t Capture_GetState(void);
-uint16_t Capture_GetSampleCount(void);
-uint16_t Capture_GetCapacity(void);
-uint16_t Capture_GetChannelMask(void);
-```
-
-板载高速捕获（通道 B），设计动机见 3.3.0。几个必须遵守的约束：
-
-- **`Capture_Update()` 必须排在 `MotionManager_Update()` 之后调用。** 目标速度和输出 PWM 都是本拍刚算出的，提前采会记录到上一拍的值，整条阶跃曲线向后偏移一个控制周期（10 ms），上升时间会被算长。
-- **`Capture_Trigger()` 由运动命令在启动成功后调用**，仅在 `ARMED` 状态生效，其余状态是空操作。这样捕获的第一个样本恰好是阶跃起点。
-- 缓冲写满即停（进入 `FULL`），不做环形覆盖——覆盖会让时间轴失去连续性，分析阶跃时更麻烦。
-- 内部逐字节读写缓冲，不按 `float*` 解引用：样本大小随通道数变化，奇数偏移上直接解引用会触发 Cortex-M0+ 的非对齐访问异常。
+**这里有一条对以后仍然适用的教训：** 任何新增的大型静态缓冲，都要同时核对 `Debug/ArcLineTest.map` 里 `.data` 末尾到 `.stack` 之间还剩多少空隙——那才是栈真正能用的空间。`--stack_size` 由 SysConfig 按器件硬编码生成到 `device_linker.cmd`（本器件为 512），既不在 `main.syscfg` 里、改了也会被下次构建覆盖，指望它报错是靠不住的。
 
 ### 5.8 `Application/Servo/Servo.h`
 
@@ -1029,13 +997,38 @@ float Odometry_GetSpeedL(void);
 float Odometry_GetSpeedR(void);
 ```
 
+### 5.11 `Hardware/Motor/Stepper.h`
+
+```c
+void Stepper_Init(void);
+void Stepper_Update(uint8_t elapsedTicks);
+Stepper_Result_t Stepper_Enable(bool enable);
+Stepper_Result_t Stepper_MoveBySteps(
+    int32_t steps, const Stepper_Profile_t *profile);
+Stepper_Result_t Stepper_MoveToSteps(
+    int32_t target, const Stepper_Profile_t *profile);
+Stepper_Result_t Stepper_MoveByAngle(
+    float degrees, const Stepper_Profile_t *profile);
+Stepper_Result_t Stepper_MoveToAngle(
+    float degrees, const Stepper_Profile_t *profile);
+void Stepper_Stop(void);
+void Stepper_EmergencyStop(void);
+Stepper_Result_t Stepper_SetCurrentPosition(float degrees);
+bool Stepper_IsBusy(void);
+void Stepper_GetStatus(Stepper_Status_t *status);
+```
+
+`Stepper_Init()`在测试入口和完整`App_Init()`中均可调用。资源固定为ST=PB8、DIR=PB9、EN=PB12、AB=PA13/PA29、绝对PWM=PB13；PWM连续3帧有效后建立绝对角基准，上电自动运动到139.7°。
+
 转换数组从前到后就是优先级。动作运行时只检查打断转换，动作完成后只检查正常转换；每个系统节拍最多转换一次。`C0` 不受 `interruptible` 限制，始终停止并复位任务。
 
-### 7.2 Accomplish 状态图入口
+### 7.2 Accomplish 入口
 
 ```c
 const Mission_GraphDefinition_t *Accomplish25E_GetMissionGraph(void); /* 返回 25E 静态状态图。 */
-const Mission_GraphDefinition_t *Accomplish25H_GetMissionGraph(void); /* 返回当前 25H 静态状态图。 */
+const Mission_GraphDefinition_t *Accomplish25H_GetMissionGraph(void); /* 返回保留的 25H 静态状态图。 */
+void Accomplish26H_Init(void); /* 初始化当前 26H 单圈控制器。 */
+void Accomplish26H_Update(const App_UpdateContext_t *context); /* 更新巡线、终点软停与计时。 */
 const Mission_GraphDefinition_t *BrushlessMotorTest_GetMissionGraph(void); /* 返回 F32C 测试状态图。 */
 ```
 
@@ -1048,16 +1041,16 @@ const Mission_GraphDefinition_t *BrushlessMotorTest_GetMissionGraph(void); /* �
 | `K230Link.h` | `K230_LINK_MAX_PAYLOAD_LENGTH` | `32U` | 允许接收的最大 PAYLOAD 长度 |
 | `K230Link.h` | `K230_LINK_READY_RETRY_TICKS` | `10U` | 100 Hz 下每 100 ms 重发 READY |
 | `K230Link.h` | `K230_LINK_RX_BUDGET_BYTES` | `128U` | 每拍 K230 接收解析预算，防止异常输入独占主循环 |
-| `K230Link.h` | `K230_LINK_MESSAGE_READY/READY_ACK/TARGET/BALL_POSITION` | `0x01U` / `0x02U` / `0x10U` / `0x14U` | 消息类型编号 |
-| `K230Link.h` | `K230_LINK_BALL_POSITION_SCALE` | `100` | 钢珠位置定点缩放 |
-| `K230Link.h` | `K230_LINK_BALL_POSITION_MIN/MAX/INVALID` | `-5000` / `+5000` / `-32768` | 钢珠位置有效范围和丢球哨兵 |
+| `K230Link.h` | `K230_LINK_MESSAGE_READY/READY_ACK/TARGET/LANE/BALL_POSITION` | `0x01U` / `0x02U` / `0x10U` / `0x13U` / `0x14U` | 消息类型编号 |
+| `K230Link.h` | `K230_LINK_BALL_POSITION_MIN/MAX/INVALID` | `-5000` / `+5000` / `-32768` | 水管全长 250 mm 映射到 `-50.00~+50.00` 后的 100 倍定点范围和丢球哨兵 |
 | `DebugDisplay.h` | `DEBUG_DISPLAY_REFRESH_TICKS` | `10U` | OLED 10 Hz 刷新间隔 |
 | `MotionStraight.h` | `MOTION_STRAIGHT_*` | 见 6.2 | 航向 PD、直线速度规划、减速起点比例和距离允许误差 |
 | `MotionManager.h` | `MOTION_MANAGER_BRAKE_*` / `MOTION_MANAGER_SPEED_MAX_MMPS` | 见 6.2.1 | 定距软停后的 PWM 释放与短暂主动刹车时间；W 恒速调试模式速度上限 |
 | `MotionWheel.h` | `MOTION_WHEEL_*` | 见 6.1 | MotionStraight、MotionLine 与 Nav 共用的速度 PI、前馈和 PWM 限幅 |
-| `MotionLine.h` | `MOTION_LINE_*` | 见 6.3 | 灰度权重、最大速度调整比例、巡线速度上限和丢线确认节拍 |
+| `MotionLine.h` | `MOTION_LINE_*` | 见 6.3 | 六路权重滤波、曲线限速、加减速度、差速限变化率和丢线确认节拍 |
 | `Accomplish/25E.h` | `ACCOMPLISH_25E_*` | 见 6.5 | 25E 启动按键、直线距离与速度、入线确认、巡线速度和转向参数 |
 | `Accomplish/25H.h` | `ACCOMPLISH_25H_*` | 见 6.6 | 25H 启动按键、左侧标志掩码、巡线、150 mm 直行和绝对左转参数 |
+| `Accomplish/26H.h` | `ACCOMPLISH_26H_*` | 见头文件 | 单圈速度、A 点识别、软停偏移、静止确认与 KEY1+KEY2 急停参数 |
 | `Accomplish/Test.h` | `ACCOMPLISH_TEST_*` | 见 6.7 | KEY2 启动的定距软停与短刹测试参数 |
 | `Nav.h` | `NAV_*` | 见 6.4 | 双轮转向的加减速、低速区、到角误差和稳定判定 |
 | `Servo.h` | `SERVO_PHYSICAL_RANGE_DEG` | `270U` | 脉宽换算对应的舵机物理量程 |
@@ -1067,17 +1060,15 @@ const Mission_GraphDefinition_t *BrushlessMotorTest_GetMissionGraph(void); /* �
 | `Servo.h` | `SERVO_HORIZONTAL_MIN_ANGLE` / `MAX` / `DEFAULT` | `0U` / `270U` / `135U` | 横向轴限位与上电角度 |
 | `Heading.h` | `HEADING_CALIBRATION_SAMPLES` | `400U` | 开机零漂采样数 |
 | `Heading.h` | `HEADING_CALIBRATION_INTERVAL_MS` | `2U` | 零漂采样间隔 |
-| `Odometry.h` | `Odometry_CountsPerMM` | `float`，初值 `6.23f` | 每毫米编码器计数，必须按实车标定 |
+| `Odometry.h` | `Odometry_CountsPerMM` | `float`，初值 `6.44086f` | 1:28 减速比、65 mm 轮胎的每毫米编码器计数初值，必须按实车标定 |
+| `Stepper.h` | `STEPPER_ENABLED` / `STEPPER_FEEDBACK_ENABLED` | `1U` / `1U` | 启用步进驱动、PWM绝对角和AB反馈 |
+| `Stepper.h` | `STEPPER_STEPS_PER_REVOLUTION` 等参数 | 3200 ST/rev、4096 AB count/rev | ST=PB8、DIR=PB9、EN=PB12、AB=PA13/PA29、绝对PWM=PB13 |
 | `Serial.h` | `SERIAL1_RX_BUFFER_SIZE` | `1024U` | `Serial1`/UART2 DAPLink 环形接收缓冲区容量 |
-| `Serial.h` | `SERIAL2_RX_BUFFER_SIZE` | `256U` | `Serial2`软件接口保留容量；当前无UART1硬件实例 |
-| `Serial.h` | `SERIAL3_RX_BUFFER_SIZE` / `SERIAL3_TX_BUFFER_SIZE` | `256U` / `256U` | `Serial3`/UART0 K230接收与DMA发送缓冲区容量 |
+| `Serial.h` | `SERIAL2_RX_BUFFER_SIZE` | `256U` | `Serial2` 软件接口保留容量；当前无 UART1 硬件实例 |
+| `Serial.h` | `SERIAL3_RX_BUFFER_SIZE` / `SERIAL3_TX_BUFFER_SIZE` | `256U` / `256U` | `Serial3`/UART0 K230 接收与 DMA 发送缓冲区容量 |
 | `Serial.h` | `Serial1_RxFlag` | `volatile uint8_t` | PC/网页链路存在未读数据标志 |
 | `PWM.h` | `PWM_MAX_DUTY` | `1000U` | 电机 PWM 指令绝对值上限 |
-| `Stepper.h` | `STEPPER_AUTO_START_ENABLED` / `STEPPER_INITIAL_ANGLE_DEG` | `1U` / `139.7f` | 步进上电自动使能及首次绝对角就绪后的目标相位 |
-| `Stepper.h` | `STEPPER_MIN_ANGLE_DEG` / `STEPPER_MAX_ANGLE_DEG` | `80.9f` / `210.0f` | 步进软件运动命令的绝对目标限位 |
-| `Stepper.h` | `STEPPER_STARTUP_*` | `200U` / `3200U` / `6400U` | 自动启动及当前测试按键共用的梯形速度参数 |
-| `Graydetect.h` | `GRAYDETECT_ENABLED` | `0U` | 灰度硬件总开关；当前关闭，所有读取返回0 |
-| `Graydetect.h` | `GRAY_SIDE_ALL/LEFT/RIGHT` | `0/1/2` | 保留的灰度区域选择值，当前不生效 |
+| `Graydetect.h` | `GRAY_CHANNEL_COUNT` / `GRAYDETECT_I2C_ADDRESS` / `GRAYDETECT_STATE_REGISTER` | `6U` / `0x5C` / `0x05` | 六路红外通道数、I2C 地址和状态寄存器 |
 | `OLED.h` | `OLED_8X16` / `OLED_6X8` | `8U` / `6U` | 字体尺寸选择 |
 | `OLED.h` | `OLED_UNFILLED` / `OLED_FILLED` | `0U` / `1U` | 图形空心/实心选择 |
 | `OLED_Data.h` | `OLED_F8x16`、`OLED_F6x8`、`OLED_CF16x16`、`Diode` | `const` 字模/位图数组 | OLED 公共显示数据 |
@@ -1101,11 +1092,15 @@ const Mission_GraphDefinition_t *BrushlessMotorTest_GetMissionGraph(void); /* �
 
 | 宏 | 当前值 |
 |---|---:|
-| `MOTION_WHEEL_KP` / `MOTION_WHEEL_KI` / `MOTION_WHEEL_INTEGRAL_LIMIT` | `1.0f` / `0.0f` / `0.0f` |
-| `MOTION_WHEEL_FEEDFORWARD_PWM_PER_MMPS` / `MOTION_WHEEL_STATIC_FRICTION_PWM` | `2.0f` / `0.0f` |
+| `MOTION_WHEEL_KP` / `MOTION_WHEEL_KI` / `MOTION_WHEEL_INTEGRAL_LIMIT` | `0.6f` / `0.0f` / `0.0f` |
+| `MOTION_WHEEL_FEEDFORWARD_PWM_PER_MMPS` / `MOTION_WHEEL_STATIC_FRICTION_PWM` | `0.45181f` / `21.0445f` |
+| `MOTION_WHEEL_LEFT_FEEDFORWARD_PWM_PER_MMPS` / `MOTION_WHEEL_LEFT_STATIC_FRICTION_PWM` | `0.44573f` / `19.884f` |
+| `MOTION_WHEEL_RIGHT_FEEDFORWARD_PWM_PER_MMPS` / `MOTION_WHEEL_RIGHT_STATIC_FRICTION_PWM` | `0.45788f` / `22.205f` |
 | `MOTION_WHEEL_MAX_COMMAND_PWM` | `1000.0f` |
 
-前 5 个公共宏是左右轮独立运行时变量的初始默认值。新调参使用 `K17~K21`（lwkp/lwki/lwil/lwff/lwsf）和 `K22~K26`（rwkp/rwki/rwil/rwff/rwsf）；`K1~K5` 保留为同时写两轮的兼容入口。`MAX_COMMAND_PWM` 保持编译期固定。
+`Odometry_CountsPerMM` 和速度前馈按旧 1:20、48 mm 轮胎标定值乘以 `(28/20) × (48/65) = 1.033846` 得到。该换算假设电机轴编码器分辨率不变；更换电机后应先用 `K16`/网页里程标定复核 `cpm`，再分别重测 `lwff/lwsf` 与 `rwff/rwsf`。Kp、Ki、静摩擦和任务里的 mm/s 目标不能只靠机械比例可靠推导，因此暂不改动。
+
+前 5 个公共宏是左右轮独立运行时变量的兼容参考值。新调参使用 `K17~K21`（lwkp/lwki/lwil/lwff/lwsf）和 `K22~K26`（rwkp/rwki/rwil/rwff/rwsf）；`K1~K5` 保留为同时写两轮的兼容入口。`MAX_COMMAND_PWM` 保持编译期固定。
 
 ### 6.2 `MotionStraight.h` 参数
 
@@ -1148,15 +1143,18 @@ const Mission_GraphDefinition_t *BrushlessMotorTest_GetMissionGraph(void); /* �
 
 ### 6.3 `MotionLine.h` 参数
 
-以下宏位于 `Application/Control/MotionLine.h` 开头。当前 25H 通过 MotionManager 启动巡线，连续丢线确认后把巡线标记为正常完成并返回等待：
+以下宏位于 `Application/Control/MotionLine.h` 开头。26H 与保留的 25H 都通过 MotionManager 启动巡线；基准速度、弯道限速、差速修正均经连续滤波/斜坡，不应循环调用 `MotionManager_StartLine()`：
 
 | 宏 | 单位 | 当前值 | 作用 |
 |---|---:|---:|---|
-| `MOTION_LINE_OUTER_WEIGHT` | 无 | `6` | 左右最外侧灰度权重的绝对值，对应最大修正力度 |
-| `MOTION_LINE_INNER_WEIGHT` | 无 | `3` | 左右内侧灰度权重的绝对值，对应最大修正力度的一半 |
+| `MOTION_LINE_OUTER_WEIGHT` | 无 | `6` | 六路最外侧红外权重的绝对值，对应最大修正力度 |
+| `MOTION_LINE_INNER_WEIGHT` | 无 | `3` | 六路内侧红外权重的绝对值，对应最大修正力度的一半 |
 | `MOTION_LINE_MAX_ADJUST_RATIO` | 比例 | `0.2f` | 权重达到正负 6 时，一侧减去、另一侧增加的巡线速度比例 |
 | `MOTION_LINE_MAX_SPEED_MMPS` | mm/s | `1000.0f` | 巡线请求软件上限；应结合公共轮速前馈和最终 PWM 上限设置 |
-| `MOTION_LINE_LOST_CONFIRM_TICKS` | 100 Hz 节拍 | `50U` | 连续所有有效灰度通道全白达到 50 次后确认丢线，当前约为 500 ms |
+| `MOTION_LINE_ACCELERATION_MMPS2` / `DECELERATION` | mm/s² | `300` / `360` | 起步、入弯、终点软停的基准速度斜坡 |
+| `MOTION_LINE_CURVE_MIN_SPEED_RATIO` | 比例 | `0.68f` | 最大红外横向误差时相对请求速度的下限；26H 的 450 mm/s 约降到 306 mm/s |
+| `MOTION_LINE_WEIGHT_FILTER_ALPHA` / `MAX_ADJUST_RATE_MMPS2` | — / mm/s² | `0.25` / `1200` | 六路离散误差低通与左右差速修正变化率上限；循迹不使用 IMU |
+| `MOTION_LINE_LOST_CONFIRM_TICKS` | 100 Hz 节拍 | `8U` | 连续所有有效红外通道全白达到 8 次后确认丢线，当前约为 80 ms |
 
 `MAX_ADJUST_RATIO` 是运行时变量 `MotionLine_TuneMaxAdjustRatio` 的上电默认值（`K9` lra）；另有仅运行时的权重变化率阻尼 `MotionLine_TuneWeightKd`（`K10` lkd，默认 0，行为与原纯离散权重差速一致）。
 
@@ -1205,7 +1203,7 @@ const Mission_GraphDefinition_t *BrushlessMotorTest_GetMissionGraph(void); /* �
 
 ### 6.7 `Accomplish/Test.h` 参数
 
-`Test.c/.h` 只用于上机观察短刹时的滑行量。它已包含在 CCS 工程中，但默认 `main.c` 仍加载 25H；测试时按头文件注释临时改为加载 `AccomplishTest_GetMissionGraph()`，完成后恢复 25H。
+`Test.c/.h` 只用于上机观察短刹时的滑行量。它已包含在 CCS 工程中；当前 `MAIN_STEPPER_TEST_MODE=1U` 运行步进测试，切换到完整 26H 模式后也不会自动加载该独立测试图。需要测试短刹时应显式接入 `AccomplishTest_GetMissionGraph()`，完成后恢复对应入口。
 
 | 宏 | 单位 | 当前值 | 作用 |
 |---|---:|---:|---|

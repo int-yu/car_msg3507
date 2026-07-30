@@ -3,9 +3,12 @@
 #include "Application/Comms/CarLink.h"
 #include "Application/Comms/K230Link.h"
 #include "Application/Core/CarRole.h"
+#include "Application/Control/BallSequence.h"
+#include "Application/Control/BallHold.h"
+#include "Application/Control/BallSensor.h"
+#include "Application/Control/BeamActuator.h"
 #include "Application/Control/MotionManager.h"
 #include "Application/Debug/DebugDisplay.h"
-#include "Application/Debug/Capture.h"
 #include "Application/Debug/Telemetry.h"
 #include "Application/Servo/Servo.h"
 #include "Application/State/Heading.h"
@@ -21,9 +24,9 @@
 #include "ti_msp_dl_config.h"
 #include <stddef.h>
 
-/* KEY1 在按键位图中是 bit0（Mission 用它启动任务）；KEY2 是 bit1，
- * 在这里作为车载物理急停，与远端 C0 等价。 */
-#define APP_STOP_KEY_MASK 0x02U
+/* KEY1 是 bit0，KEY2 是 bit1。两键同时按下才是车载物理急停，
+ * 与远端 C0 等价；KEY2 单独按下保留给任务自行使用。 */
+#define APP_STOP_KEY_CHORD_MASK (0x01U | 0x02U)
 
 static uint8_t s_previousKeyMask;
 static MotionManager_Error_t s_previousMotionError;
@@ -152,6 +155,9 @@ void App_Init(void)
     CarLink_Init();
     Odometry_Init();
     Stepper_Init();
+    /* 摆杆执行层接管步进：Stepper_Init() 必须先于它完成。 */
+    BeamActuator_Init();
+    BallSensor_Init();
 
     DebugDisplay_Init();
     Heading_Init();
@@ -164,7 +170,6 @@ void App_Init(void)
 
     BluetoothDebug_Init();
     Telemetry_Init();
-    Capture_Init();
     if (MotionManager_Init() != MOTION_MANAGER_RESULT_OK)
     {
         Beep_Long();
@@ -200,8 +205,10 @@ uint8_t App_Update(App_UpdateContext_t *context)
 
     Heading_Update(context->dt);
     Odometry_Update(elapsedTicks);
+    /* 六路红外 I2C 只在这里采样一次；巡线、任务、OLED 和遥测随后读取同一帧缓存。 */
+    Graydetect_Update();
     Stepper_Update(elapsedTicks);
-    /* 云台 F32C 仍停用：其原逻辑串口 Serial2 当前用于 HC05 CarLink。 */
+    /* 云台 F32C 仍停用；步进资源已迁移到独立的新引脚，Serial2 仍无硬件实例。 */
     /* Gimbal_Update(context->dt); */
 
     keyMask = Key_GetPressedMask();
@@ -212,15 +219,19 @@ uint8_t App_Update(App_UpdateContext_t *context)
 
     CarLink_Update(elapsedTicks);
     K230Link_Update(elapsedTicks);
+    /* 必须在 K230Link_Update() 之后：钢球位置来自本拍刚解析的 TARGET 帧。 */
+    BallSensor_Update(context->dt);
 
     BluetoothDebug_Update(
         elapsedTicks, (MotionManager_IsBusy() == 0U) ? 1U : 0U);
     context->hasBluetoothSignal =
         BluetoothDebug_PopSignal(&context->bluetoothSignal);
 
-    /* KEY2 车载物理急停：合成一条 C0 停车信号，让 App 与 Mission 走同一套
-     * 全局停车 + 复位到等待的流程，效果与远端 C0 完全一致。 */
-    if ((context->pressedEdges & APP_STOP_KEY_MASK) != 0U)
+    /* KEY1+KEY2 车载物理急停：只在组合刚形成时合成一次 C0，避免按住时
+     * 每拍重复发事件。Accomplish26H 随后根据 pressedKeys 冻结计时。 */
+    if ((((context->pressedKeys & APP_STOP_KEY_CHORD_MASK) ==
+          APP_STOP_KEY_CHORD_MASK)) &&
+        ((context->pressedEdges & APP_STOP_KEY_CHORD_MASK) != 0U))
     {
         context->hasBluetoothSignal = 1U;
         context->bluetoothSignal = 0U;
@@ -233,6 +244,11 @@ uint8_t App_Update(App_UpdateContext_t *context)
     {
         MotionManager_Stop();
         Motor_StopAll();
+        /* 摆杆闭环必须和步进一起停：否则任务层会继续往一个已急停的
+         * 步进写倾角，解除急停后摆杆会突然跳到那个累积的目标。
+         * 要求 3 和要求 4 都要停——只停一个，另一个会继续写倾角。 */
+        BallSequence_Stop();
+        BallHold_Stop();
         Stepper_EmergencyStop();
         /* (void)Gimbal_Disable();  云台已停用 */
     }
@@ -279,13 +295,7 @@ uint8_t App_Update(App_UpdateContext_t *context)
         }
     }
 
-    /* 必须在 MotionManager_Update() 之后：目标速度和输出 PWM 都是本拍算出的，
-     * 提前采会记录到上一拍的值，阶跃起点会整体偏移一个控制周期。 */
-    Capture_Update((uint32_t)elapsedTicks * 10U);
-
-    Telemetry_Update(elapsedTicks, context->pressedKeys);
-    /* dump 与实时流互斥：捕获输出期间车已停稳，让它独占串口。 */
-    Capture_DumpNext();
+    /* 遥测由 main 在题目控制器更新后采样，确保底盘和摆球都是本拍值。 */
 
     for (index = 0U; index < elapsedTicks; index++)
     {

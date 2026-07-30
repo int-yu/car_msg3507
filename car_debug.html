@@ -27,7 +27,7 @@ body {
     margin: 0;
     padding: 14px 16px;
     min-height: 100dvh; height: 100dvh; overflow: hidden;
-    display: grid; grid-template-rows: auto auto minmax(0, 1fr);
+    display: grid; grid-template-rows: auto auto auto minmax(0, 1fr);
     background:
         radial-gradient(1200px 400px at 20% -10%, #16233a55, transparent),
         var(--bg);
@@ -76,6 +76,76 @@ details.panel[open] > summary { margin-bottom: 10px; }
     background: #151b25;
     box-shadow: 0 4px 18px #000a;
 }
+[hidden] { display: none !important; }
+.view-tabs {
+    display: flex; gap: 6px; align-items: center; margin-bottom: 10px;
+    border-bottom: 1px solid var(--line);
+}
+.view-tab {
+    min-height: 38px; padding: 7px 14px; border: 0; border-bottom: 2px solid transparent;
+    border-radius: 5px 5px 0 0; background: transparent; color: var(--dim);
+}
+.view-tab:hover:not(:disabled) { background: #171e29; }
+.view-tab.active {
+    color: var(--fg); border-bottom-color: var(--accent); background: #171e29;
+    font-weight: bold;
+}
+.video-workspace {
+    display: grid; grid-template-columns: minmax(0, 1fr) minmax(280px, 340px);
+    gap: 14px; min-height: 0;
+}
+.video-stage {
+    min-width: 0; min-height: 0; display: grid;
+    grid-template-rows: auto auto auto minmax(0, 1fr);
+    border: 1px solid var(--line); border-radius: 8px; overflow: hidden;
+    background: #070a0f;
+}
+.video-toolbar {
+    display: grid; grid-template-columns: minmax(220px, 1fr) auto auto;
+    gap: 7px; padding: 10px; background: #151b25; border-bottom: 1px solid var(--line);
+}
+.video-toolbar input[type=text] { width: 100%; }
+.video-status {
+    min-height: 31px; padding: 6px 11px; color: var(--dim);
+    background: #10141c; border-bottom: 1px solid var(--line);
+}
+.video-status.ok { color: var(--ok); }
+.video-status.err { color: var(--err); }
+.video-view-tools {
+    display: flex; flex-wrap: wrap; align-items: center; gap: 7px;
+    padding: 7px 10px; background: #151b25; border-bottom: 1px solid var(--line);
+}
+.video-view-tools input[type=range] { width: clamp(90px, 12vw, 160px); }
+.video-view-tools output {
+    min-width: 44px; color: var(--dim); text-align: center;
+    font-variant-numeric: tabular-nums;
+}
+.video-view-tools button { min-width: 34px; padding-inline: 9px; }
+.video-screen {
+    position: relative; min-height: 280px; display: grid; place-items: center;
+    overflow: hidden; background: #020306; outline: none;
+    touch-action: none; user-select: none;
+}
+.video-screen:focus-visible { box-shadow: inset 0 0 0 2px var(--accent); }
+.video-screen.can-pan { cursor: grab; }
+.video-screen.dragging { cursor: grabbing; }
+#videoFeed {
+    display: none; width: auto; height: auto; max-width: none; max-height: none;
+    transform-origin: center center; will-change: transform; pointer-events: none;
+    user-select: none; -webkit-user-drag: none;
+}
+.video-placeholder { max-width: 420px; padding: 24px; color: var(--dim); text-align: center; }
+.video-controls {
+    min-width: 0; min-height: 0; overflow-y: auto; overscroll-behavior: contain;
+    scrollbar-width: thin; scrollbar-color: #3b475c transparent;
+}
+.video-controls .panel:last-child { margin-bottom: 0; }
+#videoDrivePanel.armed {
+    border-color: var(--accent); box-shadow: 0 0 0 1px var(--accent-dim), 0 2px 10px #0006;
+}
+.video-drive-pad { max-width: 250px; margin: 10px auto 8px; }
+.video-drive-key { touch-action: none; }
+.video-capture-count { width: 64px !important; }
 button {
     background: #232b3a; color: var(--fg); border: 1px solid var(--line);
     border-radius: 6px; padding: 6px 12px; cursor: pointer; font-size: 13px;
@@ -147,6 +217,36 @@ kbd {
 .wheel-warning { color: var(--warn); font-size: 12px; margin-top: 6px; }
 .quick-speeds { display: flex; gap: 4px; flex-wrap: wrap; align-items: center; margin: 4px 0 8px; }
 .quick-speeds button { padding: 2px 7px; font-size: 12px; }
+.line-session-tools { margin: 8px 0; padding: 9px; border: 1px solid var(--line); border-radius: 8px; background: #0b111a; }
+.line-monitor-head { display: flex; justify-content: space-between; gap: 8px; align-items: baseline; margin-bottom: 7px; }
+.line-sensors { display: grid; grid-template-columns: repeat(6, minmax(48px, 1fr)); gap: 5px; }
+.line-sensor { display: grid; place-items: center; min-height: 42px; border: 1px solid var(--line); border-radius: 6px; background: #101722; color: var(--dim); }
+.line-sensor b { font: 12px Consolas, monospace; }
+.line-sensor small { font-size: 10px; }
+.line-sensor.active { border-color: var(--warn); background: #332816; color: var(--warn); box-shadow: inset 0 0 0 1px #e0a13c55; }
+.line-live-grid { display: grid; grid-template-columns: repeat(3, minmax(100px, 1fr)); gap: 6px; margin: 7px 0; }
+.line-live { border: 1px solid var(--line); border-radius: 6px; padding: 6px 8px; min-width: 0; }
+.line-live small { display: block; color: var(--dim); font-size: 10px; }
+.line-live b { display: block; margin-top: 2px; color: var(--fg); font: 13px Consolas, monospace; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.line-run-summary { margin: 7px 0 9px; color: var(--dim); font: 12px/1.55 Consolas, monospace; }
+.line-run-summary.warn { color: var(--warn); }
+.ball-session-tools { margin: 8px 0; padding: 9px; border: 1px solid var(--line); border-radius: 8px; background: #0b111a; }
+.ball-monitor-head { display: flex; justify-content: space-between; gap: 8px; align-items: baseline; margin-bottom: 7px; }
+.ball-live-grid { display: grid; grid-template-columns: repeat(4, minmax(100px, 1fr)); gap: 6px; margin: 7px 0; }
+.ball-live { border: 1px solid var(--line); border-radius: 6px; padding: 6px 8px; min-width: 0; }
+.ball-live small { display: block; color: var(--dim); font-size: 10px; }
+.ball-live b { display: block; margin-top: 2px; color: var(--fg); font: 13px Consolas, monospace; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.ball-track { display: grid; grid-template-columns: auto minmax(140px, 1fr) auto; gap: 8px; align-items: center; margin: 9px 0 5px; color: var(--dim); font: 11px Consolas, monospace; }
+.ball-track-rail { position: relative; height: 24px; border: 1px solid var(--line); border-radius: 6px; background: #101722; }
+.ball-track-rail::before { content: ''; position: absolute; left: 50%; top: 3px; bottom: 3px; width: 1px; background: var(--line); }
+.ball-marker { position: absolute; top: 50%; left: 50%; width: 11px; height: 11px; transform: translate(-50%, -50%); border-radius: 50%; transition: left .12s linear; }
+.ball-marker.position { background: var(--warn); border: 1px solid #ffe0a6; z-index: 2; }
+.ball-marker.reference { width: 15px; height: 15px; background: transparent; border: 2px solid var(--accent); z-index: 1; }
+.ball-track-legend { display: flex; gap: 12px; flex-wrap: wrap; color: var(--dim); font-size: 11px; }
+.ball-track-key { display: inline-flex; align-items: center; gap: 5px; }
+.ball-track-key::before { content: ''; width: 9px; height: 9px; border-radius: 50%; background: var(--warn); }
+.ball-track-key.reference::before { box-sizing: border-box; width: 11px; height: 11px; background: transparent; border: 2px solid var(--accent); }
+#ballTaskPanel .ball-live-grid { grid-template-columns: repeat(2, minmax(100px, 1fr)); }
 .known-hardware { color: var(--warn); }
 #sessParams { display: flex; gap: 6px 10px; flex-wrap: wrap; margin: 6px 0 2px; }
 .focus-shell { border: 1px solid var(--accent-dim); border-radius: 9px; padding: 10px; background: #0e1724; margin-bottom: 10px; }
@@ -219,9 +319,19 @@ kbd {
         scrollbar-gutter: auto; padding-right: 0;
     }
     .topbar { position: static; }
+    .video-workspace { grid-template-columns: 1fr; }
+    .video-stage { min-height: min(68vh, 620px); }
+    .video-controls { overflow: visible; }
+    .line-live-grid { grid-template-columns: repeat(2, minmax(120px, 1fr)); }
+    .ball-live-grid { grid-template-columns: repeat(2, minmax(120px, 1fr)); }
 }
 @media (max-width: 540px) {
     body { padding: 8px; }
+    .view-tabs { overflow-x: auto; }
+    .view-tab { flex: 1 0 auto; }
+    .video-toolbar { grid-template-columns: 1fr 1fr; }
+    .line-sensors { grid-template-columns: repeat(3, 1fr); }
+    .video-toolbar input { grid-column: 1 / -1; }
     .drive-decks { grid-template-columns: minmax(0, 240px); }
     .wheel-map-grid { grid-template-columns: 1fr; }
     .focus-param-grid { grid-template-columns: 1fr; }
@@ -234,6 +344,11 @@ kbd {
 
 <h1>小车串口调试台 <span class="hint" style="font-weight:normal">无线 DAPLink 串口 · 115200 8N1</span></h1>
 
+<nav class="view-tabs" aria-label="工作区切换">
+    <button type="button" class="view-tab active" data-workspace-view="debug" aria-selected="true">第一部分 · 调试工作台</button>
+    <button type="button" class="view-tab" data-workspace-view="video" aria-selected="false">第二部分 · 视频遥控</button>
+</nav>
+
 <div class="panel row topbar">
     <button id="btnConnect" class="primary">连接串口</button>
     <button id="btnDisconnect" disabled>断开</button>
@@ -243,7 +358,7 @@ kbd {
     <button id="btnStop" class="danger" disabled>急停 C0</button>
 </div>
 
-<div class="grid">
+<div class="grid" id="debugView">
 <div class="scroll-column">
 
     <div class="panel">
@@ -351,7 +466,7 @@ kbd {
     </div>
 
     <details class="panel" id="advancedParams">
-        <summary>全部 K 参数 <small>高级工具 · 默认收起 · 写入即生效</small></summary>
+        <summary>全部 K 参数 <small>高级工具 · 默认收起 · 巡线参数下次启动生效</small></summary>
         <div class="row">
             <button id="btnParamRefresh" disabled>读取全部 K?</button>
             <button id="btnParamSave">存到浏览器</button>
@@ -386,14 +501,14 @@ kbd {
     </details>
 
     <details class="panel">
-        <summary>舵机 <small>当前不参与调试</small></summary>
+        <summary>舵机 <small>50 Hz</small></summary>
         <div class="row">
-            <label style="width:38px">纵向</label>
+            <label style="width:72px">纵向 PA27</label>
             <input type="range" id="servoO" min="0" max="270" value="135" style="flex:1" disabled>
             <b id="servoOVal" style="width:34px;text-align:right">135</b>
         </div>
         <div class="row">
-            <label style="width:38px">横向</label>
+            <label style="width:72px">横向 PA26</label>
             <input type="range" id="servoD" min="0" max="270" value="135" style="flex:1" disabled>
             <b id="servoDVal" style="width:34px;text-align:right">135</b>
         </div>
@@ -433,12 +548,69 @@ kbd {
             <option value="line">巡线（N 启动）</option>
         </select>
         <div class="row">
-            <label id="sessAmpLabel">目标mm/s</label>
-            <input type="number" id="sessAmp" value="300">
-            <span id="sessDurWrap"><label>时长s</label>
+            <span id="sessAmpWrap"><label id="sessAmpLabel">目标mm/s</label>
+                <input type="number" id="sessAmp" value="300"></span>
+            <span id="sessDurWrap"><label id="sessDurLabel">时长s</label>
                 <input type="number" id="sessDur" value="3" min="1" max="30" style="width:46px"></span>
             <button id="btnSessStart" class="primary" disabled>开始试验</button>
             <button id="btnSessAbort" disabled>结束</button>
+        </div>
+        <div id="lineSessionTools" class="line-session-tools" style="display:none">
+            <div class="line-monitor-head">
+                <b id="lineMonitorTitle">要求 2 巡线 · KEY1 启动快照</b>
+                <span class="hint">CH1 左 · CH6 右 · 全 0 连续 80 ms 判丢线</span>
+            </div>
+            <div id="lineRunConfigSummary" class="line-run-summary">读取参数后显示下一次 KEY1 的速度与距离配置。</div>
+            <div id="lineSensors" class="line-sensors">
+                <span class="line-sensor" data-line-channel="0"><small>左外</small><b>CH1</b></span>
+                <span class="line-sensor" data-line-channel="1"><small>左中</small><b>CH2</b></span>
+                <span class="line-sensor" data-line-channel="2"><small>左内</small><b>CH3</b></span>
+                <span class="line-sensor" data-line-channel="3"><small>右内</small><b>CH4</b></span>
+                <span class="line-sensor" data-line-channel="4"><small>右中</small><b>CH5</b></span>
+                <span class="line-sensor" data-line-channel="5"><small>右外</small><b>CH6</b></span>
+            </div>
+            <div class="line-live-grid">
+                <span class="line-live"><small>压线位置</small><b id="lineLiveState">—</b></span>
+                <span class="line-live"><small>权重误差 lerr</small><b id="lineLiveError">—</b></span>
+                <span class="line-live"><small>基准速度 (TL+TR)/2</small><b id="lineLiveBase">—</b></span>
+                <span class="line-live"><small>目标 TL / TR</small><b id="lineLiveTargets">— / —</b></span>
+                <span class="line-live"><small>实测 LV / RV</small><b id="lineLiveSpeeds">— / —</b></span>
+                <span class="line-live"><small>目标差 TL−TR</small><b id="lineLiveDelta">—</b></span>
+                <span class="line-live"><small>偏航速率 yaw</small><b id="lineLiveYawRate">—</b></span>
+            </div>
+            <div id="lineTrialSpeeds" class="quick-speeds">
+                <span class="hint">试验速度</span>
+                <button type="button" data-line-speed="100">100</button>
+                <button type="button" data-line-speed="150">150</button>
+                <button type="button" data-line-speed="200">200</button>
+                <button type="button" data-line-speed="250">250</button>
+                <button type="button" data-line-speed="300">300</button>
+                <button type="button" data-line-speed="400">400</button>
+            </div>
+        </div>
+        <div id="ballSessionTools" class="ball-session-tools" style="display:none">
+            <div class="ball-monitor-head">
+                <b id="ballMonitorTitle">要求 3 · O → +5 cm → -5 cm</b>
+                <span class="hint">实测与内部梯形参考同拍</span>
+            </div>
+            <div class="ball-track">
+                <span>-5 cm</span>
+                <div class="ball-track-rail">
+                    <i class="ball-marker reference" data-ball-marker="reference"></i>
+                    <i class="ball-marker position" data-ball-marker="position"></i>
+                </div>
+                <span>+5 cm</span>
+            </div>
+            <div class="ball-track-legend">
+                <span class="ball-track-key">钢球实测</span>
+                <span class="ball-track-key reference">轨迹参考</span>
+            </div>
+            <div class="ball-live-grid">
+                <span class="ball-live"><small>阶段</small><b data-ball-field="phase">待机</b></span>
+                <span class="ball-live"><small>钢球 bpos</small><b data-ball-field="position">—</b></span>
+                <span class="ball-live"><small>参考 bref</small><b data-ball-field="reference">—</b></span>
+                <span class="ball-live"><small>跟踪误差</small><b data-ball-field="error">—</b></span>
+            </div>
         </div>
         <div id="wheelSessionTools">
             <div class="quick-speeds">
@@ -481,7 +653,7 @@ kbd {
             </div>
             <button id="btnMask" disabled>应用 M</button>
         </div>
-        <p class="hint">勾选后上限实时更新。二进制帧每通道 4 字节，通道越少帧越短、频率越高。DMA 发送不阻塞主循环，全 12 通道也能 100Hz 直传。</p>
+        <p class="hint">勾选后上限实时更新。二进制帧每通道 4 字节，通道越少帧越短、频率越高。DMA 发送不阻塞主循环，全 14 通道也能 100Hz 直传。</p>
         <p class="hint">调 PID 时不必纠结这里：连接/切换阶段会自动准备本阶段最优通道；开始试验会先发激励，指标按实时流计算并标注来源。</p>
     </div>
 
@@ -545,12 +717,106 @@ kbd {
 </div>
 </div>
 
+<section class="video-workspace" id="videoView" hidden>
+    <div class="video-stage">
+        <div class="video-toolbar">
+            <input type="text" id="videoRtspUrl" spellcheck="false" value="rtsp://192.168.137.25:8554/test" aria-label="K230 RTSP 地址">
+            <button type="button" id="btnVideoStart" class="primary">开始播放</button>
+            <button type="button" id="btnVideoStop" disabled>停止</button>
+        </div>
+        <div id="videoStatus" class="video-status">正在检查本机视频服务…</div>
+        <div class="video-view-tools" aria-label="视频画面调整">
+            <button type="button" id="btnVideoZoomOut" title="缩小" aria-label="缩小" disabled>−</button>
+            <input id="videoZoom" type="range" min="25" max="400" step="5" value="100" aria-label="画面缩放比例" disabled>
+            <output id="videoZoomValue" for="videoZoom">100%</output>
+            <button type="button" id="btnVideoZoomIn" title="放大" aria-label="放大" disabled>+</button>
+            <button type="button" id="btnVideoRotateLeft" title="向左旋转 90 度" aria-label="向左旋转 90 度" disabled>↶</button>
+            <input id="videoRotation" type="range" min="-180" max="180" step="1" value="0" aria-label="画面旋转角度" disabled>
+            <output id="videoRotationValue" for="videoRotation">0°</output>
+            <button type="button" id="btnVideoRotateRight" title="向右旋转 90 度" aria-label="向右旋转 90 度" disabled>↷</button>
+            <button type="button" id="btnVideoFit" disabled>适应</button>
+            <button type="button" id="btnVideoReset" disabled>复位</button>
+        </div>
+        <div class="video-screen" id="videoScreen" tabindex="0" aria-label="K230 实时视频，可拖拽、滚轮缩放并旋转">
+            <div id="videoPlaceholder" class="video-placeholder">启动 K230 推流后输入 RTSP 地址并开始播放</div>
+            <img id="videoFeed" alt="K230 实时视频画面" draggable="false">
+        </div>
+    </div>
+
+    <aside class="video-controls">
+        <div class="panel" id="ballTaskPanel">
+            <h2>摆杆滚球 <small>KEY2 / KEY3 等效任务</small></h2>
+            <div class="row">
+                <button type="button" id="btnBallVideoRun" class="primary" disabled>要求3 运行并记录</button>
+                <button type="button" id="btnBallVideoStop" disabled>回中停止 C4</button>
+            </div>
+            <div class="row">
+                <button type="button" id="btnHoldVideoRun" class="primary" disabled>要求4 保持O点</button>
+                <button type="button" id="btnHoldVideoStop" disabled>回中停止 C6</button>
+                <button type="button" id="btnBallOpenTuning">打开调参</button>
+            </div>
+            <div class="ball-track">
+                <span>-5 cm</span>
+                <div class="ball-track-rail">
+                    <i class="ball-marker reference" data-ball-marker="reference"></i>
+                    <i class="ball-marker position" data-ball-marker="position"></i>
+                </div>
+                <span>+5 cm</span>
+            </div>
+            <div class="ball-live-grid">
+                <span class="ball-live"><small>阶段</small><b data-ball-field="phase">待机</b></span>
+                <span class="ball-live"><small>钢球位置</small><b data-ball-field="position">—</b></span>
+                <span class="ball-live"><small>轨迹参考</small><b data-ball-field="reference">—</b></span>
+                <span class="ball-live"><small>跟踪误差</small><b data-ball-field="error">—</b></span>
+            </div>
+            <p class="hint">要求3：C3 启动，到 -5 cm 稳定或满 5 秒后 C4 回中。要求4：钢球放在任意位置后 C5 启动收敛到 O 点，记满时长后 C6 回中。标定顺序 bgr/bzo → bhl → bgk → bkd → bkp，两个要求共用。</p>
+        </div>
+
+        <div class="panel" id="videoDrivePanel">
+            <h2>主车遥控 <small>WASD · 松开即停</small></h2>
+            <div class="row">
+                <button id="btnVideoDriveMode" disabled>启用键盘驾驶</button>
+                <span id="videoDriveState" class="hint">连接串口后可启用</span>
+            </div>
+            <div class="row">
+                <label for="videoDriveSpeed">档速</label>
+                <input type="number" id="videoDriveSpeed" value="250" min="20" max="800" style="width:64px">
+                <label for="videoDriveTurn">转向</label>
+                <input type="number" id="videoDriveTurn" value="150" min="0" max="800" style="width:64px">
+                <span class="hint">mm/s</span>
+            </div>
+            <div class="drive-pad video-drive-pad">
+                <span></span>
+                <button class="drive-key video-drive-key" data-video-drive="forward" disabled>W<small>前进</small></button>
+                <span></span>
+                <button class="drive-key video-drive-key" data-video-drive="left" disabled>A<small>左转</small></button>
+                <button class="drive-key video-drive-key" data-video-drive="back" disabled>S<small>后退</small></button>
+                <button class="drive-key video-drive-key" data-video-drive="right" disabled>D<small>右转</small></button>
+                <span></span>
+                <button class="drive-key video-drive-key danger" data-video-drive="stop" disabled>X<small>停止</small></button>
+                <span></span>
+            </div>
+            <p class="hint">只按 A / D 原地转向，配合 W / S 走弧线；Esc 始终急停主车和从车。</p>
+        </div>
+
+        <div class="panel">
+            <h2>拍照 <small>保存到 K230 TF 卡</small></h2>
+            <div class="row">
+                <label for="videoCaptureCount">张数</label>
+                <input type="number" id="videoCaptureCount" class="video-capture-count" value="1" min="1" max="20">
+                <button type="button" id="btnVideoCapture" class="primary" disabled>拍照</button>
+            </div>
+            <p id="videoCaptureStatus" class="hint">照片保存到 <code>/sdcard/pic/</code></p>
+        </div>
+    </aside>
+</section>
+
 <script>
 /* ==PARSER_BEGIN== */
 /*
  * 二进制遥测解析器（字节流状态机）。
  *
- * 固件遥测已从 ASCII 改为二进制帧（见 docs/superpowers/specs/2026-07-21-二进制DMA架构-design.md）：
+ * 固件遥测已从 ASCII 改为二进制帧：
  *   0xAA 0x55 | VER | TYPE | SEQ | LEN | PAYLOAD | CRC8
  * 而命令回应（OK/ERR/K?）仍是 ASCII 文本行。两者共用同一串口，靠 0xAA 区分：
  * 0xAA 是非 ASCII 可打印字符，绝不出现在文本里；见到 0xAA 进二进制帧解析，
@@ -626,7 +892,7 @@ class TelemetryParser {
     static unitOf(column) {
         const g = { LV: 'mmps', RV: 'mmps', TL: 'mmps', TR: 'mmps',
             PL: 'pwm', PR: 'pwm', yaw: 'deg', navE: 'deg', navT: 'deg',
-            LD: 'mm', RD: 'mm' };
+            LD: 'mm', RD: 'mm', vad: 'mmps' };
         return g[column] || column;
     }
 
@@ -926,10 +1192,12 @@ const TELEMETRY_BAUD = 115200;
 const TELEMETRY_BANDWIDTH_PERCENT = 70;
 const TELEMETRY_RATE_HARD_LIMIT = 100;
 
-/* 通道数：12 位里被置位的个数。 */
+/* 通道数：被置位的个数。上界从 CH_ALL 派生，新增通道位时自动跟随，不再手写死值。
+ * CH_ALL 定义在本文件靠后位置（const 不提升），但本函数只在调用时才读取 CH_ALL，
+ * 而全部调用点（renderRateLimit 等）都发生在脚本初始化完成之后，不会触发 TDZ。 */
 function countCaptureChannels(mask) {
     let count = 0;
-    for (let bit = 1; bit <= 0x800; bit <<= 1) {
+    for (let bit = 1; bit <= CH_ALL; bit <<= 1) {
         if ((mask & bit) !== 0) {
             count += 1;
         }
@@ -1214,24 +1482,41 @@ function computeStraightMetrics(samples, targetDistanceMM) {
     };
 }
 
-/* 巡线指标：权重误差的 RMS、最大值和顶格（|lerr|=6）时间占比。 */
+/* 巡线指标：红外位置稳定度、未检线占比，以及目标/实测轮速跟踪误差。 */
 function computeLineMetrics(samples) {
     let sumSq = 0;
     let count = 0;
     let maxAbs = 0;
     let extreme = 0;
+    let grayCount = 0;
+    let lostCount = 0;
+    let wheelErrorSum = 0;
+    let wheelErrorCount = 0;
     for (const s of samples) {
         const e = s.lerr;
-        if (!Number.isFinite(e)) {
-            continue;
+        if (Number.isFinite(e)) {
+            sumSq += e * e;
+            count += 1;
+            if (Math.abs(e) > maxAbs) {
+                maxAbs = Math.abs(e);
+            }
+            if (Math.abs(e) >= 6) {
+                extreme += 1;
+            }
         }
-        sumSq += e * e;
-        count += 1;
-        if (Math.abs(e) > maxAbs) {
-            maxAbs = Math.abs(e);
+
+        if (Number.isFinite(s.gray)) {
+            grayCount += 1;
+            if ((Math.round(s.gray) & 0x3F) === 0) {
+                lostCount += 1;
+            }
         }
-        if (Math.abs(e) >= 6) {
-            extreme += 1;
+
+        for (const [target, actual] of [[s.TL, s.LV], [s.TR, s.RV]]) {
+            if (Number.isFinite(target) && Number.isFinite(actual)) {
+                wheelErrorSum += Math.abs(actual - target);
+                wheelErrorCount += 1;
+            }
         }
     }
     if (count === 0) {
@@ -1241,6 +1526,209 @@ function computeLineMetrics(samples) {
         rms: Math.sqrt(sumSq / count),
         maxAbs,
         extremePct: (extreme / count) * 100,
+        lostPct: grayCount > 0 ? (lostCount / grayCount) * 100 : null,
+        wheelMaeMMps: wheelErrorCount > 0 ?
+            wheelErrorSum / wheelErrorCount : null,
+    };
+}
+
+/* 要求 3 指标：在 +50 mm 折返和 -50 mm 保持两处检查误差与总耗时。 */
+function computeBallMetrics(samples) {
+    const values = samples.filter((s) =>
+        Number.isFinite(s.ms) && Number.isFinite(s.bpos) &&
+        Number.isFinite(s.bref));
+    if (values.length < 3) {
+        return null;
+    }
+
+    const startIndex = values.findIndex((s) => Math.abs(s.bref) >= 2);
+    if (startIndex < 0) {
+        return null;
+    }
+    const startMs = values[startIndex].ms;
+    let turnIndex = -1;
+    let trackingSumSq = 0;
+    let trackingCount = 0;
+    let plusPeak = -Infinity;
+    let minusPeak = Infinity;
+
+    for (let i = startIndex; i < values.length; i += 1) {
+        const sample = values[i];
+        const error = sample.bpos - sample.bref;
+        trackingSumSq += error * error;
+        trackingCount += 1;
+        if (sample.bpos > plusPeak) plusPeak = sample.bpos;
+        if (sample.bpos < minusPeak) minusPeak = sample.bpos;
+        if (turnIndex < 0 && i > startIndex && values[i - 1].bref >= 45 &&
+            sample.bref < values[i - 1].bref - 0.2) {
+            turnIndex = i - 1;
+        }
+    }
+
+    const plusTimeMs = turnIndex >= 0 ? values[turnIndex].ms - startMs : null;
+    const plusErrorMM = turnIndex >= 0 ?
+        Math.abs(values[turnIndex].bpos - 50) : null;
+    let stableStartMs = null;
+    let minusTimeMs = null;
+    const minusSamples = [];
+
+    for (let i = Math.max(startIndex, turnIndex + 1); i < values.length; i += 1) {
+        const sample = values[i];
+        if (sample.bref > -45) {
+            continue;
+        }
+        minusSamples.push(sample);
+        if (Math.abs(sample.bpos + 50) <= 5) {
+            if (stableStartMs === null) stableStartMs = sample.ms;
+            if (sample.ms - stableStartMs >= 150 && minusTimeMs === null) {
+                minusTimeMs = sample.ms - startMs;
+            }
+        } else {
+            stableStartMs = null;
+        }
+    }
+
+    const tail = minusSamples.slice(-Math.min(8, minusSamples.length));
+    const minusErrorMM = tail.length > 0 ?
+        tail.reduce((sum, sample) => sum + Math.abs(sample.bpos + 50), 0) /
+            tail.length : null;
+    const trackingRmsMM = trackingCount > 0 ?
+        Math.sqrt(trackingSumSq / trackingCount) : null;
+    const pass = plusErrorMM !== null && minusErrorMM !== null &&
+        minusTimeMs !== null && plusErrorMM <= 10 && minusErrorMM <= 10 &&
+        minusTimeMs <= 5000;
+
+    return {
+        plusTimeMs,
+        plusErrorMM,
+        plusOvershootMM: Number.isFinite(plusPeak) ?
+            Math.max(0, plusPeak - 50) : null,
+        minusTimeMs,
+        minusErrorMM,
+        minusOvershootMM: Number.isFinite(minusPeak) ?
+            Math.max(0, -50 - minusPeak) : null,
+        trackingRmsMM,
+        pass,
+    };
+}
+
+/*
+ * 要求 4 指标：钢球从任意位置放下后收敛到 O 并长期保持。
+ * 和要求 3 的口径完全不同——那里查两个 ±50 mm 点，这里查「多久回到 O、
+ * 稳住之后偏多少、有没有一直来回振」。
+ */
+function computeHoldMetrics(samples) {
+    const values = samples.filter((s) =>
+        Number.isFinite(s.ms) && Number.isFinite(s.bpos) &&
+        Number.isFinite(s.bref));
+    if (values.length < 3) {
+        return null;
+    }
+
+    const TOL_MM = 10;      /* 题目 1 cm。 */
+    const STABLE_MS = 300;  /* 连续待够这么久才算收敛，躲开穿越 O 的瞬间。 */
+    const startMs = values[0].ms;
+    const startPositionMM = values[0].bpos;
+
+    /* 收敛时间：第一次进入容差且此后连续保持 STABLE_MS 的那个时刻。 */
+    let convergeMs = null;
+    let windowStartMs = null;
+    for (const sample of values) {
+        if (Math.abs(sample.bpos) <= TOL_MM) {
+            if (windowStartMs === null) {
+                windowStartMs = sample.ms;
+            } else if (convergeMs === null &&
+                       sample.ms - windowStartMs >= STABLE_MS) {
+                convergeMs = windowStartMs - startMs;
+            }
+        } else {
+            windowStartMs = null;
+        }
+    }
+
+    /* 稳态段取收敛之后的全部样本；没收敛就退化成最后 1 秒，仍能看出偏多少。 */
+    const steadyFromMs = convergeMs !== null ?
+        startMs + convergeMs : values[values.length - 1].ms - 1000;
+    const steady = values.filter((s) => s.ms >= steadyFromMs);
+    let steadySumSq = 0;
+    let steadyMaxAbs = 0;
+    let steadySum = 0;
+    for (const sample of steady) {
+        steadySumSq += sample.bpos * sample.bpos;
+        steadySum += sample.bpos;
+        steadyMaxAbs = Math.max(steadyMaxAbs, Math.abs(sample.bpos));
+    }
+    const steadyRmsMM = steady.length > 0 ?
+        Math.sqrt(steadySumSq / steady.length) : null;
+    const steadyBiasMM = steady.length > 0 ? steadySum / steady.length : null;
+
+    /*
+     * 振荡计数：稳态段内 bpos 穿过 O 的次数换算成每秒次数。持续往复是
+     * 要求 4 最难看的失败模式，比稳态误差更值得单独列出来。
+     */
+    let crossings = 0;
+    for (let i = 1; i < steady.length; i += 1) {
+        const previous = steady[i - 1].bpos;
+        const current = steady[i].bpos;
+        /* 只算真正穿过去的，2 mm 死区滤掉视觉抖动造成的假穿越。 */
+        if (Math.abs(previous) > 2 && Math.abs(current) > 2 &&
+            ((previous > 0) !== (current > 0))) {
+            crossings += 1;
+        }
+    }
+    const steadySpanMs = steady.length > 1 ?
+        steady[steady.length - 1].ms - steady[0].ms : 0;
+    const oscillationHz = steadySpanMs > 0 ?
+        crossings / (steadySpanMs / 1000) / 2 : null;
+
+    /*
+     * 扰动恢复：收敛之后如果又冲出过容差（手拨或大扰动），记录最大偏离和
+     * 从偏离峰值回到容差内所用的时间。没扰动就是 null，不算失败。
+     */
+    let disturbPeakMM = null;
+    let disturbRecoverMs = null;
+    if (convergeMs !== null) {
+        let peakMM = 0;
+        let peakMs = null;
+        for (const sample of steady) {
+            const absolute = Math.abs(sample.bpos);
+            if (absolute > TOL_MM && absolute > peakMM) {
+                peakMM = absolute;
+                peakMs = sample.ms;
+            }
+            if (peakMs !== null && sample.ms > peakMs &&
+                absolute <= TOL_MM && disturbRecoverMs === null) {
+                disturbRecoverMs = sample.ms - peakMs;
+            }
+        }
+        if (peakMM > TOL_MM) {
+            disturbPeakMM = peakMM;
+        }
+    }
+
+    /* 跟踪误差：球跟不跟得上梯形参考，用来区分「参考没动」和「球没跟上」。 */
+    let trackingSumSq = 0;
+    for (const sample of values) {
+        const error = sample.bpos - sample.bref;
+        trackingSumSq += error * error;
+    }
+    const trackingRmsMM = Math.sqrt(trackingSumSq / values.length);
+
+    const pass = convergeMs !== null && steadyMaxAbs <= TOL_MM &&
+        (oscillationHz === null || oscillationHz <= 1);
+
+    return {
+        startPositionMM,
+        convergeMs,
+        steadyRmsMM,
+        steadyMaxAbsMM: steady.length > 0 ? steadyMaxAbs : null,
+        steadyBiasMM,
+        oscillationHz,
+        disturbPeakMM,
+        disturbRecoverMs,
+        trackingRmsMM,
+        steadySamples: steady.length,
+        pass,
     };
 }
 
@@ -1272,6 +1760,12 @@ function analyzeRun(loop, samples, amp, tolDeg) {
     }
     if (loop === 'line') {
         return computeLineMetrics(samples);
+    }
+    if (loop === 'ball') {
+        return computeBallMetrics(samples);
+    }
+    if (loop === 'hold') {
+        return computeHoldMetrics(samples);
     }
     return null;
 }
@@ -1305,8 +1799,36 @@ function describeRunMetrics(loop, metrics, focusSide = 'both') {
                `距离误差${metrics.distErrMM === null ? '—' : metrics.distErrMM.toFixed(1) + 'mm'}`;
     }
     if (loop === 'line') {
-        return `lerr RMS ${metrics.rms.toFixed(2)} 最大${metrics.maxAbs.toFixed(0)} ` +
-               `顶格${metrics.extremePct.toFixed(0)}%`;
+        let summary = `lerr RMS ${metrics.rms.toFixed(2)} 最大${metrics.maxAbs.toFixed(1)} ` +
+                      `顶格${metrics.extremePct.toFixed(0)}%`;
+        if (Number.isFinite(metrics.lostPct)) {
+            summary += ` 未检线${metrics.lostPct.toFixed(0)}%`;
+        }
+        if (Number.isFinite(metrics.wheelMaeMMps)) {
+            summary += ` 轮速MAE ${metrics.wheelMaeMMps.toFixed(1)}mm/s`;
+        }
+        return summary;
+    }
+    if (loop === 'ball') {
+        const mm = (value) => value === null ? '—' : value.toFixed(1) + 'mm';
+        return `+5cm 到位${ms(metrics.plusTimeMs)} 误差${mm(metrics.plusErrorMM)}` +
+               `；-5cm 稳定${ms(metrics.minusTimeMs)} 末端误差${mm(metrics.minusErrorMM)}` +
+               `；跟踪RMS ${mm(metrics.trackingRmsMM)}` +
+               `；${metrics.pass ? '要求3达标' : '要求3未达标'}`;
+    }
+    if (loop === 'hold') {
+        const mm = (value) => value === null ? '—' : value.toFixed(1) + 'mm';
+        let summary =
+            `起点${mm(metrics.startPositionMM)} 收敛${ms(metrics.convergeMs)}` +
+            `；稳态RMS ${mm(metrics.steadyRmsMM)} 最大${mm(metrics.steadyMaxAbsMM)}` +
+            ` 偏置${mm(metrics.steadyBiasMM)}`;
+        if (Number.isFinite(metrics.oscillationHz)) {
+            summary += `；振荡${metrics.oscillationHz.toFixed(2)}Hz`;
+        }
+        if (metrics.disturbPeakMM !== null) {
+            summary += `；扰动${mm(metrics.disturbPeakMM)} 恢复${ms(metrics.disturbRecoverMs)}`;
+        }
+        return summary + `；${metrics.pass ? '要求4达标' : '要求4未达标'}`;
     }
     return '';
 }
@@ -1439,7 +1961,7 @@ const PALETTE = ['#4da3ff', '#46c17a', '#e0a13c', '#e05c5c', '#a97ee0', '#3fc4c4
 
 /* 各调参试验的预设：掩码只留相关字段换高频，激励与收尾命令成对。
  * 频率按固件动态上限（20% 带宽）预先算好，改固件常量后需同步。 */
-/* 统一 12 通道位定义，与固件 TELEMETRY_CH_*（= CAPTURE_CH_*）完全一致。
+/* 统一 16 通道位定义，与固件 TELEMETRY_CH_*（= CAPTURE_CH_*）完全一致。
    二进制架构后实时流与捕获共用同一套通道，掩码语义统一。
    必须定义在 SESSIONS / TUNING_FOCUS 之前——const 不提升，早引用会 TDZ 报错。 */
 const CH = {
@@ -1447,8 +1969,9 @@ const CH = {
     TR: 0x0008, RV: 0x0010, PR: 0x0020,
     yaw: 0x0040, navE: 0x0080, lerr: 0x0100,
     gray: 0x0200, LD: 0x0400, RD: 0x0800,
+    vx: 0x1000, vad: 0x2000, bpos: 0x4000, bref: 0x8000,
 };
-const CH_ALL = 0x0FFF;
+const CH_ALL = 0xFFFF;
 /* 捕获别名，保留旧引用可读性；与实时流同一套位。 */
 const CAPTURE_CH = CH;
 /* 固件 CAPTURE_MAX_CHANNELS；超出会被固件拒绝，网页先自查给出清晰提示。 */
@@ -1459,11 +1982,12 @@ const CH_LIST = [
     ['TR', 'mmps'], ['RV', 'mmps'], ['PR', 'pwm'],
     ['yaw', 'deg'], ['navE', 'deg'], ['lerr', 'raw'],
     ['gray', 'bits'], ['LD', 'mm'], ['RD', 'mm'],
+    ['vx', 'raw'], ['vad', 'mmps'], ['bpos', 'mm'], ['bref', 'mm'],
 ];
 
 const SESSIONS = {
     wheel: {
-        /* 二进制后不再有 mode/单侧字段之分，一律用 12 通道位。捕获与实时流同掩码。 */
+        /* 二进制后不再有 mode/单侧字段之分，一律用 14 通道位。捕获与实时流同掩码。 */
         label: '轮速 PI', mask: CH.TL | CH.LV | CH.PL | CH.TR | CH.RV | CH.PR,
         ampLabel: '目标mm/s', ampDefault: 300, timed: true, durDefault: 8,
         excite: (amp) => 'W' + amp, stopCmd: 'W0',
@@ -1492,13 +2016,37 @@ const SESSIONS = {
         expectation: 'navE 单调收敛到 0 附近、无过冲往复，到角时间短',
     },
     line: {
-        label: '巡线', mask: CH.lerr | CH.LV | CH.RV | CH.yaw,
-        ampLabel: '巡线mm/s', ampDefault: 200, timed: true, durDefault: 5,
+        label: '六路红外巡线',
+        mask: CH.yaw | CH.lerr | CH.gray | CH.TL | CH.TR | CH.LV | CH.RV,
+        ampLabel: '请求速度 mm/s', ampDefault: 200, timed: true, durDefault: 5,
         excite: (amp) => 'N' + amp, stopCmd: 'N0',
-        params: ['lra', 'lkd', 'lwkp', 'lwki', 'rwkp', 'rwki'],
-        structure: '五路灰度离散权重(-6..+6)×lra 生成差速 + lkd×权重变化率阻尼 -> 双轮速度环；lerr 为权重误差',
-        columnsNote: 'lerr=巡线权重误差，LV/RV=左右实测轮速，yaw=航向角',
-        expectation: 'lerr 在 0 附近小幅摆动不发散，弧线段无大幅蛇形，速度不明显掉落',
+        params: ['h2cru', 'h2fin', 'h2clr', 'h2lap', 'h2app', 'h2arm',
+                 'h2max', 'h2off', 'lacc', 'ldec', 'lra', 'lkd', 'lcv',
+                 'lch',
+                 'lwkp', 'lwki', 'rwkp', 'rwki'],
+        structure: 'KEY1 启动时快照现有 26H 阶段参数：以 h2cru 离开起点并巡航，距 h2lap 还剩 h2app 时按 ldec 降到 h2fin，h2arm 后任意三路黑线连续 3 拍判为终点横线，确认后再走 h2off 并按同一 ldec 软停，h2max 是未识别横线的保护距离；CH2/CH5 连续压线 3 拍后进入弧线低速区，全程仅使用 lra/lkd 一套控制；编码器从入口累计 lch 后才解除 lcv 低速上限并平滑恢复巡航',
+        columnsNote: 'gray=CH1~CH6 位图，yaw=航向角（网页据相邻样本显示偏航速率），lerr=滤波后巡线权重，(TL+TR)/2=当前基准速度，TL/TR=左右目标轮速，LV/RV=左右实测轮速',
+        expectation: '正常压线时 gray 不应长时间全 0；CH2/CH5 连续 3 拍后进入弧线，lerr 仅显示巡线修正，TL/TR 差速方向正确，LV/RV 轮速 MAE 较小，弧线基准速度受 lcv 限制',
+    },
+    ball: {
+        label: '要求3摆球', mask: CH.bpos | CH.bref,
+        fixedAmp: 50, ampVisible: false, timed: true, durDefault: 5, rate: 100,
+        excite: () => 'C3', stopCmd: 'C4', startReply: 'OK BALL START',
+        stopReply: 'OK BALL STOP',
+        params: ['bgr', 'bzo', 'bhl', 'bgk', 'bkd', 'bkp'],
+        structure: 'K230 球位 -> 梯形位置参考(bref) -> PD(bkp,bkd)+重力耦合(bgk) -> 摆杆倾角 -> 齿轮比(bgr)+零偏(bzo) -> 步进；要求3固定 O→+50→-50 mm，车体保持静止',
+        columnsNote: 'bpos=K230 钢球实测位置mm，bref=BallBalance 内部梯形轨迹参考位置mm；两列在同一控制拍采样',
+        expectation: '+50 mm 折返点与 -50 mm 保持点误差均不超过 10 mm，5 s 内到达 -50 mm 并连续稳定，曲线无明显过冲和持续振荡',
+    },
+    hold: {
+        label: '要求4保持O点', mask: CH.bpos | CH.bref,
+        ampVisible: false, timed: true, durDefault: 10, rate: 100,
+        excite: () => 'C5', stopCmd: 'C6', startReply: 'OK HOLD START',
+        stopReply: 'OK HOLD STOP',
+        params: ['bgr', 'bzo', 'bhl', 'bgk', 'bkd', 'bkp'],
+        structure: 'K230 球位 -> 目标恒为 O 的梯形位置参考(bref) -> PD(bkp,bkd)+重力耦合(bgk) -> 摆杆倾角 -> 齿轮比(bgr)+零偏(bzo) -> 步进；本步车体静止，车体加速度前馈固定为 0',
+        columnsNote: 'bpos=K230 钢球实测位置mm，bref=目标恒为 0 的梯形参考位置mm；两列在同一控制拍采样',
+        expectation: '钢球从任意位置放下都能收敛到 O 点：bref 平滑走到 0，bpos 跟随并稳定在 ±10 mm 内，无持续往复振荡；手拨扰动后能自动回到 O',
     },
 };
 
@@ -1583,19 +2131,89 @@ const TUNING_FOCUS = {
         },
     },
     line: {
-        label: '巡线', defaultSide: 'main', defaultStage: 'line',
+        label: '巡线', defaultSide: 'main', defaultStage: 'start',
         stages: {
-            line: { label: '① 巡线', help: '只调巡线比例 lra 与阻尼 lkd。' },
-            wheel: { label: '② 轮速关联', help: '需要时查看左右轮速度环核心增益。' },
-            verify: { label: '③ 验证', help: '只看 lerr 与左右实测轮速。' },
+            start: { label: '① 离开起点', help: '配置起步后的巡航速度 h2cru、离开横线距离 h2clr 和提速斜率 lacc；修改后下一次 KEY1 启动生效。', configOnly: true },
+            position: { label: '② 终点位置', help: '配置理论圈长 h2lap、横线识别启用距离 h2arm 和漏检保护距离 h2max；修改后下一次 KEY1 启动生效。', configOnly: true },
+            finish: { label: '③ 减速停车', help: '配置提前减速距离 h2app、终点慢速 h2fin、横线后前移 h2off 和统一减速度 ldec；修改后下一次 KEY1 启动生效。', configOnly: true },
+            line: { label: '④ 巡线比例 P', help: 'lra 全程使用，决定红外偏差转成左右轮差速的最大比例。' },
+            damping: { label: '⑤ 巡线阻尼 D', help: 'lkd 全程使用，抑制压线通道切换造成的反复摆动。' },
+            curveSpeed: { label: '⑥ 弧线速度', help: 'lcv 是确认弧线后的固定基准速度上限，不随 lerr 回中而提速。' },
+            wheel: { label: '⑦ 轮速底环', help: '目标正确但实测跟不上时先检查左右轮 PI；若基础 PWM 就不对，应切到“轮速”任务重标前馈与静摩擦。' },
+            verify: { label: '⑧ 验证', help: '同时观察 CH2/CH5、航向角、权重误差和目标/实测轮速 MAE。' },
         },
         sides: {
             main: {
-                label: '整车', series: ['lerr', 'LV', 'RV', 'yaw'],
-                mask: CH.lerr | CH.LV | CH.RV | CH.yaw,
+                label: '整车', series: ['yaw', 'lerr', 'TL', 'TR', 'LV', 'RV'],
+                mask: CH.yaw | CH.lerr | CH.gray | CH.TL | CH.TR | CH.LV | CH.RV,
                 params: {
-                    line: ['lra', 'lkd'],
+                    start: ['h2cru', 'h2clr', 'lacc'],
+                    position: ['h2lap', 'h2arm', 'h2max'],
+                    finish: ['h2app', 'h2fin', 'h2off', 'ldec'],
+                    line: ['lra'], damping: ['lkd'], curveSpeed: ['lcv', 'lch'],
                     wheel: ['lwkp', 'lwki', 'rwkp', 'rwki'], verify: [],
+                },
+            },
+        },
+    },
+    ball: {
+        label: '要求3摆球', defaultSide: 'main', defaultStage: 'geometry',
+        stages: {
+            geometry: { label: '① 机械标定', help: '先调 bgr / bzo：确认传动比与水平零点，摆杆上电必须水平。' },
+            sensor: { label: '② 视觉标定', help: '只调 bhl：把钢球放在已知刻度，校准 K230 千分比到毫米。' },
+            model: { label: '③ 重力模型', help: '只调 bgk：固定小倾角，按实测球加速度校准重力耦合。' },
+            damping: { label: '④ 阻尼 D', help: '先调 bkd 压住过冲和往复，不要加入积分项。' },
+            position: { label: '⑤ 比例 P', help: '最后调 bkp 缩短跟踪误差，避免倾角长期顶到限位。' },
+            verify: { label: '⑥ 验证', help: '固定 O→+5→-5，自动检查两个点的误差与 5 秒总时间。' },
+        },
+        sides: {
+            main: {
+                label: '摆杆', series: ['bref', 'bpos'],
+                mask: CH.bpos | CH.bref,
+                params: {
+                    geometry: ['bgr', 'bzo'], sensor: ['bhl'], model: ['bgk'],
+                    damping: ['bkd'], position: ['bkp'], verify: [],
+                },
+            },
+        },
+    },
+    /*
+     * 要求 4 与要求 3 共用 bgr/bzo/bhl/bgk/bkd/bkp——同一套摆杆物理量只该有
+     * 一处真值。所以这里不重复机械和视觉标定阶段，直接从「放球收敛」开始，
+     * 并假定要求 3 的前四步已经做过（阶段提示里写清楚了）。
+     */
+    hold: {
+        label: '要求4保持O点', defaultSide: 'main', defaultStage: 'converge',
+        stages: {
+            converge: {
+                label: '① 放球收敛',
+                help: '球放在 ±3~5 cm 处启动，先看 bpos 能不能单调回到 O。走不动就先加 bkp，冲过头就先加 bkd。',
+            },
+            damping: {
+                label: '② 阻尼 D',
+                help: '只调 bkd：压住过 O 点后的往复。要求 4 是长期保持，宁可慢一点也不要持续振荡。',
+            },
+            position: {
+                label: '③ 比例 P',
+                help: '只调 bkp：缩小稳态偏离。倾角长期顶到 ±6° 限位说明 bkp 过大或 bzo 没校准。',
+            },
+            disturb: {
+                label: '④ 抗扰',
+                help: '启动后用手把球拨到一侧再松手，看它是否自动回 O。指标里的「扰动恢复」就是这一下。',
+            },
+            verify: {
+                label: '⑥ 验证',
+                help: '任意位置放球启动，自动检查收敛时间、稳态误差与是否出现持续振荡。',
+            },
+        },
+        sides: {
+            main: {
+                label: '摆杆', series: ['bref', 'bpos'],
+                mask: CH.bpos | CH.bref,
+                params: {
+                    converge: ['bkp', 'bkd'], damping: ['bkd'],
+                    position: ['bkp'], disturb: [],
+                    feedforward: [], verify: [],
                 },
             },
         },
@@ -1611,9 +2229,19 @@ const PARAM_LABELS = {
     rwkp: '右轮Kp', rwki: '右轮Ki', rwil: '右轮积分限',
     rwff: '右轮前馈 PWM/(mm/s)', rwsf: '右轮静摩擦PWM',
     skp: '直线航向Kp', skd: '直线航向Kd', sac: '直线加速度',
-    lra: '巡线比例', lkd: '巡线阻尼',
+    lra: '巡线比例 P（最大差速比）', lkd: '巡线阻尼 D（权重变化率）',
+    lcv: '巡线弧线速度上限（mm/s）',
+    lch: '巡线弧线低速保持距离（mm）',
+    lacc: '巡线统一加速度（mm/s²）', ldec: '巡线统一减速度（mm/s²）',
+    h2cru: '要求2巡航速度（mm/s）', h2fin: '要求2终点慢速（mm/s）',
+    h2clr: '离开起点距离（mm）', h2lap: '理论圈长（mm）',
+    h2app: '终点提前减速距离（mm）', h2arm: '横线识别启用距离（mm）',
+    h2max: '漏检保护距离（mm）', h2off: '横线后前移距离（mm）',
     nvx: '转向最高速', nvn: '转向最低速', nsa: '转向减速角', ntl: '到角容差',
     gsc: '陀螺尺度', cpm: '编码计数/mm',
+    bkp: '摆球比例 Kp（度/mm）', bkd: '摆球阻尼 Kd（度/(mm/s)）',
+    bgk: '重力耦合（(mm/s²)/度）', bhl: '视觉半杆长（mm）',
+    bgr: '摆杆传动比', bzo: '摆杆水平零偏（度）',
 };
 const PARAM_GROUPS = {
     lwkp: '左轮速度 PI 与前馈', lwki: '左轮速度 PI 与前馈',
@@ -1625,12 +2253,22 @@ const PARAM_GROUPS = {
     wkp: '双轮批量兼容参数', wki: '双轮批量兼容参数',
     wil: '双轮批量兼容参数', wff: '双轮批量兼容参数',
     wsf: '双轮批量兼容参数',
+    lra: '六路红外巡线', lkd: '六路红外巡线',
+    lcv: '六路红外巡线', lch: '六路红外巡线',
+    lacc: '六路红外巡线', ldec: '六路红外巡线',
+    h2cru: '要求2单圈巡线', h2fin: '要求2单圈巡线',
+    h2clr: '要求2单圈巡线', h2lap: '要求2单圈巡线',
+    h2app: '要求2单圈巡线', h2arm: '要求2单圈巡线',
+    h2max: '要求2单圈巡线', h2off: '要求2单圈巡线',
+    bkp: '摆杆滚球（要求3/4共用）', bkd: '摆杆滚球（要求3/4共用）',
+    bgk: '摆杆滚球（要求3/4共用）', bhl: '摆杆滚球（要求3/4共用）',
+    bgr: '摆杆滚球（要求3/4共用）', bzo: '摆杆滚球（要求3/4共用）',
 };
 const PARAM_STORE_KEY = 'carDebugParamsV1';
 const RUN_STORE_KEY = 'carDebugRunsV1';
-const WHEEL_TESTED_BASELINE = {
-    lwkp: 0.6, lwki: 0, lwil: 0, lwff: 0.43114, lwsf: 19.884,
-    rwkp: 0.6, rwki: 0, rwil: 0, rwff: 0.44289, rwsf: 22.205,
+const WHEEL_MECHANICAL_BASELINE = {
+    lwkp: 0.6, lwki: 0, lwil: 0, lwff: 0.44573, lwsf: 19.884,
+    rwkp: 0.6, rwki: 0, rwil: 0, rwff: 0.45788, rwsf: 22.205,
 };
 const PARAM_NUDGE_STEPS = {
     lwkp: 0.02, rwkp: 0.02,
@@ -1638,6 +2276,10 @@ const PARAM_NUDGE_STEPS = {
     lwil: 5, rwil: 5,
     lwff: 0.002, rwff: 0.002,
     lwsf: 0.5, rwsf: 0.5,
+    lra: 0.01, lkd: 0.05, lcv: 10, lch: 100, lacc: 10, ldec: 10,
+    h2cru: 10, h2fin: 10, h2clr: 10, h2lap: 10,
+    h2app: 10, h2arm: 10, h2max: 10, h2off: 1,
+    bkp: 0.01, bkd: 0.005, bgk: 2, bhl: 1, bgr: 0.1, bzo: 0.1,
 };
 
 let port = null;
@@ -1657,8 +2299,11 @@ let hoverX = null;         /* 曲线区悬浮读数的横坐标（CSS 像素） 
 
 let paramCache = {};     /* id -> { name, value, min, max, def } */
 let paramRenderPending = false;
+let parameterRefreshRunning = false;
 let lastRateHz = 20;     /* 最近一次固件回报的遥测频率，写进试验记录 */
 let session = null;      /* 进行中的调参试验 */
+let sessionPreparing = false;
+let telemetrySamplesReceived = 0;
 let runs = [];           /* 试验记录，新的在前 */
 let runSeq = 0;
 let referenceRunId = null; /* 设为基准的试验记录，虚线叠加在实时曲线上 */
@@ -1670,6 +2315,408 @@ const $ = (id) => document.getElementById(id);
 const termEl = $('terminal');
 const plotEl = $('plot');
 const ctx = plotEl.getContext('2d');
+
+/* ---------- 工作区切换与本机视频 ---------- */
+
+const VIDEO_URL_STORE_KEY = 'carDebugRtspUrlV1';
+const VIEWER_PAGE_SERVED = window.location.protocol === 'http:' &&
+    (window.location.hostname === '127.0.0.1' ||
+        window.location.hostname === 'localhost');
+const VIEWER_API_BASE = '';
+let videoGeneration = null;
+let videoStarting = false;
+let videoOperationId = 0;
+let videoStatusTimer = null;
+let videoConnectionTimer = null;
+let videoFrameAbortController = null;
+let videoCurrentFrameUrl = null;
+let videoLastFrameId = 0;
+let videoViewReady = false;
+let videoDragPointerId = null;
+let videoDragStartX = 0;
+let videoDragStartY = 0;
+let videoDragPanX = 0;
+let videoDragPanY = 0;
+
+const videoViewState = {
+    zoom: 1,
+    rotation: 0,
+    panX: 0,
+    panY: 0,
+    fitScale: 1,
+};
+
+const videoViewControlIds = [
+    'btnVideoZoomOut', 'videoZoom', 'btnVideoZoomIn',
+    'btnVideoRotateLeft', 'videoRotation', 'btnVideoRotateRight',
+    'btnVideoFit', 'btnVideoReset',
+];
+
+function viewerUrl(path) {
+    return VIEWER_API_BASE + path;
+}
+
+async function viewerFetch(path, options = {}) {
+    if (!VIEWER_PAGE_SERVED) {
+        throw new Error('请通过 local_rtsp_viewer/start_viewer.bat 打开视频遥控');
+    }
+    const response = await fetch(viewerUrl(path), options);
+    const value = await response.json();
+    if (!response.ok) {
+        throw new Error(value.error || `HTTP ${response.status}`);
+    }
+    return value;
+}
+
+function setVideoStatus(message, tone = '') {
+    const status = $('videoStatus');
+    status.textContent = message;
+    status.className = 'video-status' + (tone ? ` ${tone}` : '');
+}
+
+function setVideoStarting(starting) {
+    videoStarting = starting;
+    $('btnVideoStart').disabled = starting;
+    $('btnVideoStop').disabled = starting || videoGeneration === null;
+    $('videoRtspUrl').disabled = starting;
+}
+
+function clearVideoTimers() {
+    if (videoStatusTimer !== null) {
+        clearInterval(videoStatusTimer);
+    }
+    if (videoConnectionTimer !== null) {
+        clearTimeout(videoConnectionTimer);
+    }
+    videoStatusTimer = null;
+    videoConnectionTimer = null;
+}
+
+function stopLatestVideoFrames() {
+    if (videoFrameAbortController !== null) {
+        videoFrameAbortController.abort();
+        videoFrameAbortController = null;
+    }
+    if (videoCurrentFrameUrl !== null) {
+        URL.revokeObjectURL(videoCurrentFrameUrl);
+        videoCurrentFrameUrl = null;
+    }
+    videoLastFrameId = 0;
+}
+
+function setVideoViewControlsEnabled(enabled) {
+    videoViewReady = enabled;
+    videoViewControlIds.forEach((id) => { $(id).disabled = !enabled; });
+    $('videoScreen').classList.toggle('can-pan', enabled);
+}
+
+function normalizedVideoAngle(angle) {
+    return ((angle + 180) % 360 + 360) % 360 - 180;
+}
+
+function updateVideoFitScale() {
+    const image = $('videoFeed');
+    const screen = $('videoScreen');
+    if (!image.naturalWidth || !image.naturalHeight ||
+        !screen.clientWidth || !screen.clientHeight) {
+        videoViewState.fitScale = 1;
+        return;
+    }
+    const radians = videoViewState.rotation * Math.PI / 180;
+    const rotatedWidth = Math.abs(image.naturalWidth * Math.cos(radians)) +
+        Math.abs(image.naturalHeight * Math.sin(radians));
+    const rotatedHeight = Math.abs(image.naturalWidth * Math.sin(radians)) +
+        Math.abs(image.naturalHeight * Math.cos(radians));
+    videoViewState.fitScale = Math.min(
+        Math.max(1, screen.clientWidth - 20) / rotatedWidth,
+        Math.max(1, screen.clientHeight - 20) / rotatedHeight,
+    );
+}
+
+function applyVideoTransform() {
+    $('videoFeed').style.transform =
+        `translate(${videoViewState.panX}px, ${videoViewState.panY}px) ` +
+        `rotate(${videoViewState.rotation}deg) ` +
+        `scale(${videoViewState.fitScale * videoViewState.zoom})`;
+    $('videoZoom').value = Math.round(videoViewState.zoom * 100);
+    $('videoZoomValue').value = `${Math.round(videoViewState.zoom * 100)}%`;
+    $('videoRotation').value = videoViewState.rotation;
+    $('videoRotationValue').value = `${videoViewState.rotation}°`;
+}
+
+function setVideoZoom(zoom) {
+    videoViewState.zoom = Math.max(0.25, Math.min(4, zoom));
+    applyVideoTransform();
+}
+
+function setVideoRotation(angle) {
+    videoViewState.rotation = normalizedVideoAngle(angle);
+    updateVideoFitScale();
+    applyVideoTransform();
+}
+
+function fitVideoView() {
+    videoViewState.zoom = 1;
+    videoViewState.panX = 0;
+    videoViewState.panY = 0;
+    updateVideoFitScale();
+    applyVideoTransform();
+}
+
+function resetVideoView() {
+    videoViewState.rotation = 0;
+    fitVideoView();
+}
+
+/* decode() 而不是 onload：解码完成才 resolve，上屏时不会再触发一次
+   阻塞布局的同步解码。上一帧的 decode() 落地后才会换 src，因此不会
+   出现换源导致的 AbortError。 */
+async function showLatestVideoFrame(blob, generation) {
+    const image = $('videoFeed');
+    const frameUrl = URL.createObjectURL(blob);
+    image.src = frameUrl;
+    try {
+        await image.decode();
+    } catch (error) {
+        URL.revokeObjectURL(frameUrl);
+        if (generation !== videoGeneration) {
+            return;
+        }
+        throw new Error('浏览器无法解码视频帧');
+    }
+    if (generation !== videoGeneration) {
+        URL.revokeObjectURL(frameUrl);
+        return;
+    }
+    if (videoCurrentFrameUrl !== null) {
+        URL.revokeObjectURL(videoCurrentFrameUrl);
+    }
+    videoCurrentFrameUrl = frameUrl;
+    image.style.display = 'block';
+    $('videoPlaceholder').style.display = 'none';
+    if (!videoViewReady) {
+        setVideoViewControlsEnabled(true);
+        resetVideoView();
+    }
+    setVideoStatus('正在播放最新实时画面', 'ok');
+    if (videoConnectionTimer !== null) {
+        clearTimeout(videoConnectionTimer);
+        videoConnectionTimer = null;
+    }
+}
+
+/* 取一张最新帧；204 表示这一轮没有更新的帧，返回 null 由调用方重试。 */
+async function fetchLatestVideoFrame(generation, afterFrameId, controller) {
+    const response = await fetch(viewerUrl(
+        `/frame.jpg?generation=${generation}&after=${afterFrameId}`
+    ), { cache: 'no-store', signal: controller.signal });
+    if (response.status === 204) {
+        return null;
+    }
+    if (!response.ok) {
+        let message = `HTTP ${response.status}`;
+        try {
+            const value = await response.json();
+            message = value.error || message;
+        } catch (_) {
+            // Keep the HTTP status when the body is not JSON.
+        }
+        throw new Error(message);
+    }
+    const frameId = Number(response.headers.get('X-Frame-Id'));
+    if (!Number.isFinite(frameId)) {
+        throw new Error('视频服务没有返回有效帧编号');
+    }
+    return { frameId, blob: await response.blob() };
+}
+
+async function pullLatestVideoFrames(generation, controller) {
+    let pending = null;
+    try {
+        pending = fetchLatestVideoFrame(
+            generation, videoLastFrameId, controller);
+        while (videoGeneration === generation && !controller.signal.aborted) {
+            const item = await pending;
+            if (item !== null) {
+                videoLastFrameId = item.frameId;
+            }
+            /* 先把下一次请求发出去，再解码手上这帧：链路等待与浏览器
+               解码重叠。串行版本在解码期间没有任何请求在飞，每帧都白
+               等一个来回。服务端只保留最新帧，抢先请求不会攒出积压。 */
+            pending = fetchLatestVideoFrame(
+                generation, videoLastFrameId, controller);
+            if (item !== null) {
+                await showLatestVideoFrame(item.blob, generation);
+            }
+        }
+    } catch (error) {
+        if (controller.signal.aborted || generation !== videoGeneration) {
+            return;
+        }
+        showVideoStopped(`连接失败：${error.message}`, 'err');
+    } finally {
+        if (pending !== null) {
+            /* 退出循环时通常还有一次请求在飞，吞掉结果避免未处理的拒绝。 */
+            pending.catch(() => {});
+        }
+    }
+}
+
+function showVideoStopped(message, tone = '') {
+    clearVideoTimers();
+    stopLatestVideoFrames();
+    $('videoFeed').removeAttribute('src');
+    $('videoFeed').style.display = 'none';
+    $('videoPlaceholder').style.display = 'block';
+    setVideoViewControlsEnabled(false);
+    videoGeneration = null;
+    setVideoStatus(message, tone);
+    setVideoStarting(false);
+}
+
+async function readVideoStatus() {
+    return viewerFetch('/api/status', { cache: 'no-store' });
+}
+
+async function checkVideoService() {
+    if (videoGeneration !== null || videoStarting) {
+        return;
+    }
+    if (!VIEWER_PAGE_SERVED) {
+        setVideoStatus('请运行 local_rtsp_viewer/start_viewer.bat 进入视频遥控', 'err');
+        return;
+    }
+    try {
+        await viewerFetch('/health', { cache: 'no-store' });
+        setVideoStatus('本机视频服务已就绪，等待开始播放', 'ok');
+    } catch (error) {
+        setVideoStatus('视频服务未启动，请运行 local_rtsp_viewer/start_viewer.bat', 'err');
+    }
+}
+
+function beginVideoStatusPolling() {
+    videoStatusTimer = setInterval(async () => {
+        try {
+            const value = await readVideoStatus();
+            if (value.generation !== videoGeneration) {
+                return;
+            }
+            if (value.state === 'failed') {
+                showVideoStopped(`连接失败：${value.error || 'FFmpeg 拉流失败'}`, 'err');
+            } else if (value.state === 'starting') {
+                setVideoStatus('正在连接 K230，等待首帧…');
+            }
+        } catch (error) {
+            showVideoStopped(`视频服务连接中断：${error.message}`, 'err');
+        }
+    }, 500);
+}
+
+async function startVideo() {
+    if (videoStarting) {
+        return;
+    }
+    if (!VIEWER_PAGE_SERVED) {
+        setVideoStatus('请运行 local_rtsp_viewer/start_viewer.bat 进入视频遥控', 'err');
+        return;
+    }
+    const url = $('videoRtspUrl').value.trim();
+    if (!url.toLowerCase().startsWith('rtsp://')) {
+        setVideoStatus('请输入以 rtsp:// 开头的完整地址', 'err');
+        return;
+    }
+
+    const operationId = ++videoOperationId;
+    setVideoStarting(true);
+    clearVideoTimers();
+    stopLatestVideoFrames();
+    $('videoFeed').removeAttribute('src');
+    $('videoFeed').style.display = 'none';
+    $('videoPlaceholder').style.display = 'block';
+    setVideoStatus('正在启动本机 FFmpeg…');
+    localStorage.setItem(VIDEO_URL_STORE_KEY, url);
+
+    try {
+        const value = await viewerFetch('/api/start', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ url }),
+        });
+        if (operationId !== videoOperationId) {
+            return;
+        }
+        videoGeneration = value.generation;
+        videoFrameAbortController = new AbortController();
+        pullLatestVideoFrames(videoGeneration, videoFrameAbortController);
+        setVideoStatus('正在连接 K230，等待首帧…');
+        beginVideoStatusPolling();
+        const expectedGeneration = videoGeneration;
+        videoConnectionTimer = setTimeout(async () => {
+            if (operationId !== videoOperationId ||
+                videoGeneration !== expectedGeneration) {
+                return;
+            }
+            const current = await readVideoStatus().catch(() => null);
+            if (operationId === videoOperationId &&
+                videoGeneration === expectedGeneration &&
+                current && current.state !== 'streaming') {
+                showVideoStopped(`连接失败：${current.error || '等待首帧超时'}`, 'err');
+            }
+        }, 12000);
+    } catch (error) {
+        if (operationId === videoOperationId) {
+            showVideoStopped(`连接失败：${error.message}`, 'err');
+        }
+    } finally {
+        if (operationId === videoOperationId) {
+            setVideoStarting(false);
+        }
+    }
+}
+
+async function stopVideo() {
+    const operationId = ++videoOperationId;
+    showVideoStopped('正在停止…');
+    try {
+        await viewerFetch('/api/stop', { method: 'POST' });
+        if (operationId === videoOperationId) {
+            setVideoStatus('视频已停止');
+        }
+    } catch (error) {
+        if (operationId === videoOperationId) {
+            setVideoStatus(`停止失败：${error.message}`, 'err');
+        }
+    }
+}
+
+function setWorkspaceView(view, updateHash = true) {
+    const next = view === 'video' ? 'video' : 'debug';
+    $('debugView').hidden = next !== 'debug';
+    $('videoView').hidden = next !== 'video';
+    document.querySelectorAll('[data-workspace-view]').forEach((button) => {
+        const active = button.dataset.workspaceView === next;
+        button.classList.toggle('active', active);
+        button.setAttribute('aria-selected', String(active));
+    });
+    if (updateHash) {
+        window.history.replaceState(null, '', `#${next}`);
+    }
+    if (writer) {
+        if (Object.values(driveHeld).some(Boolean)) {
+            clearDrive(true);
+        }
+        if (Object.values(driveHeldSlave).some(Boolean)) {
+            clearDriveSlave(true);
+        }
+    }
+    renderBallMonitor();
+    if (next === 'video') {
+        checkVideoService();
+    } else {
+        requestRedraw(true);
+        requestRedrawSlave();
+    }
+}
 
 /* ---------- 终端 ---------- */
 
@@ -1736,10 +2783,23 @@ function handleTextLine(line) {
             updateParamValue(entry.id, parseFloat(m[1]));
         }
     }
+    if ((m = line.match(/^OK CAP REQ (\d+)$/))) {
+        $('videoCaptureStatus').textContent = `K230 已接收 ${m[1]} 张拍照请求，等待完成…`;
+    } else if ((m = line.match(/^OK CAP (\d+)$/))) {
+        $('videoCaptureStatus').textContent = `拍照完成，最新编号 ${m[1]}`;
+    } else if (line.startsWith('ERR CAP')) {
+        $('videoCaptureStatus').textContent = `拍照失败：${line}`;
+    }
     logReply(line);
 }
 
 /* ---------- 串口 ---------- */
+
+function updateBallSessionButtons() {
+    const connected = Boolean(writer);
+    $('btnBallVideoRun').disabled = !connected || Boolean(session);
+    $('btnBallVideoStop').disabled = !connected;
+}
 
 function setConnected(on) {
     $('connState').textContent = on ? '已连接' : '未连接';
@@ -1747,14 +2807,19 @@ function setConnected(on) {
     $('btnConnect').disabled = on;
     $('btnDisconnect').disabled = !on;
     document.querySelectorAll(
-        'button[data-send], button[data-cmd], button[data-drive], ' +
-        '#btnMask, #btnMaxRate, #btnRaw, #btnStop, #btnDriveMode, #btnRecord, ' +
+        'button[data-send], button[data-cmd], button[data-drive], button[data-video-drive], ' +
+        '#btnMask, #btnMaxRate, #btnRaw, #btnStop, #btnDriveMode, #btnVideoDriveMode, ' +
+        '#btnVideoCapture, #btnRecord, #btnBallVideoRun, #btnBallVideoStop, ' +
         '#btnParamRefresh, #btnParamApplyStored, #btnSessStart, ' +
         '#btnSlaveRate, #btnSlaveStop, #btnSlaveMask, ' +
         '#btnCalFinish, #btnOdomMark, #btnOdomCalc')
         .forEach((b) => { b.disabled = !on; });
+    $('btnSessStart').disabled = !on || focusIsConfigurationOnly() ||
+        sessionPreparing || Boolean(session);
+    $('btnRecord').disabled = !on || recordingPreparing;
     $('servoO').disabled = !on;
     $('servoD').disabled = !on;
+    updateBallSessionButtons();
     updateDriveControls();
     if (!on) {
         /* 断开后键盘不该还在"驾驶"一台连不上的车。 */
@@ -1783,8 +2848,8 @@ async function connect() {
         readAbort = false;
         readTask = readLoop();
         await applyFocusedTelemetrySelection(true);
-        /* 稍等固件把 READY 横幅吐完，再拉一次完整参数表。 */
-        setTimeout(() => { send('K?'); }, 300);
+        /* 稍等 READY 横幅吐完；读取时会临时停遥测，避免参数表挤爆 TX。 */
+        setTimeout(() => { refreshParameters(); }, 300);
     } catch (err) {
         log('连接失败：' + err.message, 'err');
     }
@@ -1806,6 +2871,7 @@ async function readLoop() {
                 textLines, schemaChanged, samplesAdded,
                 captureAdded, captureEnded,
             } = masterEv;
+            telemetrySamplesReceived += samplesAdded;
             textLines.forEach(handleTextLine);
             if (schemaChanged) {
                 rebuildSeries();
@@ -2053,15 +3119,15 @@ function renderWheelMapping() {
         return;
     }
     const card = (side, prefix, result) => {
-        const baselineFF = WHEEL_TESTED_BASELINE[prefix + 'ff'];
-        const baselineSF = WHEEL_TESTED_BASELINE[prefix + 'sf'];
+        const baselineFF = WHEEL_MECHANICAL_BASELINE[prefix + 'ff'];
+        const baselineSF = WHEEL_MECHANICAL_BASELINE[prefix + 'sf'];
         const iText = Number.isFinite(result.integralWorst) ?
             result.integralWorst.toFixed(1) : '无限（积分限=0）';
         return `<div class="wheel-side"><b>${side}轮</b><br>` +
             `<code>PWM=${fmtParam(result.ff)}×速度+${fmtParam(result.sf)}</code><br>` +
             `基础 ${result.base.raw.toFixed(1)}；静止 P 修正 ${result.proportionalAtRest.toFixed(1)}<br>` +
             `静止首拍估计 <strong>${result.firstRaw.toFixed(1)}</strong>；积分最坏附加 ${iText}<br>` +
-            `已测基线 ff/sf=${fmtParam(baselineFF)}/${fmtParam(baselineSF)}</div>`;
+            `机械换算初值 ff/sf=${fmtParam(baselineFF)}/${fmtParam(baselineSF)}</div>`;
     };
     const warnings = [];
     const showLeft = focusState.side !== 'right';
@@ -2090,8 +3156,11 @@ function renderParamTable() {
     const groupOrder = {
         '左轮速度 PI 与前馈': 0,
         '右轮速度 PI 与前馈': 1,
-        '其他控制与标定': 2,
-        '双轮批量兼容参数': 3,
+        '要求2单圈巡线': 2,
+        '六路红外巡线': 3,
+        '要求3摆球': 4,
+        '其他控制与标定': 5,
+        '双轮批量兼容参数': 6,
     };
     const ids = Object.keys(paramCache).map(Number).sort((a, b) => {
         const groupA = PARAM_GROUPS[paramCache[a].name] || '其他控制与标定';
@@ -2150,6 +3219,7 @@ function renderParamTable() {
     }
     renderWheelMapping();
     renderSessionParams();
+    renderLineRunConfigSummary();
 }
 
 function requestParameterWrite(entry, value, options = {}) {
@@ -2157,7 +3227,13 @@ function requestParameterWrite(entry, value, options = {}) {
         return false;
     }
     if (session) {
-        log('注意：试验进行中修改参数会立即生效', 'err');
+        const startSnapshotParams = new Set([
+            'h2cru', 'h2fin', 'h2clr', 'h2lap', 'h2app', 'h2arm',
+            'h2max', 'h2off', 'lacc', 'ldec', 'lra', 'lkd', 'lcv', 'lch',
+        ]);
+        log(startSnapshotParams.has(entry.name) ?
+            '当前巡线保持启动快照；本次写入仅影响下一次 N/KEY1 启动' :
+            '注意：试验进行中修改该参数会立即生效', 'err');
     }
     const independentPresent = paramByName('lwkp') && paramByName('rwkp');
     const legacyWheel = ['wkp', 'wki', 'wil', 'wff', 'wsf'];
@@ -2182,6 +3258,51 @@ function requestParameterWrite(entry, value, options = {}) {
 
     send(`K${entry.id}=${parseFloat(value.toFixed(5))}`);
     return true;
+}
+
+async function refreshParameters() {
+    if (!writer || parameterRefreshRunning) return;
+    if (session || sessionPreparing || recording || recordingPreparing) {
+        log('运动采样进行中不刷新参数表，结束后再读取', 'err');
+        return;
+    }
+
+    parameterRefreshRunning = true;
+    $('btnParamRefresh').disabled = true;
+    const restoreRate = Number.isFinite(lastRateHz) ? lastRateHz : 0;
+    let completed = false;
+    try {
+        focusedTelemetryGeneration += 1;
+        await focusedTelemetryApplyChain;
+        await sendAndWait('G0', (line) => line === 'OK G=0', 2500);
+        /* 2048 B TX 环缓可能仍有旧样本；115200 8N1 下等待后再拉整表。 */
+        await new Promise((resolve) => setTimeout(resolve, 220));
+
+        for (let attempt = 0; attempt < 2 && !completed; attempt += 1) {
+            paramCache = {};
+            scheduleParamRender();
+            const reply = await sendAndWait('K?',
+                (line) => /^OK K COUNT=\d+$/.test(line), 5000);
+            const expected = Number(reply.match(/\d+$/)[0]);
+            const received = Object.keys(paramCache).length;
+            completed = received === expected;
+            if (!completed) {
+                log(`参数表不完整：收到 ${received}/${expected}，正在重试`, 'err');
+                await new Promise((resolve) => setTimeout(resolve, 220));
+            }
+        }
+        if (!completed) throw new Error('参数表返回不完整');
+        log(`参数读取完成：${Object.keys(paramCache).length} 项`, 'ok');
+    } catch (err) {
+        log('参数读取失败：' + err.message, 'err');
+    } finally {
+        if (writer && restoreRate > 0) {
+            await sendAndWait('G' + restoreRate,
+                (line) => line === `OK G=${restoreRate}`, 2500).catch(() => {});
+        }
+        parameterRefreshRunning = false;
+        $('btnParamRefresh').disabled = !writer;
+    }
 }
 
 function saveParamsToBrowser() {
@@ -2241,6 +3362,198 @@ async function applyStoredParams() {
 
 function latestSample() {
     return parser.samples.length > 0 ? parser.samples[parser.samples.length - 1] : null;
+}
+
+function describeLineDetection(gray) {
+    if (gray === null) {
+        return '—';
+    }
+    if (gray === 0) {
+        return '未检测（延时判丢）';
+    }
+
+    let activeCount = 0;
+    for (let bit = 0; bit < 6; bit++) {
+        if ((gray & (1 << bit)) !== 0) {
+            activeCount += 1;
+        }
+    }
+    if (activeCount >= 3) {
+        return '多路 / 横线';
+    }
+    if ((gray & 0x02) !== 0) return 'CH2 弧线入口';
+    if ((gray & 0x10) !== 0) return 'CH5 弧线入口';
+    return '已检测';
+}
+
+function estimateYawRateDps(samples) {
+    if (!Array.isArray(samples) || samples.length < 2) {
+        return null;
+    }
+    const latest = samples[samples.length - 1];
+    if (!Number.isFinite(latest.ms) || !Number.isFinite(latest.yaw)) {
+        return null;
+    }
+    for (let index = samples.length - 2; index >= 0; index -= 1) {
+        const previous = samples[index];
+        const elapsedMs = latest.ms - previous.ms;
+        if (!Number.isFinite(previous.ms) || !Number.isFinite(previous.yaw)) {
+            continue;
+        }
+        if (elapsedMs <= 0 || elapsedMs > 200) {
+            continue;
+        }
+        const rate = (latest.yaw - previous.yaw) * 1000 / elapsedMs;
+        return Number.isFinite(rate) ? rate : null;
+    }
+    return null;
+}
+
+function renderLineRunConfigSummary() {
+    const summary = $('lineRunConfigSummary');
+    if (!summary) return;
+    const value = (name) => {
+        const entry = paramByName(name);
+        return entry && Number.isFinite(entry.value) ? entry.value : null;
+    };
+    const cruise = value('h2cru');
+    const finish = value('h2fin');
+    const clear = value('h2clr');
+    const lap = value('h2lap');
+    const approach = value('h2app');
+    const arm = value('h2arm');
+    const maximum = value('h2max');
+    const rollout = value('h2off');
+    const acceleration = value('lacc');
+    const deceleration = value('ldec');
+    if ([cruise, finish, clear, lap, approach, arm, maximum, rollout,
+         acceleration, deceleration].some((item) => item === null)) {
+        summary.textContent = '读取参数后显示下一次 KEY1 的速度与距离配置。';
+        summary.classList.remove('warn');
+        return;
+    }
+    const invalid = finish > cruise || approach > lap || arm < clear ||
+        maximum < lap || arm > maximum;
+    const slowStart = lap - approach;
+    summary.textContent = invalid ?
+        '配置关系无效：终点慢速不得高于巡航速度，且距离需满足起点清除 ≤ 横线启用 ≤ 最大保护、提前减速 ≤ 圈长 ≤ 最大保护。' :
+        `下次 KEY1：以 ${fmtParam(acceleration)} mm/s² 提速至 ${fmtParam(cruise)} mm/s；` +
+        `${fmtParam(clear)} mm 后进入正常巡航；${fmtParam(slowStart)} mm 开始按 ` +
+        `${fmtParam(deceleration)} mm/s² 降至 ${fmtParam(finish)} mm/s；` +
+        `${fmtParam(arm)} mm 后识别横线，确认后再走 ${fmtParam(rollout)} mm 软停；` +
+        `${fmtParam(maximum)} mm 未识别则保护停车。`;
+    summary.classList.toggle('warn', invalid);
+}
+
+function renderLineMonitor() {
+    const panel = $('lineSessionTools');
+    const visible = focusState.loop === 'line';
+    panel.style.display = visible ? '' : 'none';
+    if (!visible) {
+        return;
+    }
+    const configOnly = focusStageConfig().configOnly === true;
+    $('lineMonitorTitle').textContent = configOnly ?
+        '要求 2 巡线 · KEY1 启动快照' : '六路红外巡线 · P + D';
+    $('lineTrialSpeeds').style.display = configOnly ? 'none' : '';
+    renderLineRunConfigSummary();
+
+    const sample = latestSample();
+    const gray = sample && Number.isFinite(sample.gray) ?
+        (Math.round(sample.gray) & 0x3F) : null;
+    document.querySelectorAll('[data-line-channel]').forEach((cell) => {
+        const bit = parseInt(cell.dataset.lineChannel, 10);
+        cell.classList.toggle('active', gray !== null && (gray & (1 << bit)) !== 0);
+    });
+
+    const error = sample && Number.isFinite(sample.lerr) ? sample.lerr : null;
+    const targetL = sample && Number.isFinite(sample.TL) ? sample.TL : null;
+    const targetR = sample && Number.isFinite(sample.TR) ? sample.TR : null;
+    const speedL = sample && Number.isFinite(sample.LV) ? sample.LV : null;
+    const speedR = sample && Number.isFinite(sample.RV) ? sample.RV : null;
+    const baseSpeed = targetL === null || targetR === null ?
+        null : (targetL + targetR) / 2;
+    const pair = (left, right) => left === null || right === null ?
+        '— / —' : `${left.toFixed(1)} / ${right.toFixed(1)}`;
+
+    const yawRateDps = estimateYawRateDps(parser.samples);
+
+    $('lineLiveState').textContent = describeLineDetection(gray);
+    $('lineLiveError').textContent = error === null ? '—' : error.toFixed(2);
+    $('lineLiveBase').textContent = baseSpeed === null ?
+        '—' : baseSpeed.toFixed(1) + ' mm/s';
+    $('lineLiveTargets').textContent = pair(targetL, targetR);
+    $('lineLiveSpeeds').textContent = pair(speedL, speedR);
+    $('lineLiveDelta').textContent = targetL === null || targetR === null ?
+        '—' : (targetL - targetR).toFixed(1) + ' mm/s';
+    $('lineLiveYawRate').textContent = yawRateDps === null ?
+        '—' : yawRateDps.toFixed(1) + ' °/s';
+}
+
+function renderBallMonitor() {
+    const holdLoop = focusState.loop === 'hold';
+    const title = $('ballMonitorTitle');
+    if (title) {
+        title.textContent = holdLoop ?
+            '要求 4 · 任意位置 → 稳定在 O 点' : '要求 3 · O → +5 cm → -5 cm';
+    }
+    const sample = latestSample();
+    const position = sample && Number.isFinite(sample.bpos) ? sample.bpos : null;
+    const reference = sample && Number.isFinite(sample.bref) ? sample.bref : null;
+    let previousReference = null;
+    for (let i = parser.samples.length - 2; i >= 0; i -= 1) {
+        if (Number.isFinite(parser.samples[i].bref)) {
+            previousReference = parser.samples[i].bref;
+            break;
+        }
+    }
+    const referenceDelta = reference !== null && previousReference !== null ?
+        reference - previousReference : 0;
+
+    let phase = '待机';
+    if (position === null) {
+        phase = '视觉未就绪';
+    } else if (session && (session.loop === 'ball' || session.loop === 'hold') &&
+               session.stopRequested) {
+        phase = reference !== null && Math.abs(reference) <= 1 ? '已回中' : '回中停止';
+    } else if (reference === null) {
+        phase = '等待摆球遥测';
+    } else if (session && session.loop === 'hold') {
+        /* 要求 4 的目标恒为 O，阶段只有「收敛中」和「保持」两种。 */
+        phase = Math.abs(position) <= 10 ?
+            (session.holdConvergedMs !== null ? '保持 O 点' : '接近 O 点') :
+            '收敛到 O 点';
+    } else if (reference <= -45) {
+        phase = referenceDelta < -0.2 ? '前往 -5 cm' : '保持 -5 cm';
+    } else if (referenceDelta < -0.2) {
+        phase = reference >= 35 ? '折返' : '前往 -5 cm';
+    } else if (reference >= 45) {
+        phase = '等待 +5 cm 稳定';
+    } else if (referenceDelta > 0.2 || reference > 2) {
+        phase = '前往 +5 cm';
+    } else if (session && session.loop === 'ball') {
+        phase = '从 O 点起步';
+    }
+
+    const values = {
+        phase,
+        position: position === null ? '视觉未就绪' : position.toFixed(1) + ' mm',
+        reference: reference === null ? '—' : reference.toFixed(1) + ' mm',
+        error: position === null || reference === null ?
+            '—' : (position - reference).toFixed(1) + ' mm',
+    };
+    document.querySelectorAll('[data-ball-field]').forEach((field) => {
+        field.textContent = values[field.dataset.ballField] || '—';
+    });
+
+    document.querySelectorAll('[data-ball-marker]').forEach((marker) => {
+        const value = marker.dataset.ballMarker === 'position' ? position : reference;
+        marker.style.display = value === null ? 'none' : '';
+        if (value !== null) {
+            const clamped = Math.max(-50, Math.min(50, value));
+            marker.style.left = ((clamped + 50) / 100 * 100).toFixed(1) + '%';
+        }
+    });
 }
 
 function odomMark() {
@@ -2349,6 +3662,15 @@ function focusSideConfig() {
     return loop.sides[focusState.side] || loop.sides[loop.defaultSide];
 }
 
+function focusStageConfig() {
+    const loop = focusLoopConfig();
+    return loop.stages[focusState.stage] || loop.stages[loop.defaultStage];
+}
+
+function focusIsConfigurationOnly() {
+    return focusStageConfig().configOnly === true;
+}
+
 function focusedParamNames() {
     const side = focusSideConfig();
     return side.params[focusState.stage] || [];
@@ -2453,28 +3775,38 @@ function plainStageLabel(label) {
     return label.replace(/^[①②③④⑤⑥⑦⑧⑨⑩]\s*/, '');
 }
 
+function selectFocusLoop(loopName, sendTelemetry = true) {
+    const next = TUNING_FOCUS[loopName];
+    if (!next) {
+        return Promise.resolve();
+    }
+    focusState = {
+        loop: loopName,
+        side: next.defaultSide,
+        stage: next.defaultStage,
+    };
+    pendingFocusedSeriesSelection = true;
+    refreshSessionInputs(true);
+    renderFocusNavigation();
+    return Promise.resolve(applyFocusedTelemetrySelection(sendTelemetry));
+}
+
 function renderFocusNavigation() {
     const loop = focusLoopConfig();
     const side = focusSideConfig();
-    const stage = loop.stages[focusState.stage] || loop.stages[loop.defaultStage];
+    const stage = focusStageConfig();
     $('sessLoop').value = focusState.loop;
     $('focusPath').textContent = `${loop.label} → ${side.label} → ${plainStageLabel(stage.label)}`;
-    $('focusStageHelp').textContent = `${stage.help} 曲线：${focusedSeriesNames().join(' / ')}。`;
-    $('focusHistoryTitle').textContent = `${side.label} · ${plainStageLabel(stage.label)} 试验记录`;
+    $('focusStageHelp').textContent = stage.configOnly ? stage.help :
+        `${stage.help} 曲线：${focusedSeriesNames().join(' / ')}。`;
+    $('focusHistoryTitle').textContent = `${side.label} · ${plainStageLabel(stage.label)} ${stage.configOnly ? '配置' : '试验记录'}`;
 
     const taskItems = Object.fromEntries(Object.entries(TUNING_FOCUS)
         .map(([value, item]) => [value, { label: item.label }]));
     renderFocusNavGroup('focusTaskNav', '任务', taskItems, focusState.loop, (loopName) => {
-        const next = TUNING_FOCUS[loopName];
-        focusState = {
-            loop: loopName,
-            side: next.defaultSide,
-            stage: next.defaultStage,
-        };
-        pendingFocusedSeriesSelection = true;
-        applyFocusedTelemetrySelection(true);
-        refreshSessionInputs(true);
-        renderFocusNavigation();
+        selectFocusLoop(loopName).catch((err) => {
+            log('切换调参任务失败：' + err.message, 'err');
+        });
     });
     renderFocusNavGroup('focusObjectNav', '对象', loop.sides, focusState.side, (sideName) => {
         focusState.side = sideName;
@@ -2485,12 +3817,17 @@ function renderFocusNavigation() {
     renderFocusNavGroup('focusStageNav', '阶段', loop.stages, focusState.stage, (stageName) => {
         focusState.stage = stageName;
         pendingFocusedSeriesSelection = true;
+        refreshSessionInputs(false);
         applyFocusedTelemetrySelection(true);
         renderFocusNavigation();
     }, true);
 
     $('wheelSessionTools').style.display = focusState.loop === 'wheel' ? '' : 'none';
     $('wheelMap').style.display = focusState.loop === 'wheel' ? '' : 'none';
+    $('ballSessionTools').style.display =
+        (focusState.loop === 'ball' || focusState.loop === 'hold') ? '' : 'none';
+    renderLineMonitor();
+    renderBallMonitor();
     renderSessionParams();
     renderWheelMapping();
     rebuildSeries();
@@ -2505,13 +3842,30 @@ function renderFocusNavigation() {
 
 function refreshSessionInputs(resetValues = true) {
     const p = sessionPreset();
-    $('sessAmpLabel').textContent = p.ampLabel;
-    if (resetValues) $('sessAmp').value = p.ampDefault;
-    $('sessDurWrap').style.display = p.timed ? '' : 'none';
+    const configOnly = focusIsConfigurationOnly();
+    const ampVisible = !configOnly && p.ampVisible !== false;
+    $('sessAmpWrap').style.display = ampVisible ? '' : 'none';
+    if (ampVisible) {
+        $('sessAmpLabel').textContent = p.ampLabel;
+        if (resetValues) $('sessAmp').value = p.ampDefault;
+    }
+    $('sessDurWrap').style.display = !configOnly && p.timed ? '' : 'none';
+    $('sessDurLabel').textContent =
+        (focusState.loop === 'ball' || focusState.loop === 'hold') ?
+            '记录上限s' : '时长s';
     if (p.timed && resetValues) {
         $('sessDur').value = p.durDefault;
     }
-    $('sessStatus').textContent = '流程：改参数 → 开始试验 → 自动出指标 → 对比上一组。';
+    $('btnSessStart').textContent = configOnly ? '写入后按 KEY1 启动' :
+        focusState.loop === 'ball' ? '启动要求3（模拟 KEY2）' :
+        focusState.loop === 'hold' ? '启动要求4（模拟 KEY3）' : '开始试验';
+    $('btnSessStart').disabled = !writer || configOnly || Boolean(session) ||
+        sessionPreparing;
+    $('sessStatus').textContent = configOnly ?
+        '本阶段只配置 Param；车辆运行中不切换，下一次按 KEY1 时整组快照生效。' :
+        focusState.loop === 'hold' ?
+            '流程：把钢球放在任意位置 → 启动要求4 → 记满时长自动回中出指标。抗扰阶段在运行中用手拨球。' :
+            '流程：改参数 → 开始试验 → 自动出指标 → 对比上一组。';
     renderSessionParams();
 }
 
@@ -2607,11 +3961,15 @@ function renderSessionParams() {
 }
 
 async function startSession() {
-    if (session) {
+    if (session || sessionPreparing) {
+        return;
+    }
+    if (focusIsConfigurationOnly()) {
+        log('本阶段只写参数；请在车辆上按 KEY1 启动下一圈', 'err');
         return;
     }
     const p = sessionPreset();
-    const amp = parseFloat($('sessAmp').value);
+    const amp = Number.isFinite(p.fixedAmp) ? p.fixedAmp : parseFloat($('sessAmp').value);
     if (!Number.isFinite(amp)) {
         log('激励幅值不是数字', 'err');
         return;
@@ -2629,7 +3987,22 @@ async function startSession() {
         $('sessDur').value = duration;
     }
 
-    /* 专属数据：清终端与曲线，本次日志从试验标记开始。 */
+    sessionPreparing = true;
+    $('btnSessStart').disabled = true;
+    $('sessStatus').textContent = '正在配置遥测并等待首个样本…';
+    let preparedRate;
+    try {
+        preparedRate = await prepareTelemetryStream(p.mask, p.rate);
+    } catch (err) {
+        sessionPreparing = false;
+        $('btnSessStart').disabled = !writer || focusIsConfigurationOnly();
+        $('sessStatus').textContent = '采样未启动：' + err.message;
+        log('采样准备失败，未启动车辆：' + err.message, 'err');
+        return;
+    }
+    sessionPreparing = false;
+
+    /* 专属数据：确认遥测活跃后再清空，本次只保留激励期间的新样本。 */
     termEl.innerHTML = '';
     parser.clear();
     parser.clearCapture();
@@ -2649,15 +4022,17 @@ async function startSession() {
     session = {
         loop: focusState.loop, focusSide: focusState.side, focusStage: focusState.stage,
         focusPath, preset: p, excitation, snapshot, paramValues, amp,
-        rateHz: resolveSessionRate(p.mask, p.rate),
+        rateHz: preparedRate,
         captureArmed: false,
         sawActive: false, done: false, endTimer: null, stopTimer: null,
         guardTimer: null, stopFallbackTimer: null, finalizing: false,
+        stopAcknowledged: false, ballStableSinceMs: null,
+        holdStableSinceMs: null, holdConvergedMs: null,
     };
-    focusedTelemetryGeneration += 1;
     $('sessResult').style.display = 'none';
     $('btnSessStart').disabled = true;
     $('btnSessAbort').disabled = false;
+    updateBallSessionButtons();
     $('sessStatus').textContent = `试验进行中：${excitation}（直启，指标使用实时流）…`;
 
     try {
@@ -2681,7 +4056,7 @@ async function startSession() {
     session.guardTimer = setTimeout(() => { stopSession('超时安全收尾', true); }, 30000);
 }
 
-/* 掩码 → 预期列名（按 12 通道位序）。用于等待 schema 帧到达确认切换成功。 */
+/* 掩码 → 预期列名（按 14 通道位序）。用于等待 schema 帧到达确认切换成功。 */
 function expectedColumnsForMask(mask) {
     const columns = ['ms'];
     for (const [name] of CH_LIST) {
@@ -2709,7 +4084,50 @@ function waitForTelemetryColumns(expected, timeoutMs = 1600) {
     });
 }
 
+function waitForTelemetrySample(afterSerial, timeoutMs = 1600) {
+    return new Promise((resolve, reject) => {
+        const deadline = performance.now() + timeoutMs;
+        const poll = () => {
+            if (telemetrySamplesReceived > afterSerial) {
+                resolve();
+            } else if (performance.now() >= deadline) {
+                reject(new Error('遥测已开启但未收到样本'));
+            } else {
+                setTimeout(poll, 20);
+            }
+        };
+        poll();
+    });
+}
+
+async function prepareTelemetryStream(mask, desiredRate) {
+    if (!writer) throw new Error('串口未连接');
+    if (!Number.isFinite(mask) || mask <= 0) throw new Error('采样掩码无效');
+
+    /* 取消尚未完成的焦点切换，避免旧队列在准备完成后又补发 G0。 */
+    focusedTelemetryGeneration += 1;
+    await focusedTelemetryApplyChain;
+    await sendAndWait('G0', (line) => line === 'OK G=0');
+    await sendAndWait('M' + mask, (line) => /^OK M=\d+ G=\d+$/.test(line));
+    await queryCapability();
+    const rate = resolveSessionRate(mask, desiredRate);
+    const sampleSerial = telemetrySamplesReceived;
+    const expected = expectedColumnsForMask(mask);
+    await sendAndWait('G' + rate, (line) => line === `OK G=${rate}`);
+    await Promise.all([
+        waitForTelemetryColumns(expected),
+        waitForTelemetrySample(sampleSerial),
+    ]);
+    lastRateHz = rate;
+    $('gVal').value = rate;
+    renderRateLimit();
+    return rate;
+}
+
 function excitationReplyMatcher(p, amp) {
+    if (p.startReply) {
+        return (line) => line === p.startReply;
+    }
     if (p.stopCmd === 'W0') {
         return (line) => /^OK W=-?\d+$/.test(line);
     }
@@ -2722,6 +4140,8 @@ function excitationReplyMatcher(p, amp) {
 function stopReplyMatcher(command) {
     if (command === 'W0') return (line) => line === 'OK W=0';
     if (command === 'N0') return (line) => line === 'OK N=0';
+    if (command === 'C4') return (line) => line === 'OK BALL STOP';
+    if (command === 'C6') return (line) => line === 'OK HOLD STOP';
     return (line) => line === 'OK C=0';
 }
 
@@ -2735,6 +4155,12 @@ function sampleModeIdleState(sample) {
 function sessionSampleCompletionState(activeSession, sample, toleranceDeg = 2) {
     if (!activeSession || !sample) {
         return false;
+    }
+    if (activeSession.loop === 'ball' || activeSession.loop === 'hold') {
+        /* 要求 4 的 bref 保持期间本来就在 0 附近，光看 bref 无法区分
+         * 「还在保持」和「已回中」，所以必须先等 C6 被确认。 */
+        return activeSession.stopAcknowledged && Number.isFinite(sample.bref) &&
+            Math.abs(sample.bref) <= 0.5;
     }
     const idle = sampleModeIdleState(sample);
     if (idle !== null) {
@@ -2793,12 +4219,20 @@ async function requestSessionStop(reason) {
     try {
         await sendAndWait(session.preset.stopCmd,
             stopReplyMatcher(session.preset.stopCmd));
+        if (!session || session.done) {
+            return;
+        }
+        session.stopAcknowledged = true;
         session.stopFallbackTimer = setTimeout(() => {
             if (session && !session.done) {
                 stopSession('停车状态未确认', true);
             }
         }, 1600);
-        $('sessStatus').textContent = `${reason}，等待 IDLE/DONE 尾部数据…`;
+        $('sessStatus').textContent =
+            (session.loop === 'ball' || session.loop === 'hold') ?
+            `${reason}，${session.preset.stopCmd} 已确认，等待 bref 回中…` :
+            `${reason}，等待 IDLE/DONE 尾部数据…`;
+        watchSession();
     } catch (err) {
         await stopSession(reason + '，停车命令失败：' + err.message, true);
     }
@@ -2844,6 +4278,43 @@ function watchSession() {
         return;
     }
     const s = latestSample();
+    if (session.loop === 'ball' && !session.stopRequested) {
+        const atMinus = s && Number.isFinite(s.ms) && Number.isFinite(s.bref) &&
+            Number.isFinite(s.bpos) && s.bref <= -45 && Math.abs(s.bpos + 50) <= 5;
+        if (atMinus) {
+            if (session.ballStableSinceMs === null) {
+                session.ballStableSinceMs = s.ms;
+            } else if (s.ms - session.ballStableSinceMs >= 150) {
+                requestSessionStop('要求3：-5 cm 已稳定').catch((err) => {
+                    log('要求3自动回中失败：' + err.message, 'err');
+                });
+            }
+        } else {
+            session.ballStableSinceMs = null;
+        }
+        return;
+    }
+    /*
+     * 要求 4 故意不做「稳住就自动收尾」：它要考察的正是长期保持和抗扰，
+     * 提前停掉就什么都测不到。这一轮由记录时长的定时器结束，中途只记录
+     * 首次收敛时刻用于状态显示。
+     */
+    if (session.loop === 'hold' && !session.stopRequested) {
+        const atO = s && Number.isFinite(s.ms) && Number.isFinite(s.bpos) &&
+            Math.abs(s.bpos) <= 10;
+        if (atO) {
+            if (session.holdStableSinceMs === null) {
+                session.holdStableSinceMs = s.ms;
+            } else if (session.holdConvergedMs === null &&
+                       s.ms - session.holdStableSinceMs >= 300) {
+                session.holdConvergedMs = session.holdStableSinceMs;
+                log('要求4：钢球已收敛到 O 点，继续观察保持与抗扰', 'ok');
+            }
+        } else {
+            session.holdStableSinceMs = null;
+        }
+        return;
+    }
     const tolEntry = paramByName('ntl');
     const completed = sessionSampleCompletionState(session, s,
         tolEntry ? tolEntry.value : 2);
@@ -2963,9 +4434,10 @@ async function finalizeSession(reason, failed = false) {
         failed ? 'err' : 'ok');
     $('sessStatus').textContent =
         `上次试验：${run.focusPath || run.label} ${run.excitation}（${reason}，${sourceNote}）`;
-    $('btnSessStart').disabled = !writer;
+    $('btnSessStart').disabled = !writer || focusIsConfigurationOnly();
     $('btnSessAbort').disabled = true;
     session = null;
+    updateBallSessionButtons();
     persistRuns();
     renderSessionResult(run);
     renderRuns();
@@ -3072,6 +4544,13 @@ function ffSuggestions(run) {
 
 function abortSession() {
     if (!session) {
+        return;
+    }
+    if (session.loop === 'ball' || session.loop === 'hold') {
+        /* 摆杆任务的「结束」就是回中，不该走 emergencyStop 那条底盘急停路径。 */
+        requestSessionStop('手动回中').catch((err) => {
+            log('手动回中失败：' + err.message, 'err');
+        });
         return;
     }
     stopSession('手动结束', true);
@@ -3219,25 +4698,31 @@ const ARROW_KEY_MAP = {
 };
 let currentMark = 0;
 let recording = null;      /* { startedAt, samples[], marks[] } */
+let recordingPreparing = false;
 let sessions = [];         /* 已完成的录制会话 */
 let sessionSeq = 0;
 const SESSION_STORE_KEY = 'carDebugSessionsV1';
 
 /* 主车 = WASD，从车 = 方向键，固定不变；两个控制板常显，可同时独立驾驶。 */
 function updateDriveControls() {
-    document.querySelectorAll('.drive-key[data-drive-car]').forEach((button) => {
+    document.querySelectorAll('.drive-key[data-drive-car], [data-video-drive]').forEach((button) => {
         button.disabled = !writer || !driveEnabled;
     });
     $('driveHint').innerHTML = driveEnabled ?
         '键盘已接管：<kbd>W</kbd><kbd>A</kbd><kbd>S</kbd><kbd>D</kbd> 控主车，方向键 <kbd>↑</kbd><kbd>↓</kbd><kbd>←</kbd><kbd>→</kbd> 控从车，可同时独立驾驶 · 松开即停 · <kbd>Esc</kbd> 急停两车' :
         '启用后：<kbd>W</kbd><kbd>A</kbd><kbd>S</kbd><kbd>D</kbd> 控主车，方向键控从车；两套按键可同时用，松开即停。';
+    $('videoDriveState').textContent = driveEnabled ?
+        '键盘驾驶已启用' : (writer ? '键盘驾驶未启用' : '连接串口后可启用');
 }
 
 function setDriveEnabled(on) {
     driveEnabled = on && !!writer;
     $('drivePanel').classList.toggle('armed', driveEnabled);
-    $('btnDriveMode').textContent = driveEnabled ? '停用键盘驾驶' : '启用键盘驾驶';
-    $('btnDriveMode').classList.toggle('primary', driveEnabled);
+    $('videoDrivePanel').classList.toggle('armed', driveEnabled);
+    [$('btnDriveMode'), $('btnVideoDriveMode')].forEach((button) => {
+        button.textContent = driveEnabled ? '停用键盘驾驶' : '启用键盘驾驶';
+        button.classList.toggle('primary', driveEnabled);
+    });
     /* 进入驾驶时清零方向；退出或断连时分别补发两车停车帧。 */
     clearDrive(!driveEnabled);
     clearDriveSlave(!driveEnabled);
@@ -3261,8 +4746,8 @@ function driveVector() {
 }
 
 function updateDriveVisuals() {
-    document.querySelectorAll('.drive-key[data-drive-car="master"]').forEach((btn) => {
-        const dir = btn.dataset.drive;
+    document.querySelectorAll('.drive-key[data-drive-car="master"], [data-video-drive]').forEach((btn) => {
+        const dir = btn.dataset.videoDrive || btn.dataset.drive;
         if (Object.prototype.hasOwnProperty.call(driveHeld, dir)) {
             btn.classList.toggle('held', driveHeld[dir]);
         }
@@ -3356,7 +4841,22 @@ function setMark(value) {
     }
 }
 
-function startRecording() {
+async function startRecording() {
+    if (recording || recordingPreparing) return;
+    recordingPreparing = true;
+    $('btnRecord').disabled = true;
+    $('recordStatus').textContent = '正在配置遥测并等待首个样本…';
+    try {
+        await prepareTelemetryStream(checkedMask());
+    } catch (err) {
+        recordingPreparing = false;
+        $('btnRecord').disabled = !writer;
+        $('recordStatus').textContent = '未录制';
+        log('录制准备失败：' + err.message, 'err');
+        return;
+    }
+    recordingPreparing = false;
+    $('btnRecord').disabled = false;
     recording = { startedAt: Date.now(), samples: [], samplesSlave: [], marks: [] };
     $('btnRecord').textContent = '停止录制';
     $('btnRecord').classList.remove('primary');
@@ -3555,6 +5055,11 @@ function rebuildSeries() {
     } else {
         /* 表头重建只剔除已经消失的列，不覆盖用户手动增删的选择。 */
         selected = new Set([...selected].filter((column) => cols.includes(column)));
+    }
+    /* 遥测掩码切换后，旧列可能全部消失。恢复推荐列，保证新样本仍有曲线可画。 */
+    if (selected.size === 0) {
+        const fallback = recommended.filter((column) => cols.includes(column));
+        selected = new Set(fallback.length > 0 ? fallback : cols.slice(0, 3));
     }
     cols.forEach((col, i) => {
         const color = PALETTE[i % PALETTE.length];
@@ -3896,6 +5401,8 @@ const slaveRedraw = makeRedrawScheduler(drawSlavePlot, 'slaveFps');
 
 /* 暂停时数据照常累积，只是不画（force 用于窗口/暂停/悬浮这类需立即反映的改动）。 */
 function requestRedraw(force = false) {
+    renderLineMonitor();
+    renderBallMonitor();
     if (plotPaused && !force) {
         return;
     }
@@ -3987,11 +5494,12 @@ $('gVal').addEventListener('input', renderRateLimit);
 /* ---------- 遥控采集事件 ---------- */
 
 $('btnDriveMode').onclick = () => setDriveEnabled(!driveEnabled);
-$('btnRecord').onclick = () => {
+$('btnVideoDriveMode').onclick = () => setDriveEnabled(!driveEnabled);
+$('btnRecord').onclick = async () => {
     if (recording) {
         stopRecording();
     } else {
-        startRecording();
+        await startRecording();
     }
 };
 document.querySelectorAll('.drive-key[data-drive-car]').forEach((btn) => {
@@ -4009,6 +5517,164 @@ document.querySelectorAll('.drive-key[data-drive-car]').forEach((btn) => {
     btn.addEventListener('pointerleave', release);
     btn.addEventListener('pointercancel', release);
 });
+document.querySelectorAll('[data-video-drive]').forEach((button) => {
+    const dir = button.dataset.videoDrive;
+    button.addEventListener('pointerdown', (event) => {
+        event.preventDefault();
+        pressDrive(dir);
+    });
+    const release = () => releaseDrive(dir);
+    button.addEventListener('pointerup', release);
+    button.addEventListener('pointerleave', release);
+    button.addEventListener('pointercancel', release);
+});
+
+function mirrorDriveSetting(sourceId, targetId) {
+    const source = $(sourceId);
+    const target = $(targetId);
+    const copy = () => {
+        target.value = source.value;
+        if (Object.values(driveHeld).some(Boolean)) {
+            lastDriveSent = null;
+            applyDrive();
+        }
+    };
+    source.addEventListener('input', copy);
+}
+mirrorDriveSetting('driveSpeed', 'videoDriveSpeed');
+mirrorDriveSetting('videoDriveSpeed', 'driveSpeed');
+mirrorDriveSetting('driveTurn', 'videoDriveTurn');
+mirrorDriveSetting('videoDriveTurn', 'driveTurn');
+
+document.querySelectorAll('[data-workspace-view]').forEach((button) => {
+    button.addEventListener('click', () => setWorkspaceView(button.dataset.workspaceView));
+});
+window.addEventListener('hashchange', () => {
+    setWorkspaceView(window.location.hash === '#video' ? 'video' : 'debug', false);
+});
+$('btnVideoStart').onclick = startVideo;
+$('btnVideoStop').onclick = stopVideo;
+$('btnBallVideoRun').onclick = async () => {
+    if (!writer || session) {
+        return;
+    }
+    try {
+        await selectFocusLoop('ball', true);
+        await startSession();
+    } catch (err) {
+        log('要求3启动准备失败：' + err.message, 'err');
+        updateBallSessionButtons();
+    }
+};
+$('btnBallVideoStop').onclick = async () => {
+    if (!writer) {
+        return;
+    }
+    if (session) {
+        await requestSessionStop('视频页手动回中');
+        return;
+    }
+    try {
+        await sendAndWait('C4', stopReplyMatcher('C4'));
+        log('要求3已停止并回中', 'ok');
+    } catch (err) {
+        log('要求3回中失败：' + err.message, 'err');
+    }
+};
+$('btnBallOpenTuning').onclick = () => {
+    setWorkspaceView('debug');
+    selectFocusLoop('ball', true).catch((err) => {
+        log('打开要求3调参失败：' + err.message, 'err');
+    });
+};
+$('videoRtspUrl').addEventListener('keydown', (event) => {
+    if (event.key === 'Enter') {
+        startVideo();
+    }
+});
+$('btnVideoZoomOut').onclick = () => setVideoZoom(videoViewState.zoom - 0.1);
+$('btnVideoZoomIn').onclick = () => setVideoZoom(videoViewState.zoom + 0.1);
+$('videoZoom').addEventListener('input', (event) => {
+    setVideoZoom(Number(event.target.value) / 100);
+});
+$('btnVideoRotateLeft').onclick = () => setVideoRotation(videoViewState.rotation - 90);
+$('btnVideoRotateRight').onclick = () => setVideoRotation(videoViewState.rotation + 90);
+$('videoRotation').addEventListener('input', (event) => {
+    setVideoRotation(Number(event.target.value));
+});
+$('btnVideoFit').onclick = fitVideoView;
+$('btnVideoReset').onclick = resetVideoView;
+
+const videoScreen = $('videoScreen');
+videoScreen.addEventListener('wheel', (event) => {
+    if (!videoViewReady) return;
+    event.preventDefault();
+    setVideoZoom(videoViewState.zoom * (event.deltaY < 0 ? 1.1 : 0.9));
+}, { passive: false });
+videoScreen.addEventListener('dblclick', () => {
+    if (videoViewReady) fitVideoView();
+});
+videoScreen.addEventListener('pointerdown', (event) => {
+    if (!videoViewReady || event.button !== 0) return;
+    videoDragPointerId = event.pointerId;
+    videoDragStartX = event.clientX;
+    videoDragStartY = event.clientY;
+    videoDragPanX = videoViewState.panX;
+    videoDragPanY = videoViewState.panY;
+    videoScreen.setPointerCapture(event.pointerId);
+    videoScreen.classList.add('dragging');
+    videoScreen.focus();
+});
+videoScreen.addEventListener('pointermove', (event) => {
+    if (event.pointerId !== videoDragPointerId) return;
+    videoViewState.panX = videoDragPanX + event.clientX - videoDragStartX;
+    videoViewState.panY = videoDragPanY + event.clientY - videoDragStartY;
+    applyVideoTransform();
+});
+function finishVideoDrag(event) {
+    if (event.pointerId !== videoDragPointerId) return;
+    videoDragPointerId = null;
+    videoScreen.classList.remove('dragging');
+}
+videoScreen.addEventListener('pointerup', finishVideoDrag);
+videoScreen.addEventListener('pointercancel', finishVideoDrag);
+videoScreen.addEventListener('keydown', (event) => {
+    if (!videoViewReady) return;
+    const key = event.key.toLowerCase();
+    let handled = true;
+    if (key === 'q') setVideoRotation(videoViewState.rotation - 90);
+    else if (key === 'e') setVideoRotation(videoViewState.rotation + 90);
+    else if (key === 'f') fitVideoView();
+    else if (key === '0') resetVideoView();
+    else if (event.key === 'ArrowLeft') videoViewState.panX -= 16;
+    else if (event.key === 'ArrowRight') videoViewState.panX += 16;
+    else if (event.key === 'ArrowUp') videoViewState.panY -= 16;
+    else if (event.key === 'ArrowDown') videoViewState.panY += 16;
+    else handled = false;
+    if (!handled) return;
+    if (event.key.startsWith('Arrow')) applyVideoTransform();
+    event.preventDefault();
+    event.stopPropagation();
+});
+if (typeof ResizeObserver !== 'undefined') {
+    new ResizeObserver(() => {
+        if (videoViewReady) {
+            updateVideoFitScale();
+            applyVideoTransform();
+        }
+    }).observe(videoScreen);
+}
+$('btnVideoCapture').onclick = async () => {
+    const count = Math.max(1, Math.min(20,
+        parseInt($('videoCaptureCount').value, 10) || 1));
+    $('videoCaptureCount').value = count;
+    $('capVal').value = count;
+    $('videoCaptureStatus').textContent = `正在请求拍摄 ${count} 张…`;
+    const sent = await send('P' + count);
+    $('videoCaptureStatus').textContent = sent ?
+        `拍照命令已发送：P${count}，等待 K230 回执…` :
+        '拍照命令发送失败，请检查串口连接';
+};
 
 /*
  * 键盘驾驶与标记。只在启用驾驶模式后接管 WASD，避免误触；
@@ -4176,7 +5842,7 @@ function drawSlavePlot() {
     });
 }
 
-/* 从车掩码勾选框（复用 12 通道位定义），默认轮速子集。 */
+/* 从车掩码勾选框（复用 14 通道位定义），默认轮速子集。 */
 (function buildSlaveMaskUI() {
     const box = $('slaveMask');
     if (!box) { return; }
@@ -4311,7 +5977,7 @@ function clearDriveSlave(sendStop) {
     if (sendStop) { applyDriveSlave(); }
 }
 
-$('btnParamRefresh').onclick = () => send('K?');
+$('btnParamRefresh').onclick = refreshParameters;
 $('btnParamSave').onclick = saveParamsToBrowser;
 $('btnParamApplyStored').onclick = applyStoredParams;
 $('wVal').oninput = renderWheelMapping;
@@ -4320,6 +5986,11 @@ document.querySelectorAll('[data-wheel-speed]').forEach((button) => {
     button.onclick = () => {
         $('sessAmp').value = button.dataset.wheelSpeed;
         renderWheelMapping();
+    };
+});
+document.querySelectorAll('[data-line-speed]').forEach((button) => {
+    button.onclick = () => {
+        $('sessAmp').value = button.dataset.lineSpeed;
     };
 });
 
@@ -4436,6 +6107,11 @@ refreshSessionInputs(true);
 renderFocusNavigation();
 applyFocusedTelemetrySelection(false);
 renderRateLimit();
+const storedVideoUrl = localStorage.getItem(VIDEO_URL_STORE_KEY);
+if (storedVideoUrl) {
+    $('videoRtspUrl').value = storedVideoUrl;
+}
+setWorkspaceView(window.location.hash === '#video' ? 'video' : 'debug', false);
 log('等待连接。浏览器需支持 Web Serial（Chrome / Edge）。');
 </script>
 </body>

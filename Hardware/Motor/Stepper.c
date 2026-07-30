@@ -1,5 +1,7 @@
 #include "Hardware/Motor/Stepper.h"
 
+#if STEPPER_ENABLED
+
 #include "Hardware/Motor/EncoderStepper.h"
 #include "ti_msp_dl_config.h"
 
@@ -12,6 +14,7 @@
 
 #define STEPPER_CONTROL_HZ              100U
 #define STEPPER_MAX_SEGMENT_STEPS       160U
+#if STEPPER_FEEDBACK_ENABLED
 #define STEPPER_PWM_FRAME_CLOCKS        4119U
 #define STEPPER_PWM_HEADER_CLOCKS       16U
 #define STEPPER_PWM_MAX_CODE            4095U
@@ -20,6 +23,7 @@
 #define STEPPER_PWM_STABLE_FRAMES       3U
 #define STEPPER_PWM_TIMEOUT_TICKS       5U
 #define STEPPER_ABS_CAPTURE_CLOCK_HZ     CPUCLK_FREQ
+#endif
 
 static volatile Stepper_State_t s_state;
 static volatile bool s_enabled;
@@ -44,6 +48,7 @@ static const Stepper_Profile_t s_startupProfile = {
 static int32_t s_referenceSteps;
 static int32_t s_referenceEncoderCounts;
 
+#if STEPPER_FEEDBACK_ENABLED
 static volatile bool s_captureSynchronized;
 static volatile bool s_captureSignalLost;
 static volatile uint32_t s_capturePeriodTicks;
@@ -56,6 +61,7 @@ static uint8_t s_pwmTimeoutTicks;
 static bool s_pwmValid;
 static uint16_t s_absoluteCode;
 static float s_absoluteAngleDeg;
+#endif
 
 static int32_t Stepper_RoundDivideSigned(int64_t numerator, int32_t denominator)
 {
@@ -486,6 +492,8 @@ static uint16_t Stepper_GetPartialSegmentSteps(void)
     return (uint16_t)completed;
 }
 
+#if STEPPER_FEEDBACK_ENABLED
+
 static bool Stepper_DecodePwm(
     uint32_t highTicks, uint32_t periodTicks, uint16_t *code)
 {
@@ -546,6 +554,8 @@ static void Stepper_SetInitialReference(uint16_t code)
     }
 }
 
+#endif /* STEPPER_FEEDBACK_ENABLED */
+
 static Stepper_Result_t Stepper_StartMove(
     int32_t target, const Stepper_Profile_t *profile)
 {
@@ -601,6 +611,112 @@ static Stepper_Result_t Stepper_StartMove(
     return STEPPER_RESULT_OK;
 }
 
+/*
+ * 连续跟踪一个每拍都在变的目标。与 Stepper_StartMove 的一次性语义并存：
+ * 运动中重设目标不返回 BUSY，而是就地改写 s_targetSteps。
+ *
+ * 重新规划是免费的：ISR 的 Stepper_CompleteSegment() 在每个段边界都会
+ * 重读 s_targetSteps 并据此决定加速、匀速还是减速，段长为一个控制拍
+ * (STEPPER_CONTROL_HZ)，所以新目标最迟在一段之后生效，且全程遵守
+ * s_profile 的加速度限制，不会出现步率跳变。
+ *
+ * 反向必须绕道：直接翻转 DIR 会在电机仍有转速时改变方向而丢步。这里
+ * 把目标暂时钉在"按当前速度刹停所需的位置"，让既有的减速逻辑把速度
+ * 收到零；停稳后处于 READY，下一拍的调用会走正常启动路径反向。
+ */
+static Stepper_Result_t Stepper_TrackTo(
+    int32_t target, const Stepper_Profile_t *profile)
+{
+    uint32_t primask;
+    int32_t brakingSteps;
+    int32_t brakingTarget;
+
+    if ((profile != NULL) && (!Stepper_ProfileIsValid(profile)))
+    {
+        return STEPPER_RESULT_INVALID_ARGUMENT;
+    }
+    if (!Stepper_TargetIsWithinLimits(target))
+    {
+        return STEPPER_RESULT_LIMIT;
+    }
+
+    primask = __get_PRIMASK();
+    __disable_irq();
+
+    if (!s_enabled)
+    {
+        __set_PRIMASK(primask);
+        return STEPPER_RESULT_DISABLED;
+    }
+    if (!s_ready)
+    {
+        __set_PRIMASK(primask);
+        return STEPPER_RESULT_NOT_READY;
+    }
+    if (profile != NULL)
+    {
+        s_profile = *profile;
+    }
+
+    /* 空闲时等同于启动一次新运动；不能在这里直接改目标就返回，否则
+     * 定时器没跑起来，脉冲永远不会发出。 */
+    if ((s_state != STEPPER_STATE_MOVING) &&
+        (s_state != STEPPER_STATE_STOPPING))
+    {
+        if (target == s_emittedSteps)
+        {
+            s_targetSteps = target;
+            __set_PRIMASK(primask);
+            return STEPPER_RESULT_OK;
+        }
+        s_targetSteps = target;
+        s_direction = (target > s_emittedSteps) ? 1 : -1;
+        s_currentRateHz = s_profile.startStepRateHz;
+        s_stopRequested = false;
+        s_state = STEPPER_STATE_MOVING;
+        Stepper_SetDirection(s_direction);
+        Stepper_StartSegment();
+        __set_PRIMASK(primask);
+        return STEPPER_RESULT_OK;
+    }
+
+    /* 运动中：新目标在当前前进方向的前方时直接改写即可。 */
+    if (((s_direction > 0) && (target >= s_emittedSteps)) ||
+        ((s_direction < 0) && (target <= s_emittedSteps)))
+    {
+        s_targetSteps = target;
+        s_stopRequested = false;
+        __set_PRIMASK(primask);
+        return STEPPER_RESULT_OK;
+    }
+
+    /* 反向：先按当前速度刹停，别翻 DIR。 */
+    brakingSteps = (int32_t)Stepper_BrakingDistance(s_currentRateHz);
+    brakingTarget = s_emittedSteps + ((int32_t)s_direction * brakingSteps);
+    s_targetSteps = brakingTarget;
+    s_stopRequested = false;
+    __set_PRIMASK(primask);
+    return STEPPER_RESULT_OK;
+}
+
+Stepper_Result_t Stepper_TrackToSteps(
+    int32_t target, const Stepper_Profile_t *profile)
+{
+    return Stepper_TrackTo(target, profile);
+}
+
+Stepper_Result_t Stepper_TrackToAngle(
+    float degrees, const Stepper_Profile_t *profile)
+{
+    int32_t steps;
+
+    if (!Stepper_DegreesToSteps(degrees, &steps))
+    {
+        return STEPPER_RESULT_INVALID_ARGUMENT;
+    }
+    return Stepper_TrackTo(steps, profile);
+}
+
 void Stepper_Init(void)
 {
     const uint32_t primask = __get_PRIMASK();
@@ -623,6 +739,7 @@ void Stepper_Init(void)
     s_referenceSteps = 0;
     s_referenceEncoderCounts = 0;
 
+#if STEPPER_FEEDBACK_ENABLED
     s_captureSynchronized = false;
     s_captureSignalLost = false;
     s_capturePeriodTicks = 0U;
@@ -634,6 +751,15 @@ void Stepper_Init(void)
     s_pwmValid = false;
     s_absoluteCode = 0U;
     s_absoluteAngleDeg = 0.0f;
+#else
+    /*
+     * 反馈关闭时没有 MT6816 捕获中断来累计有效帧，s_ready 永远不会被置真，
+     * 那样每一条运动指令都会被 STEPPER_RESULT_NOT_READY 拒掉。开环步进本身
+     * 就是位置型执行器，不需要上电对绝对零位，位置闭环由外层钢球视觉负责，
+     * 所以这里直接就绪。
+     */
+    s_ready = true;
+#endif
 
     DL_GPIO_clearPins(
         BOARD_OUTPUTS_STEPPER_EN_PORT, BOARD_OUTPUTS_STEPPER_EN_PIN);
@@ -652,6 +778,7 @@ void Stepper_Init(void)
     NVIC_ClearPendingIRQ(STEPPER_PULSE_INST_INT_IRQN);
     NVIC_EnableIRQ(STEPPER_PULSE_INST_INT_IRQN);
 
+#if STEPPER_FEEDBACK_ENABLED
     DL_TimerG_setTimerCount(
         STEPPER_ABS_CAPTURE_INST, STEPPER_ABS_CAPTURE_INST_LOAD_VALUE);
     DL_TimerG_clearInterruptStatus(STEPPER_ABS_CAPTURE_INST,
@@ -660,6 +787,7 @@ void Stepper_Init(void)
     NVIC_ClearPendingIRQ(STEPPER_ABS_CAPTURE_INST_INT_IRQN);
     NVIC_EnableIRQ(STEPPER_ABS_CAPTURE_INST_INT_IRQN);
     DL_TimerG_startCounter(STEPPER_ABS_CAPTURE_INST);
+#endif
 
     if (!Stepper_StartupConfigurationIsValid())
     {
@@ -676,6 +804,10 @@ void Stepper_Init(void)
 
 void Stepper_Update(uint8_t elapsedTicks)
 {
+#if !STEPPER_FEEDBACK_ENABLED
+    /* 反馈关闭时没有 PWM 帧需要校验，也没有超时需要累计。 */
+    (void)elapsedTicks;
+#else
     uint32_t sequence;
     uint32_t periodTicks;
     uint32_t highTicks;
@@ -738,6 +870,7 @@ void Stepper_Update(uint8_t elapsedTicks)
             s_pwmStableFrames = 0U;
         }
     }
+#endif
 
     if (s_startupMovePending && s_ready && s_enabled)
     {
@@ -930,8 +1063,10 @@ void Stepper_GetStatus(Stepper_Status_t *status)
     bool enabled;
     bool ready;
     uint32_t primask;
+#if STEPPER_FEEDBACK_ENABLED
     int32_t encoderCounts;
     int32_t expectedCounts;
+#endif
 
     if (status == NULL)
     {
@@ -947,6 +1082,15 @@ void Stepper_GetStatus(Stepper_Status_t *status)
     ready = s_ready;
     __set_PRIMASK(primask);
 
+    status->enabled = enabled;
+    status->ready = ready;
+    status->busy =
+        (state == STEPPER_STATE_MOVING) ||
+        (state == STEPPER_STATE_STOPPING);
+    status->targetSteps = targetSteps;
+    status->emittedSteps = emittedSteps;
+
+#if STEPPER_FEEDBACK_ENABLED
     encoderCounts = Encoder_GetStepperCount();
     expectedCounts = Stepper_RoundDivideSigned(
         (int64_t)s_referenceEncoderCounts +
@@ -956,14 +1100,7 @@ void Stepper_GetStatus(Stepper_Status_t *status)
                 (int32_t)STEPPER_STEPS_PER_REVOLUTION),
         1);
 
-    status->enabled = enabled;
-    status->ready = ready;
-    status->busy =
-        (state == STEPPER_STATE_MOVING) ||
-        (state == STEPPER_STATE_STOPPING);
     status->pwmValid = s_pwmValid;
-    status->targetSteps = targetSteps;
-    status->emittedSteps = emittedSteps;
     status->encoderCounts = encoderCounts;
     status->trackingErrorCounts = Stepper_RoundDivideSigned(
         (int64_t)encoderCounts - expectedCounts, 1);
@@ -973,6 +1110,16 @@ void Stepper_GetStatus(Stepper_Status_t *status)
         (float)encoderCounts * (360.0f / 4096.0f);
     status->encoderTransitionErrors =
         Encoder_GetStepperTransitionErrors();
+#else
+    /* 反馈关闭：MT6816 与 AB 解码都没有实测通路，相关字段一律填 0。 */
+    status->pwmValid = false;
+    status->encoderCounts = 0;
+    status->trackingErrorCounts = 0;
+    status->absoluteCode = 0U;
+    status->absoluteAngleDeg = 0.0f;
+    status->multiTurnAngleDeg = 0.0f;
+    status->encoderTransitionErrors = 0U;
+#endif
     status->state = state;
 }
 
@@ -998,6 +1145,8 @@ void STEPPER_PULSE_INST_IRQHandler(void)
             break;
     }
 }
+
+#if STEPPER_FEEDBACK_ENABLED
 
 void STEPPER_ABS_CAPTURE_INST_IRQHandler(void)
 {
@@ -1036,3 +1185,97 @@ void STEPPER_ABS_CAPTURE_INST_IRQHandler(void)
             break;
     }
 }
+
+#endif /* STEPPER_FEEDBACK_ENABLED */
+
+#else
+
+/* 新步进引脚完成前的安全桩：所有调用均不触碰旧 PA25/PA14。 */
+void Stepper_Init(void) {}
+
+void Stepper_Update(uint8_t elapsedTicks)
+{
+    (void)elapsedTicks;
+}
+
+Stepper_Result_t Stepper_Enable(bool enable)
+{
+    (void)enable;
+    return STEPPER_RESULT_DISABLED;
+}
+
+Stepper_Result_t Stepper_MoveBySteps(
+    int32_t steps, const Stepper_Profile_t *profile)
+{
+    (void)steps;
+    (void)profile;
+    return STEPPER_RESULT_DISABLED;
+}
+
+Stepper_Result_t Stepper_MoveToSteps(
+    int32_t target, const Stepper_Profile_t *profile)
+{
+    (void)target;
+    (void)profile;
+    return STEPPER_RESULT_DISABLED;
+}
+
+Stepper_Result_t Stepper_MoveByAngle(
+    float degrees, const Stepper_Profile_t *profile)
+{
+    (void)degrees;
+    (void)profile;
+    return STEPPER_RESULT_DISABLED;
+}
+
+Stepper_Result_t Stepper_MoveToAngle(
+    float degrees, const Stepper_Profile_t *profile)
+{
+    (void)degrees;
+    (void)profile;
+    return STEPPER_RESULT_DISABLED;
+}
+
+Stepper_Result_t Stepper_TrackToSteps(
+    int32_t target, const Stepper_Profile_t *profile)
+{
+    (void)target;
+    (void)profile;
+    return STEPPER_RESULT_DISABLED;
+}
+
+Stepper_Result_t Stepper_TrackToAngle(
+    float degrees, const Stepper_Profile_t *profile)
+{
+    (void)degrees;
+    (void)profile;
+    return STEPPER_RESULT_DISABLED;
+}
+
+void Stepper_Stop(void) {}
+
+void Stepper_EmergencyStop(void) {}
+
+Stepper_Result_t Stepper_SetCurrentPosition(float degrees)
+{
+    (void)degrees;
+    return STEPPER_RESULT_DISABLED;
+}
+
+bool Stepper_IsBusy(void)
+{
+    return false;
+}
+
+void Stepper_GetStatus(Stepper_Status_t *status)
+{
+    Stepper_Status_t disabledStatus = {0};
+
+    if (status != 0)
+    {
+        disabledStatus.state = STEPPER_STATE_DISABLED;
+        *status = disabledStatus;
+    }
+}
+
+#endif

@@ -1,5 +1,6 @@
 #include "Hardware/Motor/Encoder.h"
 #include "Hardware/Motor/EncoderStepper.h"
+#include "Hardware/Motor/Stepper.h"
 #include "ti_msp_dl_config.h"
 
 #define LEFT_ENCODER_SIGN  (-1)
@@ -11,11 +12,15 @@
 
 static volatile int32_t s_leftCount;
 static volatile int32_t s_rightCount;
+#if STEPPER_FEEDBACK_ENABLED
 static volatile int32_t s_stepperCount;
 static volatile uint32_t s_stepperTransitionErrors;
+#endif
 static uint8_t s_leftState;
 static uint8_t s_rightState;
+#if STEPPER_FEEDBACK_ENABLED
 static uint8_t s_stepperState;
+#endif
 
 static const int8_t s_quadratureDelta[16] = {
      0, -1,  1,  0,
@@ -57,8 +62,13 @@ void Encoder_Init(void)
     NVIC_EnableIRQ(GPIOA_INT_IRQn);
 }
 
+/*
+ * PA13(A) 在 syscfg 里还在，但 B 相 PA29 已被六路红外拿走，缺一相就做不了正交
+ * 解码，所以整块 AB 解码随反馈开关一起编译掉，而不是跟着驱动开关走。
+ */
 void Encoder_InitStepper(void)
 {
+#if STEPPER_FEEDBACK_ENABLED
     DL_GPIO_initDigitalInputFeatures(STEPPER_ENCODER_A_A_IOMUX,
         DL_GPIO_INVERSION_DISABLE, DL_GPIO_RESISTOR_PULL_UP,
         DL_GPIO_HYSTERESIS_DISABLE, DL_GPIO_WAKEUP_DISABLE);
@@ -87,6 +97,7 @@ void Encoder_InitStepper(void)
         STEPPER_ENCODER_B_PORT, STEPPER_ENCODER_B_B_PIN);
     NVIC_ClearPendingIRQ(GPIOA_INT_IRQn);
     NVIC_EnableIRQ(GPIOA_INT_IRQn);
+#endif
 }
 
 int16_t Encoder_Get(uint8_t n)
@@ -104,6 +115,7 @@ int16_t Encoder_Get(uint8_t n)
 
 int32_t Encoder_GetStepperCount(void)
 {
+#if STEPPER_FEEDBACK_ENABLED
     int32_t count;
     uint32_t primask = __get_PRIMASK();
 
@@ -111,19 +123,27 @@ int32_t Encoder_GetStepperCount(void)
     count = s_stepperCount;
     __set_PRIMASK(primask);
     return count;
+#else
+    return 0;
+#endif
 }
 
 void Encoder_SetStepperCount(int32_t count)
 {
+#if STEPPER_FEEDBACK_ENABLED
     uint32_t primask = __get_PRIMASK();
 
     __disable_irq();
     s_stepperCount = count;
     __set_PRIMASK(primask);
+#else
+    (void)count;
+#endif
 }
 
 uint32_t Encoder_GetStepperTransitionErrors(void)
 {
+#if STEPPER_FEEDBACK_ENABLED
     uint32_t errors;
     uint32_t primask = __get_PRIMASK();
 
@@ -131,8 +151,22 @@ uint32_t Encoder_GetStepperTransitionErrors(void)
     errors = s_stepperTransitionErrors;
     __set_PRIMASK(primask);
     return errors;
+#else
+    return 0U;
+#endif
 }
 
+/*
+ * GROUP1 是 GPIOA、GPIOB、COMP0/1/2、TRNG 共用的一个中断向量，本函数负责
+ * 其中 GPIOA/GPIOB 的分派。下面处理左右轮与步进编码器所在的 GPIOA 六个引脚，
+ * 并把 GPIOA/GPIOB 其它已使能的挂起中断也清掉：GPIO 源没被清，中断线就一直拉着，而
+ * GROUP1 是优先级 0，会把主循环彻底饿死（现象即 OLED 冻结、车不动）。
+ *
+ * 现在 GPIOB 没有任何引脚开中断，这段兜底是空转；但只要以后给 GPIOB 加边沿
+ * 中断（按键改中断触发、超声波 echo 捕获、对射传感器、比较器过零等），没有
+ * 它就是一个必然踩到的死机。刻意不改动上面的 GPIOA 分派逻辑——组 IIDX 寄存器
+ * 读一次只返回并清一个源，按它重写分派容易漏掉编码器脉冲、让里程和速度失真。
+ */
 void GROUP1_IRQHandler(void)
 {
     const uint32_t wheelMask =
@@ -140,10 +174,16 @@ void GROUP1_IRQHandler(void)
         ENCODER_INPUTS_RIGHT_A_PIN | ENCODER_INPUTS_RIGHT_B_PIN;
     uint32_t wheelPending = DL_GPIO_getEnabledInterruptStatus(
         ENCODER_INPUTS_PORT, wheelMask);
+#if STEPPER_FEEDBACK_ENABLED
+    const uint32_t handledGpioAMask =
+        wheelMask | STEPPER_ENCODER_A_A_PIN | STEPPER_ENCODER_B_B_PIN;
     uint32_t stepperAPending = DL_GPIO_getEnabledInterruptStatus(
         STEPPER_ENCODER_A_PORT, STEPPER_ENCODER_A_A_PIN);
     uint32_t stepperBPending = DL_GPIO_getEnabledInterruptStatus(
         STEPPER_ENCODER_B_PORT, STEPPER_ENCODER_B_B_PIN);
+#else
+    const uint32_t handledGpioAMask = wheelMask;
+#endif
 
     if ((wheelPending &
          (ENCODER_INPUTS_LEFT_A_PIN | ENCODER_INPUTS_LEFT_B_PIN)) != 0U)
@@ -169,6 +209,7 @@ void GROUP1_IRQHandler(void)
             s_quadratureDelta[(s_rightState << 2) | next]);
         s_rightState = next;
     }
+#if STEPPER_FEEDBACK_ENABLED
     if ((stepperAPending | stepperBPending) != 0U)
     {
         uint8_t next = Encoder_ReadState(
@@ -189,12 +230,32 @@ void GROUP1_IRQHandler(void)
         }
         s_stepperState = next;
     }
+#endif
     DL_GPIO_clearInterruptStatus(
         ENCODER_INPUTS_PORT, wheelPending & wheelMask);
+#if STEPPER_FEEDBACK_ENABLED
     DL_GPIO_clearInterruptStatus(
         STEPPER_ENCODER_A_PORT,
         stepperAPending & STEPPER_ENCODER_A_A_PIN);
     DL_GPIO_clearInterruptStatus(
         STEPPER_ENCODER_B_PORT,
         stepperBPending & STEPPER_ENCODER_B_B_PIN);
+#endif
+
+    /* 兜底：清掉本组其余已使能的挂起中断（GPIOA 非编码器引脚 + 整个 GPIOB），
+     * 避免将来新增的中断源在这里清不掉而把中断线永久拉住。 */
+    {
+        uint32_t others = DL_GPIO_getEnabledInterruptStatus(
+            ENCODER_INPUTS_PORT, ~handledGpioAMask);
+
+        if (others != 0U)
+        {
+            DL_GPIO_clearInterruptStatus(ENCODER_INPUTS_PORT, others);
+        }
+        others = DL_GPIO_getEnabledInterruptStatus(GPIOB, 0xFFFFFFFFU);
+        if (others != 0U)
+        {
+            DL_GPIO_clearInterruptStatus(GPIOB, others);
+        }
+    }
 }

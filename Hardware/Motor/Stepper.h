@@ -4,6 +4,25 @@
 #include <stdbool.h>
 #include <stdint.h>
 
+/*
+ * 步进的「驱动」和「反馈」拆成两个独立开关，原因是这两条链路的引脚命运不同：
+ *
+ * - 驱动链完好：ST=PB8（TIMA0 CCP0）、DIR=PB9、EN=PB12 都还在 syscfg 里，
+ *   开环发脉冲不依赖任何反馈引脚，所以 STEPPER_ENABLED 默认为 1。
+ * - 反馈链使用 AB-A=PA13、AB-B=PA29、绝对角 PWM=PB13，与六路红外
+ *   PA25/PA14 软件 I2C 相互独立。
+ *
+ * 摆杆滚球用开环步进驱动：步进本身就是位置型执行器，位置闭环由外层钢球
+ * 视觉负责；MT6816 反馈同时用于位置观测和上电绝对角基准。
+ */
+#ifndef STEPPER_ENABLED
+#define STEPPER_ENABLED 1U
+#endif
+
+#ifndef STEPPER_FEEDBACK_ENABLED
+#define STEPPER_FEEDBACK_ENABLED 1U
+#endif
+
 /* Mechanical and feedback scale for MS42CG with 16 microsteps. */
 #define STEPPER_STEPS_PER_REVOLUTION          3200U
 #define STEPPER_ENCODER_COUNTS_PER_REVOLUTION 4096U
@@ -67,6 +86,11 @@ typedef struct {
     uint32_t accelerationStepsPerSec2;
 } Stepper_Profile_t;
 
+/*
+ * STEPPER_FEEDBACK_ENABLED == 0 时，下列反馈字段恒为 0：pwmValid、
+ * encoderCounts、trackingErrorCounts、absoluteCode、absoluteAngleDeg、
+ * multiTurnAngleDeg、encoderTransitionErrors。
+ */
 typedef struct {
     bool enabled;                    /* EN output is active high. */
     bool ready;                      /* Startup absolute reference acquired. */
@@ -89,6 +113,8 @@ typedef struct {
  * With auto-start enabled, EN is asserted after safe timer setup. Three valid
  * PWM frames establish the absolute reference, then motion starts toward
  * STEPPER_INITIAL_ANGLE_DEG.
+ * When feedback is disabled, capture and AB decoding are skipped and ready
+ * becomes true immediately.
  */
 void Stepper_Init(void);
 
@@ -115,6 +141,20 @@ Stepper_Result_t Stepper_MoveByAngle(
 
 /* Starts a move to a limited absolute software angle coordinate. */
 Stepper_Result_t Stepper_MoveToAngle(
+    float degrees, const Stepper_Profile_t *profile);
+
+/*
+ * 连续跟踪一个不断变化的绝对目标：运动中重设目标不返回 BUSY，而是让
+ * 既有的梯形速度规划就地重新规划。供每拍更新目标的闭环使用（摆杆平衡
+ * 每 10 ms 算一个新倾角）。上面的 MoveTo/MoveBy 保持一次性语义不变，
+ * 两套并存，不要混用同一次运动。
+ *
+ * profile 传 NULL 表示沿用上一次的规划参数。反向重设目标时会先按加速度
+ * 限制减速到零再反向，不会直接翻转 DIR。
+ */
+Stepper_Result_t Stepper_TrackToSteps(
+    int32_t target, const Stepper_Profile_t *profile);
+Stepper_Result_t Stepper_TrackToAngle(
     float degrees, const Stepper_Profile_t *profile);
 
 /* Requests trapezoidal deceleration to a stop. EN remains active. */
