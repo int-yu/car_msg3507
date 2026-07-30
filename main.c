@@ -212,6 +212,7 @@ static void Test_ShowBallPosition(void)
 static void Test_UpdateDisplay(void)
 {
     Stepper_Status_t status;
+    uint32_t angleTenths;
     uint8_t index;
 
     if (OLED_IsReady() == 0U)
@@ -220,6 +221,8 @@ static void Test_UpdateDisplay(void)
     }
 
     Stepper_GetStatus(&status);
+    angleTenths =
+        ((uint32_t)status.absoluteCode * 3600U + 2048U) / 4096U;
 
     OLED_Clear();
     OLED_ShowString(0, 0, "KEY:", OLED_6X8);
@@ -238,6 +241,17 @@ static void Test_UpdateDisplay(void)
     OLED_ShowSignedNum(30, 32, s_leftEncoderCount, 8U, OLED_6X8);
     OLED_ShowString(0, 40, "RENC:", OLED_6X8);
     OLED_ShowSignedNum(30, 40, s_rightEncoderCount, 8U, OLED_6X8);
+    OLED_ShowString(0, 48, "PWM:", OLED_6X8);
+    if (!status.pwmValid)
+    {
+        OLED_ShowString(24, 48, "LOST", OLED_6X8);
+    }
+    else
+    {
+        OLED_ShowNum(24, 48, angleTenths / 10U, 3U, OLED_6X8);
+        OLED_ShowChar(42, 48, '.', OLED_6X8);
+        OLED_ShowNum(48, 48, angleTenths % 10U, 1U, OLED_6X8);
+    }
     OLED_Update();
 }
 
