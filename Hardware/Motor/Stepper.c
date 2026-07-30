@@ -14,6 +14,7 @@
 
 #define STEPPER_CONTROL_HZ              100U
 #define STEPPER_MAX_SEGMENT_STEPS       160U
+#if STEPPER_FEEDBACK_ENABLED
 #define STEPPER_PWM_FRAME_CLOCKS        4119U
 #define STEPPER_PWM_HEADER_CLOCKS       16U
 #define STEPPER_PWM_MAX_CODE            4095U
@@ -22,6 +23,7 @@
 #define STEPPER_PWM_STABLE_FRAMES       3U
 #define STEPPER_PWM_TIMEOUT_TICKS       5U
 #define STEPPER_ABS_CAPTURE_CLOCK_HZ     CPUCLK_FREQ
+#endif
 
 static volatile Stepper_State_t s_state;
 static volatile bool s_enabled;
@@ -38,6 +40,7 @@ static Stepper_Profile_t s_profile;
 static int32_t s_referenceSteps;
 static int32_t s_referenceEncoderCounts;
 
+#if STEPPER_FEEDBACK_ENABLED
 static volatile bool s_captureSynchronized;
 static volatile bool s_captureSignalLost;
 static volatile uint32_t s_capturePeriodTicks;
@@ -50,6 +53,7 @@ static uint8_t s_pwmTimeoutTicks;
 static bool s_pwmValid;
 static uint16_t s_absoluteCode;
 static float s_absoluteAngleDeg;
+#endif
 
 static int32_t Stepper_RoundDivideSigned(int64_t numerator, int32_t denominator)
 {
@@ -378,6 +382,8 @@ static uint16_t Stepper_GetPartialSegmentSteps(void)
     return (uint16_t)completed;
 }
 
+#if STEPPER_FEEDBACK_ENABLED
+
 static bool Stepper_DecodePwm(
     uint32_t highTicks, uint32_t periodTicks, uint16_t *code)
 {
@@ -437,6 +443,8 @@ static void Stepper_SetInitialReference(uint16_t code)
         s_state = STEPPER_STATE_READY;
     }
 }
+
+#endif /* STEPPER_FEEDBACK_ENABLED */
 
 static Stepper_Result_t Stepper_StartMove(
     int32_t target, const Stepper_Profile_t *profile)
@@ -508,6 +516,7 @@ void Stepper_Init(void)
     s_referenceSteps = 0;
     s_referenceEncoderCounts = 0;
 
+#if STEPPER_FEEDBACK_ENABLED
     s_captureSynchronized = false;
     s_captureSignalLost = false;
     s_capturePeriodTicks = 0U;
@@ -519,6 +528,15 @@ void Stepper_Init(void)
     s_pwmValid = false;
     s_absoluteCode = 0U;
     s_absoluteAngleDeg = 0.0f;
+#else
+    /*
+     * 反馈关闭时没有 MT6816 捕获中断来累计有效帧，s_ready 永远不会被置真，
+     * 那样每一条运动指令都会被 STEPPER_RESULT_NOT_READY 拒掉。开环步进本身
+     * 就是位置型执行器，不需要上电对绝对零位，位置闭环由外层钢球视觉负责，
+     * 所以这里直接就绪。
+     */
+    s_ready = true;
+#endif
 
     DL_GPIO_clearPins(
         BOARD_OUTPUTS_STEPPER_EN_PORT, BOARD_OUTPUTS_STEPPER_EN_PIN);
@@ -537,6 +555,7 @@ void Stepper_Init(void)
     NVIC_ClearPendingIRQ(STEPPER_PULSE_INST_INT_IRQN);
     NVIC_EnableIRQ(STEPPER_PULSE_INST_INT_IRQN);
 
+#if STEPPER_FEEDBACK_ENABLED
     DL_TimerG_setTimerCount(
         STEPPER_ABS_CAPTURE_INST, STEPPER_ABS_CAPTURE_INST_LOAD_VALUE);
     DL_TimerG_clearInterruptStatus(STEPPER_ABS_CAPTURE_INST,
@@ -545,11 +564,16 @@ void Stepper_Init(void)
     NVIC_ClearPendingIRQ(STEPPER_ABS_CAPTURE_INST_INT_IRQN);
     NVIC_EnableIRQ(STEPPER_ABS_CAPTURE_INST_INT_IRQN);
     DL_TimerG_startCounter(STEPPER_ABS_CAPTURE_INST);
+#endif
     __set_PRIMASK(primask);
 }
 
 void Stepper_Update(uint8_t elapsedTicks)
 {
+#if !STEPPER_FEEDBACK_ENABLED
+    /* 反馈关闭时没有 PWM 帧需要校验，也没有超时需要累计。 */
+    (void)elapsedTicks;
+#else
     uint32_t sequence;
     uint32_t periodTicks;
     uint32_t highTicks;
@@ -612,6 +636,7 @@ void Stepper_Update(uint8_t elapsedTicks)
             s_pwmStableFrames = 0U;
         }
     }
+#endif
 }
 
 Stepper_Result_t Stepper_Enable(bool enable)
@@ -778,8 +803,10 @@ void Stepper_GetStatus(Stepper_Status_t *status)
     bool enabled;
     bool ready;
     uint32_t primask;
+#if STEPPER_FEEDBACK_ENABLED
     int32_t encoderCounts;
     int32_t expectedCounts;
+#endif
 
     if (status == NULL)
     {
@@ -795,6 +822,15 @@ void Stepper_GetStatus(Stepper_Status_t *status)
     ready = s_ready;
     __set_PRIMASK(primask);
 
+    status->enabled = enabled;
+    status->ready = ready;
+    status->busy =
+        (state == STEPPER_STATE_MOVING) ||
+        (state == STEPPER_STATE_STOPPING);
+    status->targetSteps = targetSteps;
+    status->emittedSteps = emittedSteps;
+
+#if STEPPER_FEEDBACK_ENABLED
     encoderCounts = Encoder_GetStepperCount();
     expectedCounts = Stepper_RoundDivideSigned(
         (int64_t)s_referenceEncoderCounts +
@@ -804,14 +840,7 @@ void Stepper_GetStatus(Stepper_Status_t *status)
                 (int32_t)STEPPER_STEPS_PER_REVOLUTION),
         1);
 
-    status->enabled = enabled;
-    status->ready = ready;
-    status->busy =
-        (state == STEPPER_STATE_MOVING) ||
-        (state == STEPPER_STATE_STOPPING);
     status->pwmValid = s_pwmValid;
-    status->targetSteps = targetSteps;
-    status->emittedSteps = emittedSteps;
     status->encoderCounts = encoderCounts;
     status->trackingErrorCounts = Stepper_RoundDivideSigned(
         (int64_t)encoderCounts - expectedCounts, 1);
@@ -821,6 +850,16 @@ void Stepper_GetStatus(Stepper_Status_t *status)
         (float)encoderCounts * (360.0f / 4096.0f);
     status->encoderTransitionErrors =
         Encoder_GetStepperTransitionErrors();
+#else
+    /* 反馈关闭：MT6816 与 AB 解码都没有实测通路，相关字段一律填 0。 */
+    status->pwmValid = false;
+    status->encoderCounts = 0;
+    status->trackingErrorCounts = 0;
+    status->absoluteCode = 0U;
+    status->absoluteAngleDeg = 0.0f;
+    status->multiTurnAngleDeg = 0.0f;
+    status->encoderTransitionErrors = 0U;
+#endif
     status->state = state;
 }
 
@@ -846,6 +885,8 @@ void STEPPER_PULSE_INST_IRQHandler(void)
             break;
     }
 }
+
+#if STEPPER_FEEDBACK_ENABLED
 
 void STEPPER_ABS_CAPTURE_INST_IRQHandler(void)
 {
@@ -884,6 +925,8 @@ void STEPPER_ABS_CAPTURE_INST_IRQHandler(void)
             break;
     }
 }
+
+#endif /* STEPPER_FEEDBACK_ENABLED */
 
 #else
 

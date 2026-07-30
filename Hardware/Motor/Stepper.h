@@ -5,12 +5,24 @@
 #include <stdint.h>
 
 /*
- * PA25/PA14 已改作六路红外的软件 I2C。步进电机已预留独立引脚：
- * ST=PB8、DIR=PB9、EN=PB12、AB=PA13/PA29、绝对 PWM=PB13。
- * 当前仍以桩实现保持 API 可链接；只有确认步进硬件接线后，才可覆写为 1。
+ * 步进的「驱动」和「反馈」拆成两个独立开关，原因是这两条链路的引脚命运不同：
+ *
+ * - 驱动链完好：ST=PB8（TIMA0 CCP0）、DIR=PB9、EN=PB12 都还在 syscfg 里，
+ *   开环发脉冲不依赖任何反馈引脚，所以 STEPPER_ENABLED 默认为 1。
+ * - 反馈链缺失：MT6816 原来的 PA25/PA14 已改作六路红外的软件 I2C，绝对角
+ *   PWM 捕获和 AB 双相解码都没有可用的实测通路，所以
+ *   STEPPER_FEEDBACK_ENABLED 默认为 0。
+ *
+ * 摆杆滚球用开环步进驱动：步进本身就是位置型执行器，位置闭环由外层钢球
+ * 视觉负责，绝对编码器不是必需品。只有确认反馈接线后，才可把
+ * STEPPER_FEEDBACK_ENABLED 覆写为 1。
  */
 #ifndef STEPPER_ENABLED
-#define STEPPER_ENABLED 0U
+#define STEPPER_ENABLED 1U
+#endif
+
+#ifndef STEPPER_FEEDBACK_ENABLED
+#define STEPPER_FEEDBACK_ENABLED 0U
 #endif
 
 /* Mechanical and feedback scale for MS42CG with 16 microsteps. */
@@ -47,6 +59,11 @@ typedef struct {
     uint32_t accelerationStepsPerSec2;
 } Stepper_Profile_t;
 
+/*
+ * STEPPER_FEEDBACK_ENABLED == 0 时，下列反馈字段恒为 0：pwmValid、
+ * encoderCounts、trackingErrorCounts、absoluteCode、absoluteAngleDeg、
+ * multiTurnAngleDeg、encoderTransitionErrors。
+ */
 typedef struct {
     bool enabled;                    /* EN output is active high. */
     bool ready;                      /* Startup absolute reference acquired. */
@@ -67,6 +84,7 @@ typedef struct {
  * Initializes the AB decoder, capture state and ST timer control. SysConfig
  * power, pin mux and timer initialization must be complete before this call.
  * EN is forced low. Three valid PWM frames are required before ready=true.
+ * STEPPER_FEEDBACK_ENABLED == 0 时不初始化捕获与 AB 解码，ready 立即为真。
  */
 void Stepper_Init(void);
 

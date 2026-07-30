@@ -12,13 +12,13 @@
 
 static volatile int32_t s_leftCount;
 static volatile int32_t s_rightCount;
-#if STEPPER_ENABLED
+#if STEPPER_FEEDBACK_ENABLED
 static volatile int32_t s_stepperCount;
 static volatile uint32_t s_stepperTransitionErrors;
 #endif
 static uint8_t s_leftState;
 static uint8_t s_rightState;
-#if STEPPER_ENABLED
+#if STEPPER_FEEDBACK_ENABLED
 static uint8_t s_stepperState;
 #endif
 
@@ -62,9 +62,13 @@ void Encoder_Init(void)
     NVIC_EnableIRQ(GPIOA_INT_IRQn);
 }
 
+/*
+ * PA13(A) 在 syscfg 里还在，但 B 相 PA29 已被六路红外拿走，缺一相就做不了正交
+ * 解码，所以整块 AB 解码随反馈开关一起编译掉，而不是跟着驱动开关走。
+ */
 void Encoder_InitStepper(void)
 {
-#if STEPPER_ENABLED
+#if STEPPER_FEEDBACK_ENABLED
     DL_GPIO_initDigitalInputFeatures(STEPPER_ENCODER_A_A_IOMUX,
         DL_GPIO_INVERSION_DISABLE, DL_GPIO_RESISTOR_PULL_UP,
         DL_GPIO_HYSTERESIS_DISABLE, DL_GPIO_WAKEUP_DISABLE);
@@ -111,7 +115,7 @@ int16_t Encoder_Get(uint8_t n)
 
 int32_t Encoder_GetStepperCount(void)
 {
-#if STEPPER_ENABLED
+#if STEPPER_FEEDBACK_ENABLED
     int32_t count;
     uint32_t primask = __get_PRIMASK();
 
@@ -126,7 +130,7 @@ int32_t Encoder_GetStepperCount(void)
 
 void Encoder_SetStepperCount(int32_t count)
 {
-#if STEPPER_ENABLED
+#if STEPPER_FEEDBACK_ENABLED
     uint32_t primask = __get_PRIMASK();
 
     __disable_irq();
@@ -139,7 +143,7 @@ void Encoder_SetStepperCount(int32_t count)
 
 uint32_t Encoder_GetStepperTransitionErrors(void)
 {
-#if STEPPER_ENABLED
+#if STEPPER_FEEDBACK_ENABLED
     uint32_t errors;
     uint32_t primask = __get_PRIMASK();
 
@@ -170,7 +174,7 @@ void GROUP1_IRQHandler(void)
         ENCODER_INPUTS_RIGHT_A_PIN | ENCODER_INPUTS_RIGHT_B_PIN;
     uint32_t wheelPending = DL_GPIO_getEnabledInterruptStatus(
         ENCODER_INPUTS_PORT, wheelMask);
-#if STEPPER_ENABLED
+#if STEPPER_FEEDBACK_ENABLED
     const uint32_t handledGpioAMask =
         wheelMask | STEPPER_ENCODER_A_A_PIN | STEPPER_ENCODER_B_B_PIN;
     uint32_t stepperAPending = DL_GPIO_getEnabledInterruptStatus(
@@ -205,7 +209,7 @@ void GROUP1_IRQHandler(void)
             s_quadratureDelta[(s_rightState << 2) | next]);
         s_rightState = next;
     }
-#if STEPPER_ENABLED
+#if STEPPER_FEEDBACK_ENABLED
     if ((stepperAPending | stepperBPending) != 0U)
     {
         uint8_t next = Encoder_ReadState(
@@ -229,7 +233,7 @@ void GROUP1_IRQHandler(void)
 #endif
     DL_GPIO_clearInterruptStatus(
         ENCODER_INPUTS_PORT, wheelPending & wheelMask);
-#if STEPPER_ENABLED
+#if STEPPER_FEEDBACK_ENABLED
     DL_GPIO_clearInterruptStatus(
         STEPPER_ENCODER_A_PORT,
         stepperAPending & STEPPER_ENCODER_A_A_PIN);
