@@ -1,14 +1,18 @@
 #ifndef __GRAYDETECT_H
 #define __GRAYDETECT_H
 
-/* 灰度传感器驱动和基础巡线偏差计算。 */
+/* 灰度硬件当前停用；接口保留用于兼容完整应用源码。 */
 
 #include <stdint.h>
 #include "Application/Core/CarRole.h"
 
+#ifndef GRAYDETECT_ENABLED
+#define GRAYDETECT_ENABLED 0U
+#endif
+
 /*
- * 主车使用 8 路灰度，从车保留 5 路灰度；两车共用包含 CH0~CH7 的
- * SysConfig。通道按从左到右排列，检测到黑线时对应位为 1。
+ * 启用灰度前必须恢复GRAY_INPUTS SysConfig引脚组，并把
+ * GRAYDETECT_ENABLED改为1。停用时所有读取接口返回0。
  */
 #if CAR_IS_MASTER
 #define GRAY_CHANNEL_COUNT 8U

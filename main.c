@@ -201,6 +201,7 @@ int main(void)
     SYSCFG_DL_OLED_I2C_init();
     SYSCFG_DL_SYSTICK_init();
 
+    /* Graydetect is intentionally disabled; its former pins drive Stepper. */
     Tick_Init();
     Key_Init();
     OLED_Init();

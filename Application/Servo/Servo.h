@@ -4,7 +4,7 @@
 #include <stdint.h>
 
 /*
- * 新板将 PB8/PB9 用于灰度输入，本阶段停用舵机 PWM。角度 API 继续保留，
+ * 新板将 PB8/PB9 用于步进 ST/DIR，本阶段停用舵机 PWM。角度 API 继续保留，
  * 以免上层调试命令和测试入口失去链接；禁用时只记录角度，不访问硬件。
  */
 #ifndef SERVO_ENABLED

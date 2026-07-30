@@ -1,6 +1,8 @@
 #include "Hardware/Sensors/Graydetect.h"
 #include "ti_msp_dl_config.h"
 
+#if GRAYDETECT_ENABLED
+
 #define GRAY_MASK_ALL ((uint8_t)((1U << GRAY_CHANNEL_COUNT) - 1U))
 
 #if CAR_IS_MASTER
@@ -96,3 +98,34 @@ uint8_t Graydetect_OnLine(uint8_t side)
 {
     return ((Graydetect_GetState() & Graydetect_GetMask(side)) != 0U) ? 1U : 0U;
 }
+
+#else
+
+void Graydetect_Init(void)
+{
+}
+
+uint8_t Graydetect_GetState(void)
+{
+    return 0U;
+}
+
+uint8_t Graydetect_GetBit(uint8_t index)
+{
+    (void)index;
+    return 0U;
+}
+
+float Graydetect_GetError(uint8_t side)
+{
+    (void)side;
+    return 0.0f;
+}
+
+uint8_t Graydetect_OnLine(uint8_t side)
+{
+    (void)side;
+    return 0U;
+}
+
+#endif
