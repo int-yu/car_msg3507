@@ -421,14 +421,14 @@ static void BluetoothDebug_ExecuteCommand(void)
                改掩码可能触发自动降频（帧变长，上限下降），成功时同时回报新频率。 */
             if ((s_parser.isNegative != 0U) ||
                 (value > (int32_t)TELEMETRY_CH_ALL) ||
-                (Telemetry_SetFieldMask((uint16_t)value) == 0U))
+                (Telemetry_SetFieldMask((uint32_t)value) == 0U))
             {
                 Serial1_SendString("ERR RANGE\r\n");
             }
             else
             {
-                Serial1_Printf("OK M=%u G=%u\r\n",
-                               (unsigned)Telemetry_GetFieldMask(),
+                Serial1_Printf("OK M=%lu G=%u\r\n",
+                               (unsigned long)Telemetry_GetFieldMask(),
                                (unsigned)Telemetry_GetRateHz());
             }
             break;
@@ -748,9 +748,9 @@ static void BluetoothDebug_ExecuteCommand(void)
              * 100 Hz 无损，24 KB 捕获缓冲只剩下挤爆 RAM 这一个作用。
              * CAPST/CAPN/CAPMAX 三个字段一并撤掉，网页按缺省处理即可。 */
             Serial1_Printf(
-                "OK Q MAX=%u MASK=%u RATE=%u\r\n",
+                "OK Q MAX=%u MASK=%lu RATE=%u\r\n",
                 (unsigned)Telemetry_GetMaxRateHz(),
-                (unsigned)Telemetry_GetFieldMask(),
+                (unsigned long)Telemetry_GetFieldMask(),
                 (unsigned)Telemetry_GetRateHz());
             break;
 

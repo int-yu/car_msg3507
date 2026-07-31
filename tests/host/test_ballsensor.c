@@ -2,38 +2,36 @@
 #include "Application/Comms/K230Link.h"
 #include "tests/host/test_assert.h"
 
-/* ---- BallSensor 只依赖 K230Link_GetTarget()，这里直接给一个可控的桩 ---- */
-static uint8_t s_targetAvailable;
-static K230Link_Target_t s_target;
+/* ---- BallSensor only depends on K230Link_GetBallPosition(). ---- */
+static uint8_t s_ballAvailable;
+static K230Link_BallPosition_t s_ball;
 
-uint8_t K230Link_GetTarget(K230Link_Target_t *target)
+uint8_t K230Link_GetBallPosition(K230Link_BallPosition_t *position)
 {
-    if ((target == NULL) || (s_targetAvailable == 0U))
+    if ((position == NULL) || (s_ballAvailable == 0U))
     {
         return 0U;
     }
-    *target = s_target;
+    *position = s_ball;
     return 1U;
 }
 
 static void reset_fakes(void)
 {
-    s_targetAvailable = 0U;
-    s_target.valid = 0U;
-    s_target.offsetX = 0;
-    s_target.offsetY = 0;
-    s_target.sequence = 0U;
-    s_target.ageTicks = 0U;
+    s_ballAvailable = 0U;
+    s_ball.valid = 0U;
+    s_ball.positionX100 = K230_LINK_BALL_POSITION_INVALID;
+    s_ball.sequence = 0U;
+    s_ball.ageTicks = 0U;
     BallSensor_Init();
 }
 
-/* 送一帧新的钢球位置：千分比 + 递增序号。 */
-static void feed_frame(int16_t permille)
+static void feed_frame(int16_t positionX100)
 {
-    s_targetAvailable = 1U;
-    s_target.valid = 1U;
-    s_target.offsetX = permille;
-    s_target.sequence++;
+    s_ballAvailable = 1U;
+    s_ball.valid = 1U;
+    s_ball.positionX100 = positionX100;
+    s_ball.sequence++;
 }
 
 /* 相机约 25 fps、控制环 100 Hz：一帧被读 4 拍。 */
@@ -47,11 +45,11 @@ static void run_frame_ticks(void)
     }
 }
 
-static void test_permille_maps_to_millimetres(void)
+static void test_pipe_coordinate_maps_to_millimetres(void)
 {
     reset_fakes();
-    /* 400 千分比 * 125 mm 半杆长 = 50 mm，正是题目的 +5 cm 点。 */
-    feed_frame(400);
+    /* +20.00 on a -50..+50 scale across 250 mm equals +50 mm. */
+    feed_frame(2000);
     BallSensor_Update(0.01f);
 
     CHECK(BallSensor_IsFresh() != 0U);
@@ -61,7 +59,7 @@ static void test_permille_maps_to_millimetres(void)
 static void test_negative_position_is_signed(void)
 {
     reset_fakes();
-    feed_frame(-400);
+    feed_frame(-2000);
     BallSensor_Update(0.01f);
 
     CHECK(BallSensor_IsFresh() != 0U);
@@ -77,7 +75,7 @@ static void test_lost_target_is_not_fresh(void)
     BallSensor_Update(0.01f);
     CHECK(BallSensor_IsFresh() != 0U);
 
-    s_targetAvailable = 0U;
+    s_ballAvailable = 0U;
     BallSensor_Update(0.01f);
     CHECK(BallSensor_IsFresh() == 0U);
     CHECK_NEAR(BallSensor_GetSpeedMMps(), 0.0f, 0.001f);
@@ -90,7 +88,7 @@ static void test_invalid_flag_is_not_fresh(void)
     BallSensor_Update(0.01f);
     CHECK(BallSensor_IsFresh() != 0U);
 
-    s_target.valid = 0U;
+    s_ball.valid = 0U;
     BallSensor_Update(0.01f);
     CHECK(BallSensor_IsFresh() == 0U);
 }
@@ -99,7 +97,7 @@ static void test_invalid_flag_is_not_fresh(void)
 static void test_out_of_range_is_rejected(void)
 {
     reset_fakes();
-    feed_frame(2000); /* 250 mm，远超半杆长。 */
+    feed_frame(6000); /* 150 mm, outside the 125 mm pipe half length. */
     BallSensor_Update(0.01f);
 
     CHECK(BallSensor_IsFresh() == 0U);
@@ -116,11 +114,11 @@ static void test_speed_uses_frame_interval_not_tick(void)
     reset_fakes();
     /* 从 -100 mm 起步，每帧 +10 mm，20 帧走到 +100 mm；全程留在摆杆内，
      * 否则会被范围检查判无效而测不到速度。帧间隔 40 ms，真值 250 mm/s。 */
-    feed_frame(-800);
+    feed_frame(-4000);
     run_frame_ticks();
     for (frame = 1U; frame <= 20U; frame++)
     {
-        feed_frame((int16_t)(-800 + (int16_t)(frame * 80)));
+        feed_frame((int16_t)(-4000 + (int16_t)(frame * 400)));
         run_frame_ticks();
     }
 
@@ -137,11 +135,11 @@ static void test_repeated_frame_does_not_drag_speed_to_zero(void)
     float speedAfterMotion;
 
     reset_fakes();
-    feed_frame(-800);
+    feed_frame(-4000);
     run_frame_ticks();
     for (frame = 1U; frame <= 20U; frame++)
     {
-        feed_frame((int16_t)(-800 + (int16_t)(frame * 80)));
+        feed_frame((int16_t)(-4000 + (int16_t)(frame * 400)));
         run_frame_ticks();
     }
     speedAfterMotion = BallSensor_GetSpeedMMps();
@@ -162,7 +160,7 @@ static void test_stationary_ball_has_zero_speed(void)
     reset_fakes();
     for (frame = 0U; frame < 20U; frame++)
     {
-        feed_frame(160); /* 固定 20 mm。 */
+        feed_frame(800); /* Fixed 20 mm. */
         run_frame_ticks();
     }
 
@@ -172,7 +170,7 @@ static void test_stationary_ball_has_zero_speed(void)
 
 int main(void)
 {
-    test_permille_maps_to_millimetres();
+    test_pipe_coordinate_maps_to_millimetres();
     test_negative_position_is_signed();
     test_lost_target_is_not_fresh();
     test_invalid_flag_is_not_fresh();

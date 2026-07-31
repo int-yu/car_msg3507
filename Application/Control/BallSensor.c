@@ -43,7 +43,7 @@ void BallSensor_Init(void)
 
 void BallSensor_Update(float dt)
 {
-    K230Link_Target_t target;
+    K230Link_BallPosition_t position;
     float positionMM;
 
     if ((!isfinite(dt)) || (dt <= 0.0f))
@@ -52,20 +52,26 @@ void BallSensor_Update(float dt)
         return;
     }
 
-    /* GetTarget() 已经把超时挡掉；返回 0 时不写 target，不能读它。 */
-    if (K230Link_GetTarget(&target) == 0U)
+    /* GetBallPosition() rejects missing and stale frames. */
+    if (K230Link_GetBallPosition(&position) == 0U)
     {
         BallSensor_MarkStale();
         return;
     }
-    if (target.valid == 0U)
+    if (position.valid == 0U)
     {
         BallSensor_MarkStale();
         return;
     }
 
-    positionMM = ((float)target.offsetX * BallSensor_TuneHalfLengthMM) /
-                 1000.0f;
+    /*
+     * K230 maps the complete 250 mm pipe to -50.00..+50.00 and transmits
+     * that value multiplied by 100. Therefore +/-5000 maps to the tunable
+     * physical half length (125 mm by default).
+     */
+    positionMM =
+        ((float)position.positionX100 * BallSensor_TuneHalfLengthMM) /
+        (float)K230_LINK_BALL_POSITION_MAX;
     if ((!isfinite(positionMM)) ||
         (fabsf(positionMM) > BALL_SENSOR_VALID_LIMIT_MM))
     {
@@ -82,7 +88,7 @@ void BallSensor_Update(float dt)
      * 被读到约 4 次；对重复帧做差分会得到 0，把估计值一路拉向零并废掉
      * 阻尼项。
      */
-    if (target.sequence != s_context.previousSequence)
+    if (position.sequence != s_context.previousSequence)
     {
         if ((s_context.hasPrevious != 0U) &&
             (s_context.frameIntervalS > 0.0f))
@@ -99,7 +105,7 @@ void BallSensor_Update(float dt)
             }
         }
         s_context.previousPositionMM = positionMM;
-        s_context.previousSequence = target.sequence;
+        s_context.previousSequence = position.sequence;
         s_context.frameIntervalS = 0.0f;
         s_context.hasPrevious = 1U;
     }

@@ -118,8 +118,8 @@ GPIO6.associatedPins.create(1);
 GPIO6.associatedPins[0].$name               = "A";
 GPIO6.associatedPins[0].direction           = "INPUT";
 GPIO6.associatedPins[0].internalResistor    = "PULL_UP";
-/* 步进运行时目前停用；启用 STEPPER_ENABLED 后由 Encoder_InitStepper()
- * 显式打开双边沿中断，避免未接编码器时占用 GPIOA GROUP1。 */
+/* SysConfig 只完成引脚输入配置；Stepper_Init() 通过
+ * Encoder_InitStepper() 显式打开双边沿中断。 */
 GPIO6.associatedPins[0].interruptEn         = false;
 GPIO6.associatedPins[0].polarity            = "RISE_FALL";
 GPIO6.associatedPins[0].assignedPortSegment = "Lower";

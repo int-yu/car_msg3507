@@ -10,6 +10,11 @@
 
 #include <stdint.h>
 
+/* 六路红外在完整26H入口中启用；设为0时保留全部只读桩接口。 */
+#ifndef GRAYDETECT_ENABLED
+#define GRAYDETECT_ENABLED 1U
+#endif
+
 /* 教程协议：固定地址 0x5C，寄存器 0x05 返回 bit0=CH1 ... bit5=CH6。 */
 #define GRAY_CHANNEL_COUNT          6U
 #define GRAYDETECT_I2C_ADDRESS      0x5CU

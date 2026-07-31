@@ -29,6 +29,8 @@ typedef struct
 static K230Link_Parser_t s_parser;
 static K230Link_Target_t s_target;
 static uint8_t s_hasTarget;
+static K230Link_BallPosition_t s_ballPosition;
+static uint8_t s_hasBallPosition;
 static K230Link_Lane_t s_lane;
 static uint8_t s_hasLane;
 static uint8_t s_peerReadyReceived;
@@ -147,6 +149,21 @@ static void K230Link_HandleFrame(void)
         s_target.sequence = s_parser.sequence;
         s_target.ageTicks = 0U;
         s_hasTarget = 1U;
+    }
+    else if ((s_parser.type == K230_LINK_MESSAGE_BALL_POSITION) &&
+             (s_parser.length == 2U))
+    {
+        int16_t position = (int16_t)(
+            (uint16_t)s_parser.payload[0] |
+            ((uint16_t)s_parser.payload[1] << 8U));
+
+        s_ballPosition.valid =
+            ((position >= K230_LINK_BALL_POSITION_MIN) &&
+             (position <= K230_LINK_BALL_POSITION_MAX)) ? 1U : 0U;
+        s_ballPosition.positionX100 = position;
+        s_ballPosition.sequence = s_parser.sequence;
+        s_ballPosition.ageTicks = 0U;
+        s_hasBallPosition = 1U;
     }
     else if ((s_parser.type == K230_LINK_MESSAGE_LANE) &&
              (s_parser.length == K230_LINK_LANE_PAYLOAD_LENGTH) &&
@@ -278,6 +295,11 @@ void K230Link_Init(void)
     s_target.sequence = 0U;
     s_target.ageTicks = 0U;
     s_hasTarget = 0U;
+    s_ballPosition.valid = 0U;
+    s_ballPosition.positionX100 = K230_LINK_BALL_POSITION_INVALID;
+    s_ballPosition.sequence = 0U;
+    s_ballPosition.ageTicks = 0U;
+    s_hasBallPosition = 0U;
     (void)memset(&s_lane, 0, sizeof(s_lane));
     s_hasLane = 0U;
     s_peerReadyReceived = 0U;
@@ -326,6 +348,14 @@ void K230Link_Update(uint8_t elapsedTicks)
 
         s_target.ageTicks = (age >= K230_LINK_TARGET_TIMEOUT_TICKS) ?
             (uint8_t)K230_LINK_TARGET_TIMEOUT_TICKS : (uint8_t)age;
+    }
+
+    if (s_hasBallPosition != 0U)
+    {
+        uint16_t age = (uint16_t)s_ballPosition.ageTicks + elapsedTicks;
+
+        s_ballPosition.ageTicks = (age >= K230_LINK_BALL_TIMEOUT_TICKS) ?
+            (uint8_t)K230_LINK_BALL_TIMEOUT_TICKS : (uint8_t)age;
     }
 
     if (s_readyAcknowledged == 0U)
@@ -379,6 +409,17 @@ uint8_t K230Link_GetTarget(K230Link_Target_t *target)
         return 0U;
     }
     *target = s_target;
+    return 1U;
+}
+
+uint8_t K230Link_GetBallPosition(K230Link_BallPosition_t *position)
+{
+    if ((position == NULL) || (s_hasBallPosition == 0U) ||
+        (s_ballPosition.ageTicks >= K230_LINK_BALL_TIMEOUT_TICKS))
+    {
+        return 0U;
+    }
+    *position = s_ballPosition;
     return 1U;
 }
 

@@ -7,10 +7,9 @@
  * 摆杆钢球位置观测：把 K230 的 TARGET 帧换算成以摆杆中心点 O 为原点的
  * 毫米位置，并估计滚动速度供平衡环的阻尼项使用。
  *
- * K230 送来的 offsetX 是千分比。题目摆杆全长 250 mm，刻度从 -12 到
- * +12 cm，因此以半杆长 125 mm 作为 1000 的基准：位置 mm = 千分比 *
- * 125 / 1000。真实比例由摄像头视场决定，必须按第 5 步实测标定，所以
- * 半杆长做成运行时可调而不是写死。
+ * K230 BALL_POSITION maps the complete 250 mm pipe to -50.00..+50.00.
+ * The link transmits that value multiplied by 100, so +/-5000 maps to the
+ * tunable physical half length (125 mm by default).
  */
 
 /* 摆杆中心到端部的距离；千分比换算的基准。 */

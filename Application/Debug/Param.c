@@ -11,6 +11,7 @@
 #include "Application/State/Heading.h"
 #include "Application/State/Odometry.h"
 #include "Hardware/Comms/Serial.h"
+#include "Hardware/Motor/Stepper.h"
 #include <math.h>
 #include <stddef.h>
 #include <stdlib.h>
@@ -149,10 +150,10 @@ PARAM_VAR_ACCESSORS(H2MarkerArm,
 PARAM_VAR_ACCESSORS(H2MaxLap, Accomplish26H_TuneMaxLapDistanceMM)
 PARAM_VAR_ACCESSORS(LineAcceleration, MotionLine_TuneAccelerationMMps2)
 PARAM_VAR_ACCESSORS(LineDeceleration, MotionLine_TuneDecelerationMMps2)
-/* 要求 3 摆球：三个必须实车标定的量，做成运行时可调免去反复烧录。 */
+/* Ball PID and beam calibration. */
 PARAM_VAR_ACCESSORS(BallKp, BallBalance_TuneKp)
+PARAM_VAR_ACCESSORS(BallKi, BallBalance_TuneKi)
 PARAM_VAR_ACCESSORS(BallKd, BallBalance_TuneKd)
-PARAM_VAR_ACCESSORS(BallGravity, BallBalance_TuneGravityCoupling)
 PARAM_VAR_ACCESSORS(BallHalfLength, BallSensor_TuneHalfLengthMM)
 PARAM_VAR_ACCESSORS(BeamGearRatio, BeamActuator_TuneGearRatio)
 PARAM_VAR_ACCESSORS(BeamZeroOffset, BeamActuator_TuneZeroOffsetDeg)
@@ -211,12 +212,12 @@ static const Param_Entry_t s_params[] = {
     /* 要求 3 摆球标定量，追加在表尾，保持既有 id 不变。 */
     { "bkp", Param_GetBallKp, Param_SetBallKp, 0.0f, 2.0f },
     { "bkd", Param_GetBallKd, Param_SetBallKd, 0.0f, 1.0f },
-    { "bgk", Param_GetBallGravity, Param_SetBallGravity, 10.0f, 400.0f },
+    { "bki", Param_GetBallKi, Param_SetBallKi, 0.0f, 0.2f },
     { "bhl", Param_GetBallHalfLength, Param_SetBallHalfLength,
       50.0f, 200.0f },
     { "bgr", Param_GetBeamGearRatio, Param_SetBeamGearRatio, 0.1f, 50.0f },
     { "bzo", Param_GetBeamZeroOffset, Param_SetBeamZeroOffset,
-      -20.0f, 20.0f },
+      STEPPER_MIN_ANGLE_DEG, STEPPER_MAX_ANGLE_DEG },
     /* 要求 2 仍沿用既有 26H 阶段；这些值只在下一次 KEY1 启动时快照。 */
     { "h2cru", Param_GetH2CruiseSpeed, Param_SetH2CruiseSpeed,
       20.0f, 1000.0f },

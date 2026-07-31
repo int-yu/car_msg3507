@@ -10,12 +10,13 @@ const main = read('main.c');
 const app = read('Application/Core/App.c');
 const telemetry = read('Application/Debug/Telemetry.c');
 const telemetryHeader = read('Application/Debug/Telemetry.h');
+const param = read('Application/Debug/Param.c');
 const readme = read('README.md');
 
 for (const required of [
     '#define MAIN_BALL_START_SIGNAL 3U',
     '#define MAIN_BALL_STOP_SIGNAL  4U',
-    'static void Main_ReportBallStart(void)',
+    'static uint8_t Main_StartBallTask(void)',
     'OK BALL START',
     'ERR BALL VISION',
     'ERR BALL CAR BUSY',
@@ -31,13 +32,16 @@ assert.match(main,
 assert.match(main,
     /Main_HasSignal\(&updateContext, MAIN_BALL_STOP_SIGNAL\)/,
     'C4 must stop and recenter the ball task');
+assert.doesNotMatch(main, /MAIN26H_BALL_AUTO_START_ENABLED|AutoStart|BallHold|MAIN_HOLD/,
+    'current main flow must not auto-start or load the old hold task');
 assert.doesNotMatch(app, /Telemetry_Update\(/,
     'telemetry sampling must happen after the requirement-3 update in main');
 
 for (const required of [
     '#define TELEMETRY_CH_BPOS   0x4000U',
     '#define TELEMETRY_CH_BREF   0x8000U',
-    '#define TELEMETRY_CH_ALL    0xFFFFU',
+    '#define TELEMETRY_CH_SANG   0x10000UL',
+    '#define TELEMETRY_CH_ALL    0x1FFFFUL',
 ]) {
     assert.ok(telemetryHeader.includes(required),
         `Telemetry.h missing ${required}`);
@@ -45,8 +49,10 @@ for (const required of [
 for (const required of [
     'Telemetry_ReadBallPosition',
     'Telemetry_ReadBallReference',
+    'Telemetry_ReadStepperAngle',
     '{ TELEMETRY_CH_BPOS,  "bpos"',
     '{ TELEMETRY_CH_BREF,  "bref"',
+    '{ TELEMETRY_CH_SANG,  "sang"',
 ]) {
     assert.ok(telemetry.includes(required),
         `Telemetry.c missing ${required}`);
@@ -58,10 +64,12 @@ for (const required of [
     'id="btnBallVideoRun"',
     'id="btnBallVideoStop"',
     'data-ball-field="position"',
+    'data-ball-field="stepperAngle"',
     'data-ball-marker="position"',
     'bpos: 0x4000',
     'bref: 0x8000',
-    'const CH_ALL = 0xFFFF',
+    'sang: 0x10000',
+    'const CH_ALL = 0x1FFFF',
     "excite: () => 'C3'",
     "stopCmd: 'C4'",
     'function computeBallMetrics(',
@@ -71,23 +79,25 @@ for (const required of [
     assert.ok(html.includes(required), `car_debug.html missing ${required}`);
 }
 
-for (const name of ['bgr', 'bzo', 'bhl', 'bgk', 'bkd', 'bkp']) {
+for (const name of ['bgr', 'bzo', 'bhl', 'bki', 'bkd', 'bkp']) {
     assert.ok(html.includes(`${name}:`),
         `ball parameter metadata missing ${name}`);
 }
+assert.match(param,
+    /"bzo"[\s\S]*?STEPPER_MIN_ANGLE_DEG,\s*STEPPER_MAX_ANGLE_DEG/,
+    'bzo tuning must use the same absolute range as the stepper');
 
 for (const required of [
     "if (p.startReply)",
     "if (command === 'C4') return (line) => line === 'OK BALL STOP'",
-    "s.bref <= -45 && Math.abs(s.bpos + 50) <= 5",
-    "s.ms - session.ballStableSinceMs >= 150",
-    "Math.abs(sample.bref) <= 0.5",
+    "if (session.loop === 'ball' && !session.stopRequested)",
+    "!Number.isFinite(sample.bref) || Math.abs(sample.bref) <= 0.5",
 ]) {
     assert.ok(html.includes(required), `ball session lifecycle missing ${required}`);
 }
 
 assert.match(html,
-    /ball:\s*\{[^]*geometry:[^]*sensor:[^]*model:[^]*damping:[^]*position:[^]*verify:/,
+    /ball:\s*\{[^]*geometry:[^]*sensor:[^]*position:[^]*damping:[^]*integral:[^]*verify:/,
     'ball focus stages must follow the physical calibration order');
 assert.match(readme, /`C3`[^\n]*要求 3[^\n]*KEY2/,
     'README must document C3 as the remote KEY2/requirement-3 start');
@@ -102,21 +112,20 @@ const computeBallMetrics = new Function(
     `${html.slice(metricsStart, metricsEnd)}\nreturn computeBallMetrics;`)();
 const metrics = computeBallMetrics([
     { ms: 0, bref: 0, bpos: 0 },
-    { ms: 100, bref: 10, bpos: 9 },
-    { ms: 500, bref: 50, bpos: 54 },
-    { ms: 600, bref: 48, bpos: 52 },
-    { ms: 900, bref: 0, bpos: -4 },
-    { ms: 1300, bref: -48, bpos: -60 },
-    { ms: 1400, bref: -50, bpos: -52 },
-    { ms: 1550, bref: -50, bpos: -50 },
+    { ms: 100, bref: 0, bpos: 22 },
+    { ms: 200, bref: 0, bpos: 14 },
+    { ms: 300, bref: 0, bpos: 8 },
+    { ms: 450, bref: 0, bpos: 4 },
+    { ms: 600, bref: 0, bpos: 3 },
+    { ms: 700, bref: 0, bpos: 2 },
+    { ms: 900, bref: 0, bpos: 1 },
 ]);
 assert.ok(metrics, 'requirement-3 metrics should be available');
-assert.equal(metrics.plusTimeMs, 400);
-assert.equal(metrics.plusOvershootMM, 4);
-assert.equal(metrics.minusOvershootMM, 10,
-    'negative peak must include samples after the +5 cm turn');
-assert.equal(metrics.minusTimeMs, 1450);
-assert.ok(metrics.trackingRmsMM > 4,
-    'tracking RMS must include both halves of the trajectory');
+assert.equal(metrics.targetMM, 0);
+assert.equal(metrics.convergeMs, 300);
+assert.equal(metrics.maxAbsErrorMM, 22);
+assert.ok(metrics.steadyRmsMM <= 5,
+    'steady RMS must describe target-hold error');
+assert.equal(metrics.pass, true);
 
 console.log('car_debug requirement-3 ball tuning contract passed');

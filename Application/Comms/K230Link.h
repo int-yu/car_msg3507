@@ -16,11 +16,19 @@
 #define K230_LINK_MESSAGE_READY_ACK      0x02U
 #define K230_LINK_MESSAGE_TARGET         0x10U
 #define K230_LINK_MESSAGE_LANE           0x13U
+#define K230_LINK_MESSAGE_BALL_POSITION  0x14U
 
 /* TARGET 的新鲜度上限：100 Hz 下 200 ms。钢球平衡是双积分对象，拿冻结
  * 的球位算 PD 会让倾角锁死、球一路加速滚到挡片，因此比 LANE 的 300 ms
  * 更紧。BallBalance 另有一道更严的判据，两者层次不同。 */
 #define K230_LINK_TARGET_TIMEOUT_TICKS   20U
+#define K230_LINK_BALL_TIMEOUT_TICKS     20U
+
+/* 水管全长 250 mm 映射到 -50.00~+50.00，帧内按 100 倍定点发送。 */
+#define K230_LINK_BALL_POSITION_SCALE    100
+#define K230_LINK_BALL_POSITION_MIN      (-5000)
+#define K230_LINK_BALL_POSITION_MAX      (+5000)
+#define K230_LINK_BALL_POSITION_INVALID  INT16_MIN
 
 /* LANE 的 PAYLOAD：valid:u8 | b0..b4:int16_LE | confidence:u8。
  * b0 最近、b4 最远，单位是千分比（相对画面宽度），符号与 TARGET 一致：
@@ -58,6 +66,14 @@ typedef struct
 typedef struct
 {
     uint8_t valid;
+    int16_t positionX100;
+    uint8_t sequence;
+    uint8_t ageTicks;
+} K230Link_BallPosition_t;
+
+typedef struct
+{
+    uint8_t valid;
     int16_t offsetPermille[K230_LINK_LANE_BAND_COUNT];
     uint8_t bandValid;   /* bit0..bit4，1 表示该带不是哨兵。 */
     uint8_t confidence;  /* 0..100。 */
@@ -71,6 +87,7 @@ uint8_t K230Link_IsReady(void);
 /* 从未收到或已超时返回 0，此时不写 *target。调用方必须按视觉失效处理，
  * 绝不能把上一帧的球位当成当前有效数据继续做闭环。 */
 uint8_t K230Link_GetTarget(K230Link_Target_t *target);
+uint8_t K230Link_GetBallPosition(K230Link_BallPosition_t *position);
 /* 从未收到或已超时返回 0，此时不写 *lane。调用方必须按视觉失效处理，
  * 绝不能把上一帧的偏差当成当前有效数据继续用。 */
 uint8_t K230Link_GetLane(K230Link_Lane_t *lane);

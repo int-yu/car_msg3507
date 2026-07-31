@@ -3,7 +3,7 @@
 #include <math.h>
 
 float BeamActuator_TuneGearRatio = BEAM_ACTUATOR_GEAR_RATIO;
-float BeamActuator_TuneZeroOffsetDeg = 0.0f;
+float BeamActuator_TuneZeroOffsetDeg = STEPPER_INITIAL_ANGLE_DEG;
 
 typedef struct
 {
@@ -23,30 +23,18 @@ static const Stepper_Profile_t s_beamProfile = {
     .accelerationStepsPerSec2 = 20000U
 };
 
-static float BeamActuator_Clamp(float value, float limit)
-{
-    if (value > limit)
-    {
-        return limit;
-    }
-    if (value < -limit)
-    {
-        return -limit;
-    }
-    return value;
-}
-
 void BeamActuator_Init(void)
 {
     s_context.requestedTiltDeg = 0.0f;
     s_context.appliedTiltDeg = 0.0f;
     BeamActuator_TuneGearRatio = BEAM_ACTUATOR_GEAR_RATIO;
-    BeamActuator_TuneZeroOffsetDeg = 0.0f;
+    BeamActuator_TuneZeroOffsetDeg = STEPPER_INITIAL_ANGLE_DEG;
 
-    /* Stepper_Init() 由 App_Init() 统一调用，这里不重复初始化硬件，
-     * 只接管它：使能驱动并把上电位置声明为水平零点。 */
+    /*
+     * Stepper_Init() acquires the MT6816 absolute reference and moves to the
+     * configured horizontal angle. Do not overwrite that absolute coordinate.
+     */
     (void)Stepper_Enable(true);
-    (void)Stepper_SetCurrentPosition(0.0f);
 }
 
 void BeamActuator_SetTiltDeg(float tiltDeg)
@@ -55,15 +43,16 @@ void BeamActuator_SetTiltDeg(float tiltDeg)
     {
         return;
     }
-    s_context.requestedTiltDeg =
-        BeamActuator_Clamp(tiltDeg, BEAM_ACTUATOR_MAX_TILT_DEG);
+    s_context.requestedTiltDeg = tiltDeg;
 }
 
 void BeamActuator_Update(float dt)
 {
     float maximumStepDeg;
     float errorDeg;
+    float nextAppliedTiltDeg;
     float motorAngleDeg;
+    Stepper_Result_t result;
 
     if ((!isfinite(dt)) || (dt <= 0.0f))
     {
@@ -81,13 +70,18 @@ void BeamActuator_Update(float dt)
     {
         errorDeg = -maximumStepDeg;
     }
-    s_context.appliedTiltDeg += errorDeg;
+    nextAppliedTiltDeg = s_context.appliedTiltDeg + errorDeg;
 
     /* 摆杆倾角 -> 电机轴角度。传动比与零点偏置只在这里出现。 */
     motorAngleDeg =
-        (s_context.appliedTiltDeg + BeamActuator_TuneZeroOffsetDeg) *
-        BeamActuator_TuneGearRatio;
-    (void)Stepper_TrackToAngle(motorAngleDeg, &s_beamProfile);
+        BeamActuator_TuneZeroOffsetDeg +
+        BEAM_ACTUATOR_STEPPER_DIRECTION_SIGN *
+        nextAppliedTiltDeg * BeamActuator_TuneGearRatio;
+    result = Stepper_TrackToAngle(motorAngleDeg, &s_beamProfile);
+    if ((result == STEPPER_RESULT_OK) || (result == STEPPER_RESULT_LIMIT))
+    {
+        s_context.appliedTiltDeg = nextAppliedTiltDeg;
+    }
 }
 
 float BeamActuator_GetTiltDeg(void)

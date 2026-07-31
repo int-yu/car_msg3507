@@ -3,10 +3,9 @@
 
 #include <stdint.h>
 
-#define DEBUG_DISPLAY_REFRESH_TICKS 10U
+#define DEBUG_DISPLAY_REFRESH_TICKS 100U
 
 void DebugDisplay_Init(void);
-void DebugDisplay_ShowHeadingCalibration(uint8_t mpuReady);
 void DebugDisplay_Update(uint8_t elapsedTicks);
 
 #endif

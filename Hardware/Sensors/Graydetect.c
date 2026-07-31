@@ -4,6 +4,8 @@
 #include <stddef.h>
 #include <stdint.h>
 
+#if GRAYDETECT_ENABLED
+
 #define GRAY_MASK_ALL ((uint8_t)((1U << GRAY_CHANNEL_COUNT) - 1U))
 
 /* 32 MHz 下约 5 us；软件 I2C 选择保守的约 100 kHz 时序。 */
@@ -328,3 +330,48 @@ uint8_t Graydetect_OnLine(uint8_t side)
 {
     return ((s_state & Graydetect_GetMask(side)) != 0U) ? 1U : 0U;
 }
+
+#else
+
+void Graydetect_Init(void)
+{
+}
+
+void Graydetect_Update(void)
+{
+}
+
+uint8_t Graydetect_IsOnline(void)
+{
+    return 0U;
+}
+
+uint32_t Graydetect_GetReadErrorCount(void)
+{
+    return 0U;
+}
+
+uint8_t Graydetect_GetState(void)
+{
+    return 0U;
+}
+
+uint8_t Graydetect_GetBit(uint8_t index)
+{
+    (void)index;
+    return 0U;
+}
+
+float Graydetect_GetError(uint8_t side)
+{
+    (void)side;
+    return 0.0f;
+}
+
+uint8_t Graydetect_OnLine(uint8_t side)
+{
+    (void)side;
+    return 0U;
+}
+
+#endif

@@ -23,12 +23,13 @@ void BallBalance_Init(void)
     s_balanceError = BALL_BALANCE_ERROR_NONE;
 }
 
-BallBalance_Result_t BallBalance_Start(void)
+BallBalance_Result_t BallBalance_Start(float targetMM)
 {
     s_startCount++;
     if (s_startResult == BALL_BALANCE_RESULT_OK)
     {
         s_balanceState = BALL_BALANCE_STATE_RUNNING;
+        s_targetMM = targetMM;
     }
     return s_startResult;
 }
@@ -78,7 +79,7 @@ static void reset_fakes(void)
     s_startResult = BALL_BALANCE_RESULT_OK;
     s_stable = 0U;
     s_targetMM = 999.0f;
-    s_carAccelerationMMps2 = -1.0f;
+    s_carAccelerationMMps2 = 0.0f;
     s_startCount = 0U;
     s_stopCount = 0U;
     s_updateCount = 0U;

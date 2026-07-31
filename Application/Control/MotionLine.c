@@ -163,20 +163,20 @@ static void MotionLine_SetError(MotionLine_Error_t error)
  * 传感器翻面安装时改 Graydetect.h 的那个宏即可，这里两张表都在。
  */
 #if GRAYDETECT_CHANNEL1_IS_RIGHT
-static const int8_t s_grayWeight[GRAY_CHANNEL_COUNT] = {
+static const float s_grayWeight[GRAY_CHANNEL_COUNT] = {
      MOTION_LINE_OUTER_WEIGHT, 4, MOTION_LINE_INNER_WEIGHT,
     -MOTION_LINE_INNER_WEIGHT, -4, -MOTION_LINE_OUTER_WEIGHT
 };
 #else
-static const int8_t s_grayWeight[GRAY_CHANNEL_COUNT] = {
+static const float s_grayWeight[GRAY_CHANNEL_COUNT] = {
     -MOTION_LINE_OUTER_WEIGHT, -4, -MOTION_LINE_INNER_WEIGHT,
      MOTION_LINE_INNER_WEIGHT, 4, MOTION_LINE_OUTER_WEIGHT
 };
 #endif
 
-static int8_t MotionLine_GetWeight(uint8_t grayState)
+static float MotionLine_GetWeight(uint8_t grayState)
 {
-    int16_t weight = 0;
+    float weight = 0.0f;
     uint8_t index;
 
     for (index = 0U; index < GRAY_CHANNEL_COUNT; index++)
@@ -197,7 +197,7 @@ static int8_t MotionLine_GetWeight(uint8_t grayState)
         weight = -MOTION_LINE_OUTER_WEIGHT;
     }
 
-    return (int8_t)weight;
+    return weight;
 }
 
 static float MotionLine_GetCurveTargetSpeed(float weight)
@@ -307,7 +307,7 @@ static uint8_t MotionLine_CalculateTargetSpeeds(
     else
     {
         s_context.lostTicks = 0U;
-        rawWeight = (float)MotionLine_GetWeight(grayState);
+        rawWeight = MotionLine_GetWeight(grayState);
     }
 
     s_context.filteredWeight += MOTION_LINE_WEIGHT_FILTER_ALPHA *
