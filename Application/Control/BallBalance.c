@@ -179,10 +179,15 @@ void BallBalance_Update(float dt)
         (BallBalance_TuneVelocityKiDegPerMM *
          s_context.velocityIntegralMM);
 
-    /* Chassis acceleration feedforward compensation */
+    /* Chassis acceleration feedforward compensation.
+     * Only apply when vehicle has significant velocity to avoid forcing
+     * the ball to move before the chassis actually accelerates. */
     chassisAccelMMps2 = MotionLine_GetProfileAccelerationMMps2();
-    feedforwardDeg = chassisAccelMMps2 * BallBalance_TuneFeedforwardDegPerMMps2;
-    tiltDeg += feedforwardDeg;
+    if (MotionLine_GetProfileSpeedMMps() > 50.0f)
+    {
+        feedforwardDeg = chassisAccelMMps2 * BallBalance_TuneFeedforwardDegPerMMps2;
+        tiltDeg += feedforwardDeg;
+    }
 
     s_context.tiltCommandDeg = tiltDeg;
     BeamActuator_SetTiltDeg(tiltDeg);
