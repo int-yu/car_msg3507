@@ -11,6 +11,7 @@ typedef struct
     float positionMM;
     float previousPositionMM;
     float speedMMps;
+    BallSensor_SpeedSource_t speedSource;
     /* 两个新序号之间累计的真实时间。相机约 25 fps、控制环 100 Hz，除以
      * 控制拍 dt 会把速度高估约 4 倍，必须用帧间实际间隔。 */
     float frameIntervalS;
@@ -26,6 +27,7 @@ static void BallSensor_MarkStale(void)
     s_context.fresh = 0U;
     s_context.hasPrevious = 0U;
     s_context.speedMMps = 0.0f;
+    s_context.speedSource = BALL_SENSOR_SPEED_SOURCE_NONE;
     s_context.frameIntervalS = 0.0f;
 }
 
@@ -36,6 +38,7 @@ void BallSensor_Init(void)
     s_context.positionMM = 0.0f;
     s_context.previousPositionMM = 0.0f;
     s_context.speedMMps = 0.0f;
+    s_context.speedSource = BALL_SENSOR_SPEED_SOURCE_NONE;
     s_context.frameIntervalS = 0.0f;
     s_context.previousSequence = 0U;
     BallSensor_TuneHalfLengthMM = BALL_SENSOR_HALF_LENGTH_MM;
@@ -88,9 +91,17 @@ void BallSensor_Update(float dt)
      * 被读到约 4 次；对重复帧做差分会得到 0，把估计值一路拉向零并废掉
      * 阻尼项。
      */
-    if (position.sequence != s_context.previousSequence)
+    if ((s_context.hasPrevious == 0U) ||
+        (position.sequence != s_context.previousSequence))
     {
-        if ((s_context.hasPrevious != 0U) &&
+        if (position.speedValid != 0U)
+        {
+            s_context.speedMMps =
+                ((float)position.speedX100 * BallSensor_TuneHalfLengthMM) /
+                (float)K230_LINK_BALL_POSITION_MAX;
+            s_context.speedSource = BALL_SENSOR_SPEED_SOURCE_K230;
+        }
+        else if ((s_context.hasPrevious != 0U) &&
             (s_context.frameIntervalS > 0.0f))
         {
             float rawSpeedMMps =
@@ -102,6 +113,7 @@ void BallSensor_Update(float dt)
                 s_context.speedMMps +=
                     BALL_SENSOR_SPEED_FILTER_ALPHA *
                     (rawSpeedMMps - s_context.speedMMps);
+                s_context.speedSource = BALL_SENSOR_SPEED_SOURCE_TI;
             }
         }
         s_context.previousPositionMM = positionMM;
@@ -124,4 +136,9 @@ float BallSensor_GetPositionMM(void)
 float BallSensor_GetSpeedMMps(void)
 {
     return s_context.speedMMps;
+}
+
+BallSensor_SpeedSource_t BallSensor_GetSpeedSource(void)
+{
+    return s_context.speedSource;
 }

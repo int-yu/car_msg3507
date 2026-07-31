@@ -16,6 +16,8 @@
 #define MAIN_BALL_START_SIGNAL 3U
 #define MAIN_BALL_STOP_SIGNAL  4U
 
+static float s_ballTargetMM = BALL_SEQUENCE_DEFAULT_TARGET_MM;
+
 static uint8_t Main_HasSignal(const App_UpdateContext_t *context,
                               uint8_t signal)
 {
@@ -52,6 +54,7 @@ int main(void)
     App_Init();
     Accomplish26H_Init();
     BallSequence_Init();
+    s_ballTargetMM = BALL_SEQUENCE_DEFAULT_TARGET_MM;
     Interrupt_Enable();
 
     for (;;)
@@ -69,11 +72,16 @@ int main(void)
                  ((updateContext.pressedKeys &
                    MAIN_EMERGENCY_CHORD_MASK) !=
                   MAIN_EMERGENCY_CHORD_MASK)) ? 1U : 0U;
-            float ballTargetMM = BALL_SEQUENCE_DEFAULT_TARGET_MM;
+            float requestedBallTargetMM;
 
-            if (ballStartRequested != 0U)
+            if (BluetoothDebug_TakeBallTargetMM(
+                    &requestedBallTargetMM) != 0U)
             {
-                (void)BluetoothDebug_TakeBallTargetMM(&ballTargetMM);
+                s_ballTargetMM = requestedBallTargetMM;
+                if (BallSequence_IsActive() != 0U)
+                {
+                    (void)BallSequence_SetTarget(s_ballTargetMM);
+                }
             }
 
             Accomplish26H_Update(&updateContext);
@@ -88,7 +96,7 @@ int main(void)
                         MAIN_BALL_START_KEY_MASK) != 0U) ||
                       (ballStartRequested != 0U)))
             {
-                (void)Main_StartBallTask(ballTargetMM);
+                (void)Main_StartBallTask(s_ballTargetMM);
             }
 
             BallSequence_Update(updateContext.dt);

@@ -43,6 +43,18 @@ uint8_t BallSequence_Start(float targetMM)
     return 1U;
 }
 
+uint8_t BallSequence_SetTarget(float targetMM)
+{
+    if ((s_context.state != BALL_SEQUENCE_STATE_HOLDING) ||
+        (BallBalance_SetTarget(targetMM) != BALL_BALANCE_RESULT_OK))
+    {
+        return 0U;
+    }
+
+    s_context.targetMM = targetMM;
+    return 1U;
+}
+
 void BallSequence_Update(float dt)
 {
     if (s_context.state != BALL_SEQUENCE_STATE_HOLDING)

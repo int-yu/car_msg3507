@@ -21,6 +21,8 @@ static void reset_fakes(void)
     s_ballAvailable = 0U;
     s_ball.valid = 0U;
     s_ball.positionX100 = K230_LINK_BALL_POSITION_INVALID;
+    s_ball.speedValid = 0U;
+    s_ball.speedX100 = K230_LINK_BALL_SPEED_INVALID;
     s_ball.sequence = 0U;
     s_ball.ageTicks = 0U;
     BallSensor_Init();
@@ -31,7 +33,16 @@ static void feed_frame(int16_t positionX100)
     s_ballAvailable = 1U;
     s_ball.valid = 1U;
     s_ball.positionX100 = positionX100;
+    s_ball.speedValid = 0U;
+    s_ball.speedX100 = K230_LINK_BALL_SPEED_INVALID;
     s_ball.sequence++;
+}
+
+static void feed_frame_with_speed(int16_t positionX100, int16_t speedX100)
+{
+    feed_frame(positionX100);
+    s_ball.speedValid = 1U;
+    s_ball.speedX100 = speedX100;
 }
 
 /* 相机约 25 fps、控制环 100 Hz：一帧被读 4 拍。 */
@@ -168,6 +179,51 @@ static void test_stationary_ball_has_zero_speed(void)
     CHECK_NEAR(BallSensor_GetSpeedMMps(), 0.0f, 0.001f);
 }
 
+static void test_k230_speed_is_preferred(void)
+{
+    reset_fakes();
+    feed_frame(-2000);
+    run_frame_ticks();
+    feed_frame_with_speed(2000, -4000);
+    BallSensor_Update(0.01f);
+
+    CHECK_NEAR(BallSensor_GetSpeedMMps(), -100.0f, 0.001f);
+    CHECK(BallSensor_GetSpeedSource() == BALL_SENSOR_SPEED_SOURCE_K230);
+}
+
+static void test_k230_speed_is_used_on_sequence_zero_first_frame(void)
+{
+    reset_fakes();
+    s_ballAvailable = 1U;
+    s_ball.valid = 1U;
+    s_ball.positionX100 = 0;
+    s_ball.speedValid = 1U;
+    s_ball.speedX100 = 2000;
+    s_ball.sequence = 0U;
+    BallSensor_Update(0.01f);
+
+    CHECK_NEAR(BallSensor_GetSpeedMMps(), 50.0f, 0.001f);
+    CHECK(BallSensor_GetSpeedSource() == BALL_SENSOR_SPEED_SOURCE_K230);
+}
+
+static void test_missing_k230_speed_falls_back_to_ti_difference(void)
+{
+    uint8_t frame;
+
+    reset_fakes();
+    feed_frame(-4000);
+    run_frame_ticks();
+    for (frame = 1U; frame <= 20U; frame++)
+    {
+        feed_frame((int16_t)(-4000 + (int16_t)(frame * 400)));
+        run_frame_ticks();
+    }
+
+    CHECK(BallSensor_GetSpeedSource() == BALL_SENSOR_SPEED_SOURCE_TI);
+    CHECK(BallSensor_GetSpeedMMps() > 200.0f);
+    CHECK(BallSensor_GetSpeedMMps() < 300.0f);
+}
+
 int main(void)
 {
     test_pipe_coordinate_maps_to_millimetres();
@@ -178,6 +234,9 @@ int main(void)
     test_speed_uses_frame_interval_not_tick();
     test_repeated_frame_does_not_drag_speed_to_zero();
     test_stationary_ball_has_zero_speed();
+    test_k230_speed_is_preferred();
+    test_k230_speed_is_used_on_sequence_zero_first_frame();
+    test_missing_k230_speed_falls_back_to_ti_difference();
 
     if (s_failures == 0)
     {

@@ -23,6 +23,7 @@
 #define MAIN_HOLD_STOP_SIGNAL  6U
 
 static uint8_t s_ballAutoStartPending;
+static float s_ballTargetMM = BALL_SEQUENCE_DEFAULT_TARGET_MM;
 
 static uint8_t Main26H_HasSignal(const App_UpdateContext_t *context,
                                  uint8_t signal)
@@ -117,6 +118,7 @@ void Main26H_Run(void)
     App_Init();
     Accomplish26H_Init();
     BallSequence_Init();
+    s_ballTargetMM = BALL_SEQUENCE_DEFAULT_TARGET_MM;
     BallHold_Init();
     s_ballAutoStartPending =
         (MAIN26H_BALL_AUTO_START_ENABLED != 0U) ? 1U : 0U;
@@ -141,11 +143,16 @@ void Main26H_Run(void)
                  ((updateContext.pressedKeys &
                    MAIN_EMERGENCY_CHORD_MASK) !=
                   MAIN_EMERGENCY_CHORD_MASK)) ? 1U : 0U;
-            float ballTargetMM = BALL_SEQUENCE_DEFAULT_TARGET_MM;
+            float requestedBallTargetMM;
 
-            if (ballStartRequested != 0U)
+            if (BluetoothDebug_TakeBallTargetMM(
+                    &requestedBallTargetMM) != 0U)
             {
-                (void)BluetoothDebug_TakeBallTargetMM(&ballTargetMM);
+                s_ballTargetMM = requestedBallTargetMM;
+                if (Main26H_BallIsActive() != 0U)
+                {
+                    (void)BallSequence_SetTarget(s_ballTargetMM);
+                }
             }
 
             Accomplish26H_Update(&updateContext);
@@ -167,7 +174,7 @@ void Main26H_Run(void)
                       (ballStartRequested != 0U)))
             {
                 s_ballAutoStartPending = 0U;
-                (void)Main26H_ReportBallStart(ballTargetMM);
+                (void)Main26H_ReportBallStart(s_ballTargetMM);
             }
 
             if (holdStopRequested != 0U)
@@ -187,8 +194,7 @@ void Main26H_Run(void)
                 (startAllowed != 0U) &&
                 (holdStartRequested == 0U) &&
                 (Main26H_AutoStartIsReady() != 0U) &&
-                (Main26H_ReportBallStart(
-                     BALL_SEQUENCE_DEFAULT_TARGET_MM) != 0U))
+                (Main26H_ReportBallStart(s_ballTargetMM) != 0U))
             {
                 s_ballAutoStartPending = 0U;
             }

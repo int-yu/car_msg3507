@@ -34,6 +34,9 @@ void BallSequence_Init(void);
 /* Start holding targetMM. Returns 0 if vision or target validation fails. */
 uint8_t BallSequence_Start(float targetMM);
 
+/* Update the target of an active hold without restarting the task. */
+uint8_t BallSequence_SetTarget(float targetMM);
+
 void BallSequence_Update(float dt);
 void BallSequence_Stop(void);
 

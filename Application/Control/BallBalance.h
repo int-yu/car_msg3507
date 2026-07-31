@@ -7,22 +7,23 @@
  * Ball-on-beam position controller.
  *
  * The public command is the ball position to hold, in millimeters from the
- * beam center O. This version is a direct PID controller:
+ * beam center O. The controller is cascaded:
  *
- *     tilt = Kp * (target - position)
- *          + Ki * integral(target - position)
- *          + Kd * (0 - measured_speed)
+ *     velocity_target = position_Kp * (target - position)
+ *     tilt = velocity_Kp * (velocity_target - measured_velocity)
+ *          + velocity_Ki * integral(velocity_target - measured_velocity)
  *
  * No chassis acceleration feedforward and no generated O->+5->-5 task are
  * used here. BeamActuator owns the conversion from tilt angle to stepper
  * angle, gear ratio, zero offset, direction and soft limits.
  */
 
-#define BALL_BALANCE_KP_DEG_PER_MM      0.32f
-#define BALL_BALANCE_KI_DEG_PER_MM_S    0.01f
-#define BALL_BALANCE_KD_DEG_PER_MMPS    0.12f
+#define BALL_BALANCE_POSITION_KP_PER_S          2.0f
+#define BALL_BALANCE_VELOCITY_KP_DEG_PER_MMPS   0.25f
+#define BALL_BALANCE_VELOCITY_KI_DEG_PER_MM     0.20f
+#define BALL_BALANCE_MAX_VELOCITY_MMPS          150.0f
 
-#define BALL_BALANCE_INTEGRAL_LIMIT_MM_S 300.0f
+#define BALL_BALANCE_VELOCITY_INTEGRAL_LIMIT_MM 400.0f
 
 #define BALL_BALANCE_TARGET_LIMIT_MM    120.0f
 #define BALL_BALANCE_SETTLE_TOLERANCE_MM 5.0f
@@ -31,9 +32,10 @@
 /* 100 Hz control loop: tolerate about 100 ms of missing vision. */
 #define BALL_BALANCE_VISION_LOST_TICKS  10U
 
-extern float BallBalance_TuneKp;
-extern float BallBalance_TuneKi;
-extern float BallBalance_TuneKd;
+extern float BallBalance_TunePositionKpPerS;
+extern float BallBalance_TuneVelocityKpDegPerMMps;
+extern float BallBalance_TuneVelocityKiDegPerMM;
+extern float BallBalance_TuneMaxVelocityMMps;
 
 typedef enum
 {
@@ -73,6 +75,7 @@ uint8_t BallBalance_IsStable(void);
 float BallBalance_GetPositionMM(void);
 float BallBalance_GetTargetMM(void);
 float BallBalance_GetProfilePositionMM(void);
+float BallBalance_GetVelocityTargetMMps(void);
 float BallBalance_GetTiltCommandDeg(void);
 float BallBalance_GetIntegralMMs(void);
 

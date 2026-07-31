@@ -34,10 +34,12 @@ assert.match(main,
 assert.match(main,
     /Main_HasSignal\(&updateContext, MAIN_BALL_STOP_SIGNAL\)/,
     'C4 must stop and recenter the ball task');
-assert.ok(main.includes('BluetoothDebug_TakeBallTargetMM(&ballTargetMM)'),
+assert.ok(main.includes('BluetoothDebug_TakeBallTargetMM('),
     'targeted X command must pass its requested position to the ball task');
 assert.ok(main.includes('BallSequence_Start(targetMM)'),
     'ball task must start with the selected target position');
+assert.ok(main.includes('BallSequence_SetTarget(s_ballTargetMM)'),
+    'X must retarget an active requirement-3 task without restarting it');
 assert.doesNotMatch(main, /MAIN26H_BALL_AUTO_START_ENABLED|AutoStart|BallHold|MAIN_HOLD/,
     'current main flow must not auto-start or load the old hold task');
 assert.doesNotMatch(app, /Telemetry_Update\(/,
@@ -47,7 +49,9 @@ for (const required of [
     '#define TELEMETRY_CH_BPOS   0x4000U',
     '#define TELEMETRY_CH_BREF   0x8000U',
     '#define TELEMETRY_CH_SANG   0x10000UL',
-    '#define TELEMETRY_CH_ALL    0x1FFFFUL',
+    '#define TELEMETRY_CH_BVEL   0x20000UL',
+    '#define TELEMETRY_CH_BVREF  0x40000UL',
+    '#define TELEMETRY_CH_ALL    0x7FFFFUL',
 ]) {
     assert.ok(telemetryHeader.includes(required),
         `Telemetry.h missing ${required}`);
@@ -59,6 +63,8 @@ for (const required of [
     '{ TELEMETRY_CH_BPOS,  "bpos"',
     '{ TELEMETRY_CH_BREF,  "bref"',
     '{ TELEMETRY_CH_SANG,  "sang"',
+    '{ TELEMETRY_CH_BVEL,  "bvel"',
+    '{ TELEMETRY_CH_BVREF, "bvref"',
 ]) {
     assert.ok(telemetry.includes(required),
         `Telemetry.c missing ${required}`);
@@ -76,9 +82,11 @@ for (const required of [
     'bpos: 0x4000',
     'bref: 0x8000',
     'sang: 0x10000',
-    'const CH_ALL = 0x1FFFF',
+    'bvel: 0x20000',
+    'bvref: 0x40000',
+    'const CH_ALL = 0x7FFFF',
     "ampLabel: '目标位置 mm'",
-    'mask: CH.bpos | CH.bref | CH.sang',
+    'mask: CH.bpos | CH.bref | CH.bvel | CH.bvref | CH.sang',
     "targetCommand: (target) => 'X' + Math.round(target)",
     "excite: () => 'C3'",
     "stopCmd: 'C4'",
@@ -87,6 +95,9 @@ for (const required of [
     'function selectFocusLoop(',
     "$('sessAmp').value = $('ballTargetMM').value",
     'if (p.targetCommand)',
+    'async function applyBallTarget()',
+    "$('ballTargetMM').addEventListener('change', applyBallTarget)",
+    '未启动任务',
 ]) {
     assert.ok(html.includes(required), `car_debug.html missing ${required}`);
 }
@@ -106,7 +117,7 @@ assert.ok(bluetoothHeader.includes(
     'uint8_t BluetoothDebug_TakeBallTargetMM(float *targetMM);'),
     'BluetoothDebug.h must expose the one-shot ball target');
 
-for (const name of ['bgr', 'bzo', 'bhl', 'bki', 'bkd', 'bkp']) {
+for (const name of ['bgr', 'bzo', 'bhl', 'bki', 'bkd', 'bkp', 'bvm']) {
     assert.ok(html.includes(`${name}:`),
         `ball parameter metadata missing ${name}`);
 }

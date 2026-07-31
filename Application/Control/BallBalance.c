@@ -3,16 +3,20 @@
 #include "Application/Control/BeamActuator.h"
 #include <math.h>
 
-float BallBalance_TuneKp = BALL_BALANCE_KP_DEG_PER_MM;
-float BallBalance_TuneKi = BALL_BALANCE_KI_DEG_PER_MM_S;
-float BallBalance_TuneKd = BALL_BALANCE_KD_DEG_PER_MMPS;
+float BallBalance_TunePositionKpPerS = BALL_BALANCE_POSITION_KP_PER_S;
+float BallBalance_TuneVelocityKpDegPerMMps =
+    BALL_BALANCE_VELOCITY_KP_DEG_PER_MMPS;
+float BallBalance_TuneVelocityKiDegPerMM =
+    BALL_BALANCE_VELOCITY_KI_DEG_PER_MM;
+float BallBalance_TuneMaxVelocityMMps = BALL_BALANCE_MAX_VELOCITY_MMPS;
 
 typedef struct
 {
     BallBalance_State_t state;
     BallBalance_Error_t error;
     float targetMM;
-    float integralMMs;
+    float velocityTargetMMps;
+    float velocityIntegralMM;
     float tiltCommandDeg;
     uint16_t settleTicks;
     uint16_t visionLostTicks;
@@ -42,7 +46,8 @@ static uint8_t BallBalance_TargetIsValid(float targetMM)
 static void BallBalance_ResetRuntime(void)
 {
     s_context.targetMM = 0.0f;
-    s_context.integralMMs = 0.0f;
+    s_context.velocityTargetMMps = 0.0f;
+    s_context.velocityIntegralMM = 0.0f;
     s_context.tiltCommandDeg = 0.0f;
     s_context.settleTicks = 0U;
     s_context.visionLostTicks = 0U;
@@ -69,9 +74,12 @@ void BallBalance_Init(void)
     s_context.state = BALL_BALANCE_STATE_IDLE;
     s_context.error = BALL_BALANCE_ERROR_NONE;
     BallBalance_ResetRuntime();
-    BallBalance_TuneKp = BALL_BALANCE_KP_DEG_PER_MM;
-    BallBalance_TuneKi = BALL_BALANCE_KI_DEG_PER_MM_S;
-    BallBalance_TuneKd = BALL_BALANCE_KD_DEG_PER_MMPS;
+    BallBalance_TunePositionKpPerS = BALL_BALANCE_POSITION_KP_PER_S;
+    BallBalance_TuneVelocityKpDegPerMMps =
+        BALL_BALANCE_VELOCITY_KP_DEG_PER_MMPS;
+    BallBalance_TuneVelocityKiDegPerMM =
+        BALL_BALANCE_VELOCITY_KI_DEG_PER_MM;
+    BallBalance_TuneMaxVelocityMMps = BALL_BALANCE_MAX_VELOCITY_MMPS;
 }
 
 BallBalance_Result_t BallBalance_Start(float targetMM)
@@ -101,7 +109,8 @@ BallBalance_Result_t BallBalance_SetTarget(float targetMM)
     }
 
     s_context.targetMM = targetMM;
-    s_context.integralMMs = 0.0f;
+    s_context.velocityTargetMMps = 0.0f;
+    s_context.velocityIntegralMM = 0.0f;
     s_context.settleTicks = 0U;
     return BALL_BALANCE_RESULT_OK;
 }
@@ -111,6 +120,7 @@ void BallBalance_Update(float dt)
     float positionMM;
     float speedMMps;
     float errorMM;
+    float velocityErrorMMps;
     float tiltDeg;
 
     if (s_context.state != BALL_BALANCE_STATE_RUNNING)
@@ -147,14 +157,19 @@ void BallBalance_Update(float dt)
     speedMMps = BallSensor_GetSpeedMMps();
     errorMM = s_context.targetMM - positionMM;
 
-    s_context.integralMMs += errorMM * dt;
-    s_context.integralMMs =
-        BallBalance_Clamp(s_context.integralMMs,
-                          BALL_BALANCE_INTEGRAL_LIMIT_MM_S);
+    s_context.velocityTargetMMps = BallBalance_Clamp(
+        BallBalance_TunePositionKpPerS * errorMM,
+        BallBalance_TuneMaxVelocityMMps);
+    velocityErrorMMps = s_context.velocityTargetMMps - speedMMps;
+    s_context.velocityIntegralMM += velocityErrorMMps * dt;
+    s_context.velocityIntegralMM = BallBalance_Clamp(
+        s_context.velocityIntegralMM,
+        BALL_BALANCE_VELOCITY_INTEGRAL_LIMIT_MM);
 
-    tiltDeg = (BallBalance_TuneKp * errorMM) +
-              (BallBalance_TuneKi * s_context.integralMMs) -
-              (BallBalance_TuneKd * speedMMps);
+    tiltDeg =
+        (BallBalance_TuneVelocityKpDegPerMMps * velocityErrorMMps) +
+        (BallBalance_TuneVelocityKiDegPerMM *
+         s_context.velocityIntegralMM);
 
     s_context.tiltCommandDeg = tiltDeg;
     BeamActuator_SetTiltDeg(tiltDeg);
@@ -201,6 +216,11 @@ float BallBalance_GetProfilePositionMM(void)
     return s_context.targetMM;
 }
 
+float BallBalance_GetVelocityTargetMMps(void)
+{
+    return s_context.velocityTargetMMps;
+}
+
 float BallBalance_GetTiltCommandDeg(void)
 {
     return s_context.tiltCommandDeg;
@@ -208,5 +228,5 @@ float BallBalance_GetTiltCommandDeg(void)
 
 float BallBalance_GetIntegralMMs(void)
 {
-    return s_context.integralMMs;
+    return s_context.velocityIntegralMM;
 }

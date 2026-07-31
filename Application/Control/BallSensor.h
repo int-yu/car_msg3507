@@ -29,6 +29,13 @@
 /* 运行时可调：摄像头视场标定后写入，掉电恢复上面的默认值。 */
 extern float BallSensor_TuneHalfLengthMM;
 
+typedef enum
+{
+    BALL_SENSOR_SPEED_SOURCE_NONE = 0,
+    BALL_SENSOR_SPEED_SOURCE_TI,
+    BALL_SENSOR_SPEED_SOURCE_K230
+} BallSensor_SpeedSource_t;
+
 void BallSensor_Init(void);
 
 /* 每个控制拍调用一次；内部只读 K230Link 的缓存，不触发串口收发。 */
@@ -42,5 +49,6 @@ void BallSensor_Update(float dt);
 uint8_t BallSensor_IsFresh(void);
 float BallSensor_GetPositionMM(void);
 float BallSensor_GetSpeedMMps(void);
+BallSensor_SpeedSource_t BallSensor_GetSpeedSource(void);
 
 #endif

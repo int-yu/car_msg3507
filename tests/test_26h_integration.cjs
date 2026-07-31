@@ -154,8 +154,8 @@ assert.doesNotMatch(display, /OLED_Update\(\)|IR:|KEY:|encoderCounts|BALL:/,
 assert.doesNotMatch(displayHeader, /ShowHeadingCalibration/,
     'OLED must not expose the removed MPU calibration page');
 
-assert.match(stepperHeader, /STEPPER_INITIAL_ANGLE_DEG\s+238\.0f/,
-    'stepper horizontal angle must be 238 degrees');
+assert.match(stepperHeader, /STEPPER_INITIAL_ANGLE_DEG\s+166\.0f/,
+    'stepper horizontal angle must be 166 degrees');
 assert.match(stepperHeader, /STEPPER_MIN_ANGLE_DEG\s+106\.0f/,
     'stepper minimum limit must be 106 degrees');
 assert.match(stepperHeader, /STEPPER_MAX_ANGLE_DEG\s+309\.0f/,

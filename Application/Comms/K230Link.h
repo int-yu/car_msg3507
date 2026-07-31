@@ -29,6 +29,11 @@
 #define K230_LINK_BALL_POSITION_MIN      (-5000)
 #define K230_LINK_BALL_POSITION_MAX      (+5000)
 #define K230_LINK_BALL_POSITION_INVALID  INT16_MIN
+/* BALL_POSITION payload: positionX100:i16, optionally speedX100:i16.
+ * speedX100 is the derivative of the same normalized coordinate per second. */
+#define K230_LINK_BALL_POSITION_PAYLOAD_LENGTH 2U
+#define K230_LINK_BALL_SPEED_PAYLOAD_LENGTH    4U
+#define K230_LINK_BALL_SPEED_INVALID     INT16_MIN
 
 /* LANE 的 PAYLOAD：valid:u8 | b0..b4:int16_LE | confidence:u8。
  * b0 最近、b4 最远，单位是千分比（相对画面宽度），符号与 TARGET 一致：
@@ -67,6 +72,8 @@ typedef struct
 {
     uint8_t valid;
     int16_t positionX100;
+    uint8_t speedValid;
+    int16_t speedX100;
     uint8_t sequence;
     uint8_t ageTicks;
 } K230Link_BallPosition_t;

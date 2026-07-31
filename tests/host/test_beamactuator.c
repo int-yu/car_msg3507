@@ -44,6 +44,10 @@ static void test_absolute_horizontal_reference_is_preserved(void)
 {
     reset_fakes();
 
+    CHECK_NEAR(BeamActuator_TuneGearRatio,
+               BEAM_ACTUATOR_GEAR_RATIO, 0.001f);
+    CHECK_NEAR(BeamActuator_TuneZeroOffsetDeg,
+               STEPPER_INITIAL_ANGLE_DEG, 0.001f);
     CHECK(s_enableCalls == 1U);
     CHECK(s_setPositionCalls == 0U);
     BeamActuator_Update(0.01f);
@@ -59,7 +63,10 @@ static void test_positive_ball_correction_raises_stepper(void)
     BeamActuator_Update(0.01f);
 
     CHECK(s_lastTargetDeg > STEPPER_INITIAL_ANGLE_DEG);
-    CHECK_NEAR(s_lastTargetDeg, STEPPER_INITIAL_ANGLE_DEG + 2.0f, 0.001f);
+    CHECK_NEAR(s_lastTargetDeg,
+               STEPPER_INITIAL_ANGLE_DEG +
+                   2.0f * BEAM_ACTUATOR_GEAR_RATIO,
+               0.001f);
 }
 
 static void test_large_tilt_is_not_clamped_by_actuator(void)
@@ -71,7 +78,10 @@ static void test_large_tilt_is_not_clamped_by_actuator(void)
 
     CHECK_NEAR(BeamActuator_GetRequestedTiltDeg(), -30.0f, 0.001f);
     CHECK_NEAR(BeamActuator_GetTiltDeg(), -30.0f, 0.001f);
-    CHECK_NEAR(s_lastTargetDeg, STEPPER_INITIAL_ANGLE_DEG + 30.0f, 0.001f);
+    CHECK_NEAR(s_lastTargetDeg,
+               STEPPER_INITIAL_ANGLE_DEG +
+                   30.0f * BEAM_ACTUATOR_GEAR_RATIO,
+               0.001f);
 }
 
 static void test_bottom_limit_result_does_not_freeze_applied_tilt(void)

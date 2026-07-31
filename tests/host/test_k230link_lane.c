@@ -264,6 +264,38 @@ static void test_stale_target_does_not_overwrite_caller(void)
     CHECK(target.offsetX == 12345);
 }
 
+static void test_legacy_ball_position_has_no_speed(void)
+{
+    uint8_t payload[2];
+    K230Link_BallPosition_t ball;
+
+    Setup();
+    PutI16(payload, 0U, 1200);
+    FeedFrame(K230_LINK_MESSAGE_BALL_POSITION, 0x41U, payload, 2U);
+    K230Link_Update(1U);
+
+    CHECK(K230Link_GetBallPosition(&ball) == 1U);
+    CHECK(ball.positionX100 == 1200);
+    CHECK(ball.speedValid == 0U);
+}
+
+static void test_extended_ball_frame_decodes_speed(void)
+{
+    uint8_t payload[4];
+    K230Link_BallPosition_t ball;
+
+    Setup();
+    PutI16(payload, 0U, -800);
+    PutI16(payload, 2U, 2500);
+    FeedFrame(K230_LINK_MESSAGE_BALL_POSITION, 0x42U, payload, 4U);
+    K230Link_Update(1U);
+
+    CHECK(K230Link_GetBallPosition(&ball) == 1U);
+    CHECK(ball.positionX100 == -800);
+    CHECK(ball.speedValid == 1U);
+    CHECK(ball.speedX100 == 2500);
+}
+
 static void test_bad_crc_is_rejected(void)
 {
     uint8_t frame[19];
@@ -320,6 +352,8 @@ int main(void)
     test_target_goes_stale_after_timeout();
     test_new_target_frame_refreshes_age();
     test_stale_target_does_not_overwrite_caller();
+    test_legacy_ball_position_has_no_speed();
+    test_extended_ball_frame_decodes_speed();
     test_bad_crc_is_rejected();
     test_wrong_length_is_rejected();
     test_lane_before_handshake_is_ignored();

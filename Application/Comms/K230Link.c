@@ -151,7 +151,8 @@ static void K230Link_HandleFrame(void)
         s_hasTarget = 1U;
     }
     else if ((s_parser.type == K230_LINK_MESSAGE_BALL_POSITION) &&
-             (s_parser.length == 2U))
+             ((s_parser.length == K230_LINK_BALL_POSITION_PAYLOAD_LENGTH) ||
+              (s_parser.length == K230_LINK_BALL_SPEED_PAYLOAD_LENGTH)))
     {
         int16_t position = (int16_t)(
             (uint16_t)s_parser.payload[0] |
@@ -161,6 +162,20 @@ static void K230Link_HandleFrame(void)
             ((position >= K230_LINK_BALL_POSITION_MIN) &&
              (position <= K230_LINK_BALL_POSITION_MAX)) ? 1U : 0U;
         s_ballPosition.positionX100 = position;
+        s_ballPosition.speedValid = 0U;
+        s_ballPosition.speedX100 = K230_LINK_BALL_SPEED_INVALID;
+        if (s_parser.length == K230_LINK_BALL_SPEED_PAYLOAD_LENGTH)
+        {
+            int16_t speed = (int16_t)(
+                (uint16_t)s_parser.payload[2] |
+                ((uint16_t)s_parser.payload[3] << 8U));
+
+            if (speed != K230_LINK_BALL_SPEED_INVALID)
+            {
+                s_ballPosition.speedValid = 1U;
+                s_ballPosition.speedX100 = speed;
+            }
+        }
         s_ballPosition.sequence = s_parser.sequence;
         s_ballPosition.ageTicks = 0U;
         s_hasBallPosition = 1U;
@@ -297,6 +312,8 @@ void K230Link_Init(void)
     s_hasTarget = 0U;
     s_ballPosition.valid = 0U;
     s_ballPosition.positionX100 = K230_LINK_BALL_POSITION_INVALID;
+    s_ballPosition.speedValid = 0U;
+    s_ballPosition.speedX100 = K230_LINK_BALL_SPEED_INVALID;
     s_ballPosition.sequence = 0U;
     s_ballPosition.ageTicks = 0U;
     s_hasBallPosition = 0U;

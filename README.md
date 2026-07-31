@@ -214,7 +214,7 @@ Heading -> Odometry -> 六路红外 -> Stepper -> Key -> K230Link -> BallSensor
 | `Y<number>` | 原地转 n 整圈回到起始朝向后结束标定，解算并应用尺度因子 | `1~20` 圈；未在标定中返回 `ERR CAL IDLE`，积分角过小返回 `ERR CAL SMALL`；成功回 `OK Y SCALE=<新因子> RAW=<积分角>` | `Y3` |
 | `Q` | 查询遥测能力；**上位机据此自适应频率，不再各存一份阈值** | 无参数（裸 `Q` 即可）；回 `OK Q MAX=<上限Hz> MASK=<掩码> RATE=<当前Hz>` | `Q` |
 
-> **`X` 命令已移除。** 板载捕获模块连同它的 24 KB RAM 缓冲一并删除，详见 3.3.0。`Q` 回应中原有的 `CAPST`/`CAPN`/`CAPMAX` 三个字段同时撤销；`car_debug.html` 的 Q 解析器本就把这三项写成可选组，无需改动。
+> **板载捕获已移除。** 原先的 `X` 板载捕获功能连同它的 24 KB RAM 缓冲一并删除；当前 `X<mm>` 专用于设置要求 3 小球目标，不再代表板载捕获。`Q` 回应中原有的 `CAPST`/`CAPN`/`CAPMAX` 三个字段同时撤销；`car_debug.html` 的 Q 解析器本就把这三项写成可选组，无需改动。
 
 **`ERR MOTION 3` 的含义。** MotionManager 错误码 `3` 是 `SENSOR_NOT_READY`。若 `B/F/T/A` 都返回 `ERR MOTION 3`，同时 `Z2` 返回 `ERR Z OFFLINE`，说明动作命令没有真正启动，根因是 Heading 层未就绪，通常是 MPU6050 离线或初始化失败。此时 `yaw/navE` 遥测会作为无效字段发送，网页显示为空值，不再把默认 `0°` 当成有效航向；优先检查 MPU6050 供电、GND、PB2/PB3 软件 I2C 线序、上拉/开漏连接和地址 `0x68`。
 
@@ -241,7 +241,7 @@ Heading -> Odometry -> 六路红外 -> Stepper -> Key -> K230Link -> BallSensor
 - `CRC8` 为 CRC-8/ATM（多项式 `0x07`，初值 0），覆盖 `VER` 到 `PAYLOAD`。
 - 帧类型：`SCHEMA=0x30`（掩码变化时先发，含列名+单位码）、`SAMPLE=0x31`（ms + 各通道 float32）。`0x32`~`0x34` 曾是板载捕获的 `CAP_META`/`CAP_SAMPLE`/`CAP_END`，模块删除后这三个类型号保留不复用，避免旧版网页把新帧误认成捕获数据。
 
-**命令仍走 ASCII。** `K/W/N/M/G/F/B/T/A/Z/Q/E/Y/P/C/L/R/U/O/D` 及其 `OK`/`ERR` 回应保持文本——低频、要人读、任何串口助手可直接调试。只有高频遥测数据二进制化。
+**命令仍走 ASCII。** `K/W/N/M/G/F/B/T/A/Z/Q/E/Y/P/C/X/L/R/U/O/D` 及其 `OK`/`ERR` 回应保持文本——低频、要人读、任何串口助手可直接调试。要求 3 中 `X<mm>` 只设置小球目标并返回 `OK X=<mm>`，不会启动任务或驱动车辆；`C3` 才启动要求 3，运行中再次发送 `X<mm>` 只重定向 PID 目标。只有高频遥测数据二进制化。
 
 **单通道：实时流。** `M` 设掩码、`G` 设频率，`SCHEMA` + `SAMPLE` 两种帧，边跑边发（DMA 不阻塞），可达 100 Hz 与控制环同频，容量无限。监视、遥控采数据、调参全部够用。
 

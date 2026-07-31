@@ -5,8 +5,10 @@
 static BallBalance_State_t s_balanceState;
 static BallBalance_Error_t s_balanceError;
 static BallBalance_Result_t s_startResult;
+static BallBalance_Result_t s_setTargetResult;
 static float s_targetMM;
 static uint16_t s_startCount;
+static uint16_t s_setTargetCount;
 static uint16_t s_stopCount;
 static uint16_t s_updateCount;
 
@@ -25,6 +27,16 @@ BallBalance_Result_t BallBalance_Start(float targetMM)
         s_targetMM = targetMM;
     }
     return s_startResult;
+}
+
+BallBalance_Result_t BallBalance_SetTarget(float targetMM)
+{
+    s_setTargetCount++;
+    if (s_setTargetResult == BALL_BALANCE_RESULT_OK)
+    {
+        s_targetMM = targetMM;
+    }
+    return s_setTargetResult;
 }
 
 void BallBalance_Update(float dt)
@@ -47,8 +59,10 @@ static void reset_fakes(void)
     s_balanceState = BALL_BALANCE_STATE_IDLE;
     s_balanceError = BALL_BALANCE_ERROR_NONE;
     s_startResult = BALL_BALANCE_RESULT_OK;
+    s_setTargetResult = BALL_BALANCE_RESULT_OK;
     s_targetMM = 0.0f;
     s_startCount = 0U;
+    s_setTargetCount = 0U;
     s_stopCount = 0U;
     s_updateCount = 0U;
     BallSequence_Init();
@@ -103,6 +117,30 @@ static void test_holds_closed_loop_until_stopped(void)
     CHECK_NEAR(s_targetMM, -30.0f, 0.001f);
 }
 
+static void test_active_hold_retargets_without_restart(void)
+{
+    reset_fakes();
+    CHECK(BallSequence_Start(10.0f) != 0U);
+
+    CHECK(BallSequence_SetTarget(-20.0f) != 0U);
+
+    CHECK(s_startCount == 1U);
+    CHECK(s_setTargetCount == 1U);
+    CHECK(BallSequence_GetState() == BALL_SEQUENCE_STATE_HOLDING);
+    CHECK_NEAR(s_targetMM, -20.0f, 0.001f);
+    CHECK_NEAR(BallSequence_GetTargetMM(), -20.0f, 0.001f);
+}
+
+static void test_idle_hold_rejects_retarget(void)
+{
+    reset_fakes();
+
+    CHECK(BallSequence_SetTarget(15.0f) == 0U);
+
+    CHECK(s_setTargetCount == 0U);
+    CHECK(BallSequence_GetState() == BALL_SEQUENCE_STATE_READY);
+}
+
 static void test_balance_error_aborts(void)
 {
     reset_fakes();
@@ -154,6 +192,8 @@ int main(void)
     test_start_passes_requested_target();
     test_start_fails_without_vision_or_invalid_target();
     test_holds_closed_loop_until_stopped();
+    test_active_hold_retargets_without_restart();
+    test_idle_hold_rejects_retarget();
     test_balance_error_aborts();
     test_elapsed_ticks_track_holding_time();
     test_stop_finishes_and_recenters();

@@ -17,7 +17,7 @@
 
 /* 电机轴转一圈对应摆杆转多少圈的倒数：N>1 表示减速，摆杆比电机慢。
  * 实测传动比后经 Param 的 K 命令写入，不必重新烧录。 */
-#define BEAM_ACTUATOR_GEAR_RATIO 1.0f
+#define BEAM_ACTUATOR_GEAR_RATIO 1.2f
 
 /*
  * Controller-positive tilt accelerates the ball toward the positive pipe

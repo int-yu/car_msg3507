@@ -68,6 +68,15 @@ static float Telemetry_ReadBallReference(void)
 {
     return BallBalance_GetProfilePositionMM();
 }
+static float Telemetry_ReadBallVelocity(void)
+{
+    return (BallSensor_IsFresh() != 0U) ?
+        BallSensor_GetSpeedMMps() : NAN;
+}
+static float Telemetry_ReadBallVelocityReference(void)
+{
+    return BallBalance_GetVelocityTargetMMps();
+}
 static float Telemetry_ReadStepperAngle(void)
 {
     Stepper_Status_t status;
@@ -98,6 +107,10 @@ static const Telemetry_Channel_t s_channels[] = {
       Telemetry_ReadBallReference },
     { TELEMETRY_CH_SANG,  "sang", TELEM_UNIT_DEG,
       Telemetry_ReadStepperAngle },
+    { TELEMETRY_CH_BVEL,  "bvel", TELEM_UNIT_MMPS,
+      Telemetry_ReadBallVelocity },
+    { TELEMETRY_CH_BVREF, "bvref", TELEM_UNIT_MMPS,
+      Telemetry_ReadBallVelocityReference },
 };
 
 #define TELEMETRY_CHANNEL_COUNT \

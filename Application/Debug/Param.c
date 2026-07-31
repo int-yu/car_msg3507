@@ -151,9 +151,10 @@ PARAM_VAR_ACCESSORS(H2MaxLap, Accomplish26H_TuneMaxLapDistanceMM)
 PARAM_VAR_ACCESSORS(LineAcceleration, MotionLine_TuneAccelerationMMps2)
 PARAM_VAR_ACCESSORS(LineDeceleration, MotionLine_TuneDecelerationMMps2)
 /* Ball PID and beam calibration. */
-PARAM_VAR_ACCESSORS(BallKp, BallBalance_TuneKp)
-PARAM_VAR_ACCESSORS(BallKi, BallBalance_TuneKi)
-PARAM_VAR_ACCESSORS(BallKd, BallBalance_TuneKd)
+PARAM_VAR_ACCESSORS(BallKp, BallBalance_TunePositionKpPerS)
+PARAM_VAR_ACCESSORS(BallKi, BallBalance_TuneVelocityKiDegPerMM)
+PARAM_VAR_ACCESSORS(BallKd, BallBalance_TuneVelocityKpDegPerMMps)
+PARAM_VAR_ACCESSORS(BallMaxVelocity, BallBalance_TuneMaxVelocityMMps)
 PARAM_VAR_ACCESSORS(BallHalfLength, BallSensor_TuneHalfLengthMM)
 PARAM_VAR_ACCESSORS(BeamGearRatio, BeamActuator_TuneGearRatio)
 PARAM_VAR_ACCESSORS(BeamZeroOffset, BeamActuator_TuneZeroOffsetDeg)
@@ -210,7 +211,7 @@ static const Param_Entry_t s_params[] = {
     { "h2off", Param_GetH2FinishRollout, Param_SetH2FinishRollout,
       0.0f, 300.0f },
     /* 要求 3 摆球标定量，追加在表尾，保持既有 id 不变。 */
-    { "bkp", Param_GetBallKp, Param_SetBallKp, 0.0f, 2.0f },
+    { "bkp", Param_GetBallKp, Param_SetBallKp, 0.0f, 10.0f },
     { "bkd", Param_GetBallKd, Param_SetBallKd, 0.0f, 1.0f },
     { "bki", Param_GetBallKi, Param_SetBallKi, 0.0f, 0.2f },
     { "bhl", Param_GetBallHalfLength, Param_SetBallHalfLength,
@@ -247,6 +248,8 @@ static const Param_Entry_t s_params[] = {
       20.0f, 1000.0f },
     { "lch", Param_GetLineCurveHoldDistance,
       Param_SetLineCurveHoldDistance, 100.0f, 5000.0f },
+    { "bvm", Param_GetBallMaxVelocity, Param_SetBallMaxVelocity,
+      10.0f, 500.0f },
 };
 
 #define PARAM_COUNT (sizeof(s_params) / sizeof(s_params[0]))

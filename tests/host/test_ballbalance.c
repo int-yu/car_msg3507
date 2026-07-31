@@ -42,6 +42,15 @@ static void test_start_requires_fresh_vision(void)
     CHECK(BallBalance_GetState() == BALL_BALANCE_STATE_RUNNING);
 }
 
+static void test_defaults_match_field_tuning(void)
+{
+    reset_fakes();
+    CHECK_NEAR(BallBalance_TunePositionKpPerS, 2.0f, 0.001f);
+    CHECK_NEAR(BallBalance_TuneVelocityKpDegPerMMps, 0.25f, 0.001f);
+    CHECK_NEAR(BallBalance_TuneVelocityKiDegPerMM, 0.20f, 0.001f);
+    CHECK_NEAR(BallBalance_TuneMaxVelocityMMps, 150.0f, 0.001f);
+}
+
 static void test_start_rejects_invalid_target(void)
 {
     reset_fakes();
@@ -73,7 +82,18 @@ static void test_control_pushes_ball_toward_target(void)
     CHECK(BallBalance_GetTiltCommandDeg() < 0.0f);
 }
 
-static void test_derivative_damps_motion(void)
+static void test_position_loop_generates_velocity_target(void)
+{
+    reset_fakes();
+    CHECK(BallBalance_Start(0.0f) == BALL_BALANCE_RESULT_OK);
+
+    s_positionMM = -10.0f;
+    BallBalance_Update(0.01f);
+    CHECK_NEAR(BallBalance_GetVelocityTargetMMps(),
+               BallBalance_TunePositionKpPerS * 10.0f, 0.001f);
+}
+
+static void test_velocity_loop_opposes_measured_speed(void)
 {
     float noSpeedTilt;
 
@@ -90,17 +110,15 @@ static void test_derivative_damps_motion(void)
     CHECK(BallBalance_GetTiltCommandDeg() < noSpeedTilt);
 }
 
-static void test_tilt_command_is_not_clamped_above_pid(void)
+static void test_velocity_target_is_limited(void)
 {
-    float expectedTiltDeg;
-
     reset_fakes();
     CHECK(BallBalance_Start(120.0f) == BALL_BALANCE_RESULT_OK);
 
     s_positionMM = -120.0f;
     BallBalance_Update(0.01f);
-    expectedTiltDeg = BallBalance_TuneKp * 240.0f;
-    CHECK_NEAR(BallBalance_GetTiltCommandDeg(), expectedTiltDeg, 0.001f);
+    CHECK_NEAR(BallBalance_GetVelocityTargetMMps(),
+               BallBalance_TuneMaxVelocityMMps, 0.001f);
 }
 
 static void test_integral_is_limited_and_reset_on_retarget(void)
@@ -108,14 +126,14 @@ static void test_integral_is_limited_and_reset_on_retarget(void)
     uint16_t tick;
 
     reset_fakes();
-    BallBalance_TuneKi = 0.1f;
+    BallBalance_TuneVelocityKiDegPerMM = 0.1f;
     CHECK(BallBalance_Start(100.0f) == BALL_BALANCE_RESULT_OK);
     for (tick = 0U; tick < 300U; tick++)
     {
         BallBalance_Update(0.01f);
     }
     CHECK(BallBalance_GetIntegralMMs() <=
-          BALL_BALANCE_INTEGRAL_LIMIT_MM_S + 0.001f);
+          BALL_BALANCE_VELOCITY_INTEGRAL_LIMIT_MM + 0.001f);
 
     CHECK(BallBalance_SetTarget(0.0f) == BALL_BALANCE_RESULT_OK);
     CHECK_NEAR(BallBalance_GetIntegralMMs(), 0.0f, 0.001f);
@@ -201,11 +219,13 @@ static void test_set_target_requires_running(void)
 int main(void)
 {
     test_start_requires_fresh_vision();
+    test_defaults_match_field_tuning();
     test_start_rejects_invalid_target();
     test_start_sets_requested_hold_position();
     test_control_pushes_ball_toward_target();
-    test_derivative_damps_motion();
-    test_tilt_command_is_not_clamped_above_pid();
+    test_position_loop_generates_velocity_target();
+    test_velocity_loop_opposes_measured_speed();
+    test_velocity_target_is_limited();
     test_integral_is_limited_and_reset_on_retarget();
     test_stable_requires_sustained_tolerance();
     test_vision_loss_recenters_and_errors();

@@ -1965,9 +1965,9 @@ const CH = {
     yaw: 0x0040, navE: 0x0080, lerr: 0x0100,
     gray: 0x0200, LD: 0x0400, RD: 0x0800,
     vx: 0x1000, vad: 0x2000, bpos: 0x4000, bref: 0x8000,
-    sang: 0x10000,
+    sang: 0x10000, bvel: 0x20000, bvref: 0x40000,
 };
-const CH_ALL = 0x1FFFF;
+const CH_ALL = 0x7FFFF;
 /* 捕获别名，保留旧引用可读性；与实时流同一套位。 */
 const CAPTURE_CH = CH;
 /* 固件 CAPTURE_MAX_CHANNELS；超出会被固件拒绝，网页先自查给出清晰提示。 */
@@ -1979,7 +1979,7 @@ const CH_LIST = [
     ['yaw', 'deg'], ['navE', 'deg'], ['lerr', 'raw'],
     ['gray', 'bits'], ['LD', 'mm'], ['RD', 'mm'],
     ['vx', 'raw'], ['vad', 'mmps'], ['bpos', 'mm'], ['bref', 'mm'],
-    ['sang', 'deg'],
+    ['sang', 'deg'], ['bvel', 'mmps'], ['bvref', 'mmps'],
 ];
 
 const SESSIONS = {
@@ -2026,24 +2026,26 @@ const SESSIONS = {
         expectation: '正常压线时 gray 不应长时间全 0；CH2/CH5 连续 3 拍后进入弧线，lerr 仅显示巡线修正，TL/TR 差速方向正确，LV/RV 轮速 MAE 较小，弧线基准速度受 lcv 限制',
     },
     ball: {
-        label: '要求3摆球', mask: CH.bpos | CH.bref | CH.sang,
+        label: '要求3摆球',
+        mask: CH.bpos | CH.bref | CH.bvel | CH.bvref | CH.sang,
         ampLabel: '目标位置 mm', ampDefault: 0,
         timed: true, durDefault: 5, rate: 100,
         targetCommand: (target) => 'X' + Math.round(target),
         excite: () => 'C3',
         stopCmd: 'C4', startReply: 'OK BALL START',
         stopReply: 'OK BALL STOP',
-        params: ['bgr', 'bzo', 'bhl', 'bkp', 'bkd', 'bki'],
-        structure: 'K230 球位 -> PID(bkp,bki,bkd) -> 摆杆倾角 -> 齿轮比(bgr)+零偏(bzo) -> 步进；C3 当前默认保持 O 点 0 mm，不使用前馈',
-        columnsNote: 'bpos=K230 钢球实测位置mm，sang=步进 MT6816 PWM 绝对角度deg；两列在同一控制拍采样',
-        expectation: '钢球稳定在目标位置 ±10 mm 内，曲线无明显过冲和持续振荡；bki 默认 0，先用 bkp/bkd 跑稳',
+        params: ['bgr', 'bzo', 'bhl', 'bkp', 'bvm', 'bkd', 'bki'],
+        structure: '球位误差 -> 位置外环 P(bkp) -> 目标速度(bvref，限幅bvm) -> 速度内环 PI(bkd,bki) -> 摆杆倾角；球速优先使用K230发送值，否则TI差分计算',
+        columnsNote: 'bpos/bref=实测/目标位置mm，bvel/bvref=实测/目标速度mm/s，sang=步进绝对角度deg',
+        expectation: '先令 bki=0，调 bkd 使速度跟随 bvref，再调 bkp/bvm 提高位置响应，最后少量增加 bki 克服静摩擦',
     },
     hold: {
-        label: '要求4保持O点', mask: CH.bpos | CH.sang,
+        label: '要求4保持O点',
+        mask: CH.bpos | CH.bvel | CH.bvref | CH.sang,
         ampVisible: false, timed: true, durDefault: 10, rate: 100,
         excite: () => 'C5', stopCmd: 'C6', startReply: 'OK HOLD START',
         stopReply: 'OK HOLD STOP',
-        params: ['bgr', 'bzo', 'bhl', 'bkp', 'bkd', 'bki'],
+        params: ['bgr', 'bzo', 'bhl', 'bkp', 'bvm', 'bkd', 'bki'],
         structure: 'K230 球位 -> 目标恒为 O 的 PID(bkp,bki,bkd) -> 摆杆倾角 -> 齿轮比(bgr)+零偏(bzo) -> 步进；本步车体静止，不使用前馈',
         columnsNote: 'bpos=K230 钢球实测位置mm，sang=步进 MT6816 PWM 绝对角度deg；两列在同一控制拍采样',
         expectation: '钢球从任意位置放下都能收敛到 O 点：bref 平滑走到 0，bpos 跟随并稳定在 ±10 mm 内，无持续往复振荡；手拨扰动后能自动回到 O',
@@ -2168,11 +2170,11 @@ const TUNING_FOCUS = {
         },
         sides: {
             main: {
-                label: '摆杆', series: ['bpos', 'sang'],
-                mask: CH.bpos | CH.sang,
+                label: '摆杆', series: ['bpos', 'bref', 'bvel', 'bvref', 'sang'],
+                mask: CH.bpos | CH.bref | CH.bvel | CH.bvref | CH.sang,
                 params: {
                     geometry: ['bgr', 'bzo'], sensor: ['bhl'],
-                    position: ['bkp'], damping: ['bkd'],
+                    position: ['bkp', 'bvm'], damping: ['bkd'],
                     integral: ['bki'], verify: [],
                 },
             },
@@ -2209,11 +2211,11 @@ const TUNING_FOCUS = {
         },
         sides: {
             main: {
-                label: '摆杆', series: ['bpos', 'sang'],
-                mask: CH.bpos | CH.sang,
+                label: '摆杆', series: ['bpos', 'bvel', 'bvref', 'sang'],
+                mask: CH.bpos | CH.bvel | CH.bvref | CH.sang,
                 params: {
                     converge: ['bkp', 'bkd'], damping: ['bkd'],
-                    position: ['bkp'], disturb: [],
+                    position: ['bkp', 'bvm'], disturb: [],
                     feedforward: [], verify: [],
                 },
             },
@@ -2240,8 +2242,9 @@ const PARAM_LABELS = {
     h2max: '漏检保护距离（mm）', h2off: '横线后前移距离（mm）',
     nvx: '转向最高速', nvn: '转向最低速', nsa: '转向减速角', ntl: '到角容差',
     gsc: '陀螺尺度', cpm: '编码计数/mm',
-    bkp: '摆球比例 Kp（度/mm）', bkd: '摆球阻尼 Kd（度/(mm/s)）',
-    bki: '摆球积分 Ki（度/(mm·s)）', bhl: '视觉半杆长（mm）',
+    bkp: '位置外环 Kp（1/s）', bvm: '最大目标速度（mm/s）',
+    bkd: '速度内环 Kp（度/(mm/s)）',
+    bki: '速度内环 Ki（度/mm）', bhl: '视觉半杆长（mm）',
     bgr: '摆杆传动比', bzo: '摆杆水平零偏（度）',
 };
 const PARAM_GROUPS = {
@@ -2262,10 +2265,11 @@ const PARAM_GROUPS = {
     h2app: '要求2单圈巡线', h2arm: '要求2单圈巡线',
     h2max: '要求2单圈巡线', h2off: '要求2单圈巡线',
     bkp: '摆杆滚球（要求3/4共用）', bkd: '摆杆滚球（要求3/4共用）',
-    bki: '摆杆滚球（要求3/4共用）', bhl: '摆杆滚球（要求3/4共用）',
+    bki: '摆杆滚球（要求3/4共用）', bvm: '摆杆滚球（要求3/4共用）',
+    bhl: '摆杆滚球（要求3/4共用）',
     bgr: '摆杆滚球（要求3/4共用）', bzo: '摆杆滚球（要求3/4共用）',
 };
-const PARAM_STORE_KEY = 'carDebugParamsV1';
+const PARAM_STORE_KEY = 'carDebugParamsV2';
 const RUN_STORE_KEY = 'carDebugRunsV1';
 const WHEEL_MECHANICAL_BASELINE = {
     lwkp: 0.6, lwki: 0, lwil: 0, lwff: 0.44573, lwsf: 19.884,
@@ -2280,7 +2284,8 @@ const PARAM_NUDGE_STEPS = {
     lra: 0.01, lkd: 0.05, lcv: 10, lch: 100, lacc: 10, ldec: 10,
     h2cru: 10, h2fin: 10, h2clr: 10, h2lap: 10,
     h2app: 10, h2arm: 10, h2max: 10, h2off: 1,
-    bkp: 0.01, bkd: 0.005, bki: 0.001, bhl: 1, bgr: 0.1, bzo: 0.1,
+    bkp: 0.05, bvm: 5, bkd: 0.005, bki: 0.001,
+    bhl: 1, bgr: 0.1, bzo: 0.1,
 };
 
 let port = null;
@@ -5546,6 +5551,33 @@ $('btnBallVideoRun').onclick = async () => {
         updateBallSessionButtons();
     }
 };
+async function applyBallTarget() {
+    const input = $('ballTargetMM');
+    const target = Math.round(Number(input.value));
+    if (!Number.isFinite(target)) {
+        log('小球目标位置不是数字', 'err');
+        return;
+    }
+    input.value = target;
+    $('sessAmp').value = target;
+    if (!writer) {
+        return;
+    }
+    try {
+        await sendAndWait('X' + target,
+            (line) => line === `OK X=${target}`);
+        log(`小球目标已设为 ${target} mm，未启动任务`, 'ok');
+    } catch (err) {
+        log('小球目标设置失败：' + err.message, 'err');
+    }
+}
+$('ballTargetMM').addEventListener('change', applyBallTarget);
+$('ballTargetMM').addEventListener('keydown', (event) => {
+    if (event.key === 'Enter') {
+        event.preventDefault();
+        event.target.blur();
+    }
+});
 $('btnBallVideoStop').onclick = async () => {
     if (!writer) {
         return;

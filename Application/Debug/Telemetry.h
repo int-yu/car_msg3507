@@ -32,7 +32,9 @@
 #define TELEMETRY_CH_BPOS   0x4000U /* 要求 3 钢球实测位置 mm */
 #define TELEMETRY_CH_BREF   0x8000U /* 要求 3 梯形轨迹参考位置 mm */
 #define TELEMETRY_CH_SANG   0x10000UL /* Stepper MT6816 PWM absolute angle deg */
-#define TELEMETRY_CH_ALL    0x1FFFFUL
+#define TELEMETRY_CH_BVEL   0x20000UL /* 钢球实测速度 mm/s */
+#define TELEMETRY_CH_BVREF  0x40000UL /* 串级速度环目标 mm/s */
+#define TELEMETRY_CH_ALL    0x7FFFFUL
 
 void Telemetry_Init(void);
 void Telemetry_Update(uint8_t elapsedTicks, uint8_t pressedKeys);
