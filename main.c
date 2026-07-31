@@ -24,10 +24,9 @@
 #define MAIN_EMERGENCY_CHORD_MASK (0x01U | 0x02U)
 #define MAIN_BALL_START_SIGNAL 3U
 #define MAIN_BALL_STOP_SIGNAL  4U
-#define MAIN_DEFAULT_HOLD_HORIZONTAL_TOLERANCE_DEG 1.0f
-
 static float s_ballTargetMM = BALL_SEQUENCE_DEFAULT_TARGET_MM;
 static uint8_t s_defaultBallHoldPending;
+static uint8_t s_key4CaptureArmed;
 static uint8_t s_key4HoldReady;
 static uint8_t s_key4RunActive;
 
@@ -116,7 +115,6 @@ static uint8_t Main_LineCanStart(void)
 static uint8_t Main_BallHoldCanStart(void)
 {
     Stepper_Status_t status;
-    float horizontalErrorDeg;
 
     if ((BallSensor_IsFresh() == 0U) ||
         (MotionManager_IsBusy() != 0U) ||
@@ -131,15 +129,7 @@ static uint8_t Main_BallHoldCanStart(void)
     {
         return 0U;
     }
-
-    horizontalErrorDeg =
-        status.absoluteAngleDeg - STEPPER_INITIAL_ANGLE_DEG;
-    if (horizontalErrorDeg < 0.0f)
-    {
-        horizontalErrorDeg = -horizontalErrorDeg;
-    }
-    return (horizontalErrorDeg <=
-            MAIN_DEFAULT_HOLD_HORIZONTAL_TOLERANCE_DEG) ? 1U : 0U;
+    return 1U;
 }
 
 static void Main_CancelKey4Preparation(void)
@@ -147,6 +137,7 @@ static void Main_CancelKey4Preparation(void)
     if (s_key4RunActive == 0U)
     {
         BallTargetCapture_Cancel();
+        s_key4CaptureArmed = 0U;
         s_key4HoldReady = 0U;
     }
 }
@@ -154,6 +145,7 @@ static void Main_CancelKey4Preparation(void)
 static void Main_ResetKey4Task(void)
 {
     BallTargetCapture_Cancel();
+    s_key4CaptureArmed = 0U;
     s_key4HoldReady = 0U;
     s_key4RunActive = 0U;
 }
@@ -178,6 +170,8 @@ static uint8_t Main_StartTimedLineAtBallTarget(
 static void Main_HandleKey4Press(uint8_t startAllowed,
                                  uint8_t ballStopRequested)
 {
+    float inheritedTiltDeg;
+
     if ((startAllowed == 0U) || (ballStopRequested != 0U))
     {
         return;
@@ -214,6 +208,14 @@ static void Main_HandleKey4Press(uint8_t startAllowed,
         return;
     }
 
+    if (s_key4CaptureArmed != 0U)
+    {
+        s_key4CaptureArmed = 0U;
+        BallTargetCapture_Start();
+        Serial1_SendString("OK KEY4 CAPTURE\r\n");
+        return;
+    }
+
     if ((Main_LineCanStart() == 0U) ||
         (MotionManager_IsBusy() != 0U))
     {
@@ -222,11 +224,14 @@ static void Main_HandleKey4Press(uint8_t startAllowed,
     }
 
     s_defaultBallHoldPending = 0U;
+    inheritedTiltDeg = BeamActuator_GetTiltDeg();
     BallSequence_Stop();
-    BallTargetCapture_Start();
+    BeamActuator_SetTiltDeg(inheritedTiltDeg);
+    BallTargetCapture_Cancel();
+    s_key4CaptureArmed = 1U;
     s_key4HoldReady = 0U;
     s_key4RunActive = 0U;
-    Serial1_SendString("OK KEY4 CAPTURE\r\n");
+    Serial1_SendString("OK KEY4 ARMED\r\n");
 }
 
 static void Main_UpdateKey4Target(void)
@@ -265,6 +270,7 @@ int main(void)
     BallTargetCapture_Init();
     s_ballTargetMM = BALL_SEQUENCE_DEFAULT_TARGET_MM;
     s_defaultBallHoldPending = 1U;
+    s_key4CaptureArmed = 0U;
     s_key4HoldReady = 0U;
     s_key4RunActive = 0U;
     Interrupt_Enable();

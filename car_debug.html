@@ -577,7 +577,10 @@ kbd {
                 <span class="line-live"><small>实测 LV / RV</small><b id="lineLiveSpeeds">— / —</b></span>
                 <span class="line-live"><small>目标差 TL−TR</small><b id="lineLiveDelta">—</b></span>
                 <span class="line-live"><small>偏航速率 yaw</small><b id="lineLiveYawRate">—</b></span>
+                <span class="line-live"><small>球位置 bpos</small><b id="lineLiveBallPos">—</b></span>
+                <span class="line-live"><small>步进角度 sang</small><b id="lineLiveStepperAngle">—</b></span>
             </div>
+            <div id="lineSessionParams" class="session-params" style="margin-top: 12px;"></div>
             <div id="lineTrialSpeeds" class="quick-speeds">
                 <span class="hint">试验速度</span>
                 <button type="button" data-line-speed="100">100</button>
@@ -673,8 +676,8 @@ kbd {
         </div>
     </div>
 
-    <div class="panel" id="slavePanel">
-        <h2>从车曲线 <small>经主车 HC05 转发（0xAB 帧）· 掩码/频率独立于主车</small></h2>
+    <details class="panel" id="slavePanel">
+        <summary>从车曲线 <small>经主车 HC05 转发（0xAB 帧）· 掩码/频率独立于主车</small></summary>
         <div class="row">
             <span class="hint" id="slaveLinkStatus">从车链路：未知</span>
             <span class="hint" id="slaveBandwidth" style="margin-left:auto">从车遥测未开启</span>
@@ -701,7 +704,7 @@ kbd {
             <span class="hint">条 · 样本 <span id="slaveSampleCount">0</span> · 重绘 <span id="slaveFps">–</span>fps</span>
             <button id="btnSlaveClear">清空</button>
         </div>
-    </div>
+    </details>
 
     <div class="panel">
         <h2>原始终端</h2>
@@ -2789,6 +2792,14 @@ function handleTextLine(line) {
     let m;
     if ((m = line.match(/^K(\d+)=(-?[\d.]+) (\w+) \[(-?[\d.]+),(-?[\d.]+)\]$/))) {
         upsertParam(+m[1], parseFloat(m[2]), m[3], parseFloat(m[4]), parseFloat(m[5]));
+        /* 球前馈量特殊处理：最大值限制为 0.2 */
+        if (m[3] === 'bff') {
+            const entry = paramCache[+m[1]];
+            if (entry && entry.max > 0.2) {
+                entry.max = 0.2;
+                scheduleParamRender();
+            }
+        }
     } else if ((m = line.match(/^OK K(\d+)=(-?[\d.]+)$/))) {
         updateParamValue(+m[1], parseFloat(m[2]));
     } else if ((m = line.match(/^OK M=\d+ G=(\d+)$/))) {
@@ -3505,6 +3516,78 @@ function renderLineMonitor() {
         '—' : (targetL - targetR).toFixed(1) + ' mm/s';
     $('lineLiveYawRate').textContent = yawRateDps === null ?
         '—' : yawRateDps.toFixed(1) + ' °/s';
+
+    const ballPos = sample && Number.isFinite(sample.bpos) ? sample.bpos : null;
+    const stepperAngle = sample && Number.isFinite(sample.sang) ? sample.sang : null;
+    $('lineLiveBallPos').textContent = ballPos === null ? '—' : ballPos.toFixed(1) + ' mm';
+    $('lineLiveStepperAngle').textContent = stepperAngle === null ? '—' : stepperAngle.toFixed(1) + '°';
+
+    renderLineSessionParams();
+}
+
+function renderLineSessionParams() {
+    const box = $('lineSessionParams');
+    if (!box) return;
+    if (box.contains(document.activeElement) &&
+        document.activeElement.tagName === 'INPUT') {
+        return;
+    }
+    const paramNames = ['bff', 'bft'];
+    box.innerHTML = '';
+    for (const paramName of paramNames) {
+        const entry = paramByName(paramName);
+        if (!entry) continue;
+        const wrap = document.createElement('div');
+        wrap.className = 'qp';
+        wrap.style.display = 'inline-flex';
+        wrap.style.gap = '6px';
+        wrap.style.alignItems = 'center';
+        wrap.style.marginRight = '12px';
+        const name = document.createElement('label');
+        name.textContent = `${paramName}`;
+        name.style.fontSize = '12px';
+        const input = document.createElement('input');
+        input.type = 'number';
+        input.step = 'any';
+        input.style.width = '64px';
+        input.value = fmtParam(entry.value);
+        input.oninput = () => {
+            input.classList.toggle('dirty', parseFloat(input.value) !== entry.value);
+        };
+        const writeValue = (v) => {
+            if (!Number.isFinite(v)) return;
+            input.value = fmtParam(v);
+            if (requestParameterWrite(entry, v)) {
+                input.classList.remove('dirty');
+            }
+        };
+        input.onkeydown = (e) => {
+            if (e.key === 'Enter') {
+                writeValue(parseFloat(input.value));
+            }
+        };
+        const nudge = (direction) => {
+            const current = parseFloat(input.value);
+            const base = Number.isFinite(current) ? current : entry.value;
+            const step = PARAM_NUDGE_STEPS[entry.name] ||
+                Math.max((entry.max - entry.min) * 0.01, 0.001);
+            writeValue(base + direction * step);
+        };
+        const minus = document.createElement('button');
+        minus.textContent = '−';
+        minus.onclick = () => nudge(-1);
+        minus.style.padding = '2px 6px';
+        const plus = document.createElement('button');
+        plus.textContent = '+';
+        plus.onclick = () => nudge(1);
+        plus.style.padding = '2px 6px';
+        const write = document.createElement('button');
+        write.textContent = '写入';
+        write.onclick = () => writeValue(parseFloat(input.value));
+        write.style.padding = '2px 8px';
+        wrap.append(name, minus, input, plus, write);
+        box.appendChild(wrap);
+    }
 }
 
 function renderBallMonitor() {

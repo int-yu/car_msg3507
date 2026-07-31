@@ -37,10 +37,10 @@
  * moves downward.
  */
 #ifndef STEPPER_AUTO_START_ENABLED
-#define STEPPER_AUTO_START_ENABLED             1U
+#define STEPPER_AUTO_START_ENABLED             200U
 #endif
 #ifndef STEPPER_INITIAL_ANGLE_DEG
-#define STEPPER_INITIAL_ANGLE_DEG              166.0f
+#define STEPPER_INITIAL_ANGLE_DEG              201.0f
 #endif
 #ifndef STEPPER_MIN_ANGLE_DEG
 #define STEPPER_MIN_ANGLE_DEG                  0.0f

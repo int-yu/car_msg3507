@@ -3,7 +3,7 @@
 
 #include <stdint.h>
 
-/* KEY4 第一次按下后的目标采样参数，现场需要时只改这里。 */
+/* KEY4 第二次按下后的目标采样参数，现场需要时只改这里。 */
 #define BALL_TARGET_CAPTURE_CONFIRM_FRAMES       8U
 #define BALL_TARGET_CAPTURE_STABILITY_TOLERANCE_MM 5.0f
 
