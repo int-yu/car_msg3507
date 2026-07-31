@@ -81,6 +81,7 @@ for (const required of [
     'MotionManager_StartLine(',
     'MotionManager_SetLineSpeed(',
     'MotionManager_RequestLineStop(',
+    'MotionManager_StartBrake(',
     'Graydetect_IsOnline()',
     'Accomplish26H_CountActiveChannels()',
     'ACCOMPLISH_26H_STATE_SETTLING',
@@ -90,10 +91,12 @@ for (const required of [
 }
 assert.match(taskHeader, /ACCOMPLISH_26H_MARKER_MIN_ACTIVE_CHANNELS/,
     '26H header must expose the six-channel finish-marker criterion');
+assert.match(taskHeader, /ACCOMPLISH_26H_FINISH_MARKER_ARM_DISTANCE_MM\s+1700\.0f/,
+    '26H finish marker must be armed only after 1700 mm');
 assert.match(taskHeader, /ACCOMPLISH_26H_FINISH_ROLLOUT_MM/,
     '26H header must expose the physical stop-offset calibration');
-assert.match(taskHeader, /ACCOMPLISH_26H_MARKER_CONFIRM_TICKS/,
-    '26H header must require several independent marker samples');
+assert.match(taskHeader, /ACCOMPLISH_26H_MARKER_CONFIRM_TICKS\s+2U/,
+    '26H header must require two independent marker samples');
 assert.match(taskHeader, /Accomplish26H_TuneFinishRolloutMM/,
     '26H header must expose the field parking-offset calibration');
 for (const name of [
@@ -154,11 +157,11 @@ assert.doesNotMatch(displayHeader, /ShowHeadingCalibration/,
 
 assert.match(stepperHeader, /STEPPER_INITIAL_ANGLE_DEG\s+238\.0f/,
     'stepper horizontal angle must be 238 degrees');
-assert.match(stepperHeader, /STEPPER_MIN_ANGLE_DEG\s+106\.0f/,
-    'stepper minimum limit must be 106 degrees');
+assert.match(stepperHeader, /STEPPER_MIN_ANGLE_DEG\s+116\.0f/,
+    'stepper minimum limit must be 116 degrees');
 assert.match(stepperHeader, /STEPPER_MAX_ANGLE_DEG\s+309\.0f/,
     'stepper maximum limit must be 309 degrees');
 assert.match(grayHeader, /GRAYDETECT_ENABLED\s+1U/,
     'complete 26H mode must enable the six-channel infrared sensor');
 
-console.log('26H ring, time display, and smooth-stop contract passed');
+console.log('26H ring, time display, and brake-stop contract passed');

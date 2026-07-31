@@ -43,7 +43,7 @@
 #define STEPPER_INITIAL_ANGLE_DEG              238.0f
 #endif
 #ifndef STEPPER_MIN_ANGLE_DEG
-#define STEPPER_MIN_ANGLE_DEG                  106.0f
+#define STEPPER_MIN_ANGLE_DEG                  116.0f
 #endif
 #ifndef STEPPER_MAX_ANGLE_DEG
 #define STEPPER_MAX_ANGLE_DEG                  309.0f

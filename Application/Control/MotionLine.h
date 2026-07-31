@@ -7,7 +7,7 @@
  * currently sees the learned black target color. CH1 is the leftmost sensor
  * when GRAYDETECT_CHANNEL1_IS_RIGHT is 0.
  */
-#define MOTION_LINE_OUTER_WEIGHT       6
+#define MOTION_LINE_OUTER_WEIGHT       9
 #define MOTION_LINE_INNER_WEIGHT       2.5f
 #define MOTION_LINE_KP_MMPS_PER_WEIGHT 26.0f
 #define MOTION_LINE_KI_MMPS_PER_WEIGHT 0.0f
