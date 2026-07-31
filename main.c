@@ -26,6 +26,7 @@
 #define MAIN_BALL_STOP_SIGNAL  4U
 static float s_ballTargetMM = BALL_SEQUENCE_DEFAULT_TARGET_MM;
 static uint8_t s_defaultBallHoldPending;
+static uint8_t s_key2SweepArmed;
 static uint8_t s_key4CaptureArmed;
 static uint8_t s_key4HoldReady;
 static uint8_t s_key4RunActive;
@@ -142,6 +143,11 @@ static void Main_CancelKey4Preparation(void)
     }
 }
 
+static void Main_CancelKey2Preparation(void)
+{
+    s_key2SweepArmed = 0U;
+}
+
 static void Main_ResetKey4Task(void)
 {
     BallTargetCapture_Cancel();
@@ -165,6 +171,42 @@ static uint8_t Main_StartTimedLineAtBallTarget(
         return 0U;
     }
     return 1U;
+}
+
+static void Main_HandleKey2Press(uint8_t startAllowed,
+                                 uint8_t ballStopRequested)
+{
+    float inheritedTiltDeg;
+
+    if ((startAllowed == 0U) || (ballStopRequested != 0U))
+    {
+        return;
+    }
+
+    if ((s_key2SweepArmed == 0U) &&
+        (MotionManager_IsBusy() != 0U))
+    {
+        Serial1_SendString("ERR KEY2 CAR BUSY\r\n");
+        return;
+    }
+
+    Main_CancelKey4Preparation();
+    s_defaultBallHoldPending = 0U;
+
+    if (s_key2SweepArmed != 0U)
+    {
+        if (Main_StartBallSweep() != 0U)
+        {
+            s_key2SweepArmed = 0U;
+        }
+        return;
+    }
+
+    inheritedTiltDeg = BeamActuator_GetTiltDeg();
+    BallSequence_Stop();
+    BeamActuator_SetTiltDeg(inheritedTiltDeg);
+    s_key2SweepArmed = 1U;
+    Serial1_SendString("OK KEY2 ARMED\r\n");
 }
 
 static void Main_HandleKey4Press(uint8_t startAllowed,
@@ -270,6 +312,7 @@ int main(void)
     BallTargetCapture_Init();
     s_ballTargetMM = BALL_SEQUENCE_DEFAULT_TARGET_MM;
     s_defaultBallHoldPending = 1U;
+    s_key2SweepArmed = 0U;
     s_key4CaptureArmed = 0U;
     s_key4HoldReady = 0U;
     s_key4RunActive = 0U;
@@ -307,6 +350,7 @@ int main(void)
             if (BluetoothDebug_TakeBallTargetMM(
                     &requestedBallTargetMM) != 0U)
             {
+                Main_CancelKey2Preparation();
                 Main_CancelKey4Preparation();
                 s_ballTargetMM = requestedBallTargetMM;
                 if (BallSequence_IsActive() != 0U)
@@ -318,6 +362,7 @@ int main(void)
             if ((lineStartKeyPressed != 0U) &&
                 (Main_LineCanStart() != 0U))
             {
+                Main_CancelKey2Preparation();
                 Main_CancelKey4Preparation();
                 s_ballTargetMM = BALL_SEQUENCE_DEFAULT_TARGET_MM;
                 if ((startAllowed == 0U) ||
@@ -335,6 +380,7 @@ int main(void)
             if ((timedLineStartKeyPressed != 0U) &&
                 (Main_LineCanStart() != 0U))
             {
+                Main_CancelKey2Preparation();
                 Main_CancelKey4Preparation();
                 s_ballTargetMM = BALL_SEQUENCE_DEFAULT_TARGET_MM;
                 if ((startAllowed != 0U) &&
@@ -353,6 +399,7 @@ int main(void)
                 (ballStartRequested == 0U) &&
                 (ballStopRequested == 0U))
             {
+                Main_CancelKey2Preparation();
                 Main_HandleKey4Press(startAllowed, ballStopRequested);
             }
 
@@ -376,6 +423,7 @@ int main(void)
             if (ballStopRequested != 0U)
             {
                 s_defaultBallHoldPending = 0U;
+                Main_CancelKey2Preparation();
                 Main_CancelKey4Preparation();
                 BallSequence_Stop();
                 Serial1_SendString("OK BALL STOP\r\n");
@@ -383,14 +431,13 @@ int main(void)
             else if ((startAllowed != 0U) &&
                      (ballStartKeyPressed != 0U))
             {
-                s_defaultBallHoldPending = 0U;
-                Main_CancelKey4Preparation();
-                (void)Main_StartBallSweep();
+                Main_HandleKey2Press(startAllowed, ballStopRequested);
             }
             else if ((startAllowed != 0U) &&
                      (ballStartRequested != 0U))
             {
                 s_defaultBallHoldPending = 0U;
+                Main_CancelKey2Preparation();
                 Main_CancelKey4Preparation();
                 (void)Main_StartBallTask(s_ballTargetMM);
             }
@@ -405,6 +452,7 @@ int main(void)
             if (emergencyStopRequested != 0U)
             {
                 s_defaultBallHoldPending = 0U;
+                Main_CancelKey2Preparation();
                 Main_ResetKey4Task();
             }
             else if ((BallSequence_IsActive() != 0U) &&

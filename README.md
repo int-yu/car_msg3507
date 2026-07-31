@@ -56,7 +56,7 @@
 | PB8 | TIMA0 CCP0 输出 | MS42CG ST | 步进脉冲输出，3200 ST/rev |
 | PB9 | GPIO 输出 | MS42CG DIR | 角度增大为上升，角度减小为下降 |
 | PB10 | GPIO 输入、上拉 | KEY4 | 低电平按下，按键位图 bit3；第一次停止 O 点闭环并保持步进位置，第二次采样并锁定任意钢球目标位置，第三次启动 30 秒巡线 |
-| PB11 | GPIO 输入、上拉 | KEY2 | 低电平按下，按键位图 bit1；当前主流程中单独按下启动要求3摆球任务，与KEY1同时按下为物理急停 |
+| PB11 | GPIO 输入、上拉 | KEY2 | 低电平按下，按键位图 bit1；第一次停止 O 点闭环并保持步进倾角，第二次启动要求3摆球扫描及计时；与KEY1同时按下为物理急停 |
 | PB12 | GPIO 输出 | MS42CG EN | 高电平使能 |
 | PB13 | TIMG12 CCP0 捕获 | MS42CG 绝对角 PWM | MT6816 单圈绝对角 |
 | PB14 | GPIO 输入、上拉 | KEY3 | 低电平按下，按键位图 bit2；启动 30 秒定时巡线，不执行 KEY1 的终点减速和终点停车逻辑 |
@@ -82,17 +82,17 @@
 
 ## 3. 当前程序说明
 
-`main.c` 是当前唯一运行入口，不再通过 `MAIN_STEPPER_TEST_MODE` 或 `Application/Core/Main26H.c` 切换主流程。烧录后进入完整 App 初始化，步进连续取得3帧有效MT6816 PWM后先运动到 `STEPPER_INITIAL_ANGLE_DEG` 水平位置；无按键时，视觉和步进就绪后默认启动要求3的 O 点保持，`KEY2` 可切换到摆球扫描，网页 `C3` 可切换到指定目标。
+`main.c` 是当前唯一运行入口，不再通过 `MAIN_STEPPER_TEST_MODE` 或 `Application/Core/Main26H.c` 切换主流程。烧录后进入完整 App 初始化，步进连续取得3帧有效MT6816 PWM后先运动到 `STEPPER_INITIAL_ANGLE_DEG` 水平位置；无按键时，视觉和步进就绪后默认启动要求3的 O 点保持。实体 `KEY2` 第一次解除 O 点闭环并保持当前倾角，第二次启动摆球扫描；网页 `C3` 仍可直接切换到指定目标保持。
 
 六路红外资源已经恢复为 `PA25=SDA、PA14=SCL`，但只有完整 26H 入口中的 `App_Init()` 会初始化并采样它们。
 
-当前 `main.c` 入口启用 PC/网页链路、K230Link、六路红外、MPU6050、舵机、底盘和步进摆杆。不按按键时，程序等待 K230 钢球位置有效，且步进已使能、就绪、PWM 反馈有效并结束当前运动后，默认启动 O 点 `0.0 mm` 保持；启动不再要求实测绝对角落在水平设定角的固定容差内。`KEY1` 保留为 H 题要求 2 的单圈巡线启动键，`KEY2` 保留为要求3摆球扫描启动键，`KEY3` 启动不识别终点的 30 秒定时巡线，`KEY4` 通过三次按键依次完成解除 O 点闭环、任意位置锁定和同款定时巡线，`KEY1+KEY2` 同时按下保持原有物理急停逻辑。
+当前 `main.c` 入口启用 PC/网页链路、K230Link、六路红外、MPU6050、舵机、底盘和步进摆杆。不按按键时，程序等待 K230 钢球位置有效，且步进已使能、就绪、PWM 反馈有效并结束当前运动后，默认启动 O 点 `0.0 mm` 保持；启动不再要求实测绝对角落在水平设定角的固定容差内。`KEY1` 保留为 H 题要求 2 的单圈巡线启动键，`KEY2` 通过两次按键依次解除 O 点闭环和启动要求3摆球扫描，`KEY3` 启动不识别终点的 30 秒定时巡线，`KEY4` 通过三次按键依次完成解除 O 点闭环、任意位置锁定和同款定时巡线，`KEY1+KEY2` 同时按下保持原有物理急停逻辑。
 
 ### 3.2 100 Hz 主循环与 26H 单圈巡线
 
 完整26H模式加载`Accomplish/26H.c`独立控制器，实现H题要求2。KEY1在READY、完成或错误后按下时清零累计Tick并启动平滑巡线。正常巡线的左右差速由六路红外权重 PID 生成；里程计路程大于 `ACCOMPLISH_26H_FINISH_MARKER_ARM_DISTANCE_MM`（默认 1700 mm）后，若六路灰度中至少 3 路同时检测到黑线并连续维持 `ACCOMPLISH_26H_MARKER_CONFIRM_TICKS`（默认 2）个 100 Hz 节拍，立即进入 `MotionManager_StartBrake()` 主动刹车并在静止确认后冻结计时。**KEY1+KEY2 同时按下**为物理急停。
 
-KEY3 由 `main.c` 像 KEY2 一样直接分发给 `Application/Control/TimedLineRun`，不进入 `Accomplish/26H` 总任务。它复用同一套六路红外 `MotionLine` 巡线与 O 点摆球保持，默认以 `100 mm/s²` 加速到 `400 mm/s`，运行 30 秒后请求软停。KEY3 控制器不读取终点横线、不切换终点慢速，也不按圈长或最大里程停车。`k3acc`、`k3cru` 和 `k3dur` 可通过 K 参数或网页“KEY3 定时巡线”阶段调整，并在下一次 KEY3 启动时快照。
+KEY3 由 `main.c` 直接分发给 `Application/Control/TimedLineRun`，不进入 `Accomplish/26H` 总任务。它复用同一套六路红外 `MotionLine` 巡线与 O 点摆球保持，默认以 `100 mm/s²` 加速到 `400 mm/s`，运行 30 秒后请求软停。KEY3 控制器不读取终点横线、不切换终点慢速，也不按圈长或最大里程停车。`k3acc`、`k3cru` 和 `k3dur` 可通过 K 参数或网页“KEY3 定时巡线”阶段调整，并在下一次 KEY3 启动时快照。
 
 KEY4 同样由 `main.c` 分发并复用 `BallSequence` 与 `TimedLineRun`。第一次按 KEY4 只停止默认 O 点保持，不会重新初始化步进或额外回中：停止前保存当前已下发倾角，解除旧闭环后继续保持该执行器状态。第二次按 KEY4 才开始目标采样；`BallTargetCapture` 只统计此后序号不同的 K230 钢球帧，默认连续 8 帧落在当前平均值 ±5 mm 内后，把平均位置锁定为指定目标并自动开始保持。待现有 `BallBalance` 稳定判据满足后，第三次按 KEY4 才会以该指定位置为目标启动与 KEY3 完全相同的 30 秒巡线。采样帧数和容差集中在 `Application/Control/BallTargetCapture.h`。
 
@@ -102,7 +102,7 @@ KEY4 同样由 `main.c` 分发并复用 `BallSequence` 与 `TimedLineRun`。第�
 
 ### 3.2.1 26H 摆杆滚球（要求 3）
 
-上电后的无按键默认状态使用现有 `BallSequence_Start(0.0f)` 和 `BallBalance` PID 闭环把钢球保持在 O 点；视觉或步进尚未就绪时保持等待，不会提前驱动。`KEY2` 把当前保持任务切换为 -50 mm 到 +50 mm 扫描，`C3` 启动或重定向到网页给定位置，`C4` 停止正在运行的摆球任务并回中。`C4` 或 KEY1+KEY2/C0 急停会同时取消本次上电默认启动等待，不会停车后自行重新启动。
+上电后的无按键默认状态使用现有 `BallSequence_Start(0.0f)` 和 `BallBalance` PID 闭环把钢球保持在 O 点；视觉或步进尚未就绪时保持等待，不会提前驱动。第一次按 `KEY2` 只停止当前保持任务并保持步进已下发倾角，第二次按下才启动 -50 mm 到 +50 mm 扫描及要求3计时；`C3` 独立地启动或重定向到网页给定位置，`C4` 停止正在运行的摆球任务并回中。`C4` 或 KEY1+KEY2/C0 急停会同时取消本次上电默认启动等待，不会停车后自行重新启动。
 
 分四层，每层只做一件事：`BallSensor` 把 K230 的 `BALL_POSITION` 换算成以 O 为原点的毫米位置并估计滚动速度；`BallBalance` 用 PID 算出摆杆倾角，暂不加入车体加速度前馈；`BeamActuator` 把倾角换算成步进的绝对角度；`Application/Control/BallSequence` 只管启动、持续更新、停止和错误保护。K230 的 `-50.00~+50.00`覆盖250 mm水管，因此端点对应`-125~+125 mm`。
 
@@ -133,7 +133,7 @@ int main(void)
         if (App_Update(&updateContext) != 0U)
         {
             Accomplish26H_Update(&updateContext);
-            /* KEY2/C3 启动 BallSequence；C4 停止 BallSequence。 */
+            /* KEY2 两阶段启动扫描，C3 启动目标保持；C4 停止 BallSequence。 */
             BallSequence_Update(updateContext.dt);
             Telemetry_Update(updateContext.elapsedTicks, updateContext.pressedKeys);
             BeamActuator_Update(updateContext.dt);
@@ -149,7 +149,7 @@ int main(void)
 Heading -> Odometry -> 六路红外 I2C -> Stepper -> 按键边沿 -> CarLink -> K230Link
         -> BallSensor（须在 K230Link 之后）-> BluetoothDebug
         -> C0 全局停车（同时停摆杆闭环）-> MotionManager -> K230 ACK -> Beep
-        -> Accomplish26H_Update -> KEY2/C3摆球判定 -> BallSequence_Update
+        -> Accomplish26H_Update -> KEY2两阶段扫描/C3目标保持 -> BallSequence_Update
         -> BeamActuator_Update -> OLED时间局部刷新
 ```
 
@@ -189,12 +189,12 @@ Heading -> Odometry -> 六路红外 -> Stepper -> Key -> K230Link -> BallSensor
 
 命令不区分大小写。推荐以 `\r` 或 `\n` 结束；也支持空格、逗号、分号作为分隔符。没有结束符时，接收空闲 3 个系统节拍（30 ms）后执行。每条命令都会返回 `OK ...` 或 `ERR ...`。
 
-`C` 命令进入单槽任务事件邮箱；App 每个有效节拍最多提供一个任务信号。普通信号不排队，同一拍只保留最后收到的一条；`C0` 具有最高优先级，待处理时不会被普通信号覆盖，并立即停车。当前 `C3` 启动要求 3 摆球，等效实体 `KEY2`；`C4` 停止摆球闭环并让摆杆回中。除 `C0/C3/C4` 外的非零信号继续保留给其他任务。
+`C` 命令进入单槽任务事件邮箱；App 每个有效节拍最多提供一个任务信号。普通信号不排队，同一拍只保留最后收到的一条；`C0` 具有最高优先级，待处理时不会被普通信号覆盖，并立即停车。当前 `C3` 直接启动要求 3 的目标保持，与实体 `KEY2` 的两阶段摆球扫描流程相互独立；`C4` 停止摆球闭环并让摆杆回中。除 `C0/C3/C4` 外的非零信号继续保留给其他任务。
 
 | 命令 | 作用 | 输入范围与限位 | 示例 |
 |---|---|---|---|
 | `C0` | 全局急停，停止底盘与摆球并冻结 26H 计时 | 始终有效且优先级最高 | `C0` |
-| `C3` | 启动要求 3 的 PID 目标保持任务，当前默认目标 O 点 `0.0 mm`，等效按下实体 `KEY2` | 钢球视觉必须就绪、底盘与摆球任务必须空闲；成功回 `OK BALL START` | `C3` |
+| `C3` | 直接启动要求 3 的 PID 目标保持任务，当前默认目标 O 点 `0.0 mm`；不经过实体 `KEY2` 的两阶段扫描流程 | 钢球视觉必须就绪、底盘与摆球任务必须空闲；成功回 `OK BALL START` | `C3` |
 | `C4` | 结束要求 3，停止闭环并让摆杆回中；不是全局急停 | 成功回 `OK BALL STOP` | `C4` |
 | `C<number>`（其他非零值） | 发送保留的 Mission 单次任务信号 | `1~255`，当前任务未定义的编号不消费 | `C1` |
 | `L<number>` | 只更新左轮 PWM，右轮保持上次指令 | `-1000~1000`，超限自动夹紧 | `L10` |
@@ -412,7 +412,7 @@ OLED默认只显示上电运行时间；K230钢球物理位置和步进 PWM 绝�
 | 蓝牙命令 | 作用 | 当前限制 |
 |---|---|---|
 | `C0` | 全局停车 | 始终有效，同时冻结 26H 计时并失能 Gimbal |
-| `C3` | 启动要求 3 摆球，等效实体 `KEY2` | 视觉、底盘和摆球任务必须就绪/空闲 |
+| `C3` | 直接启动要求 3 目标保持，不经过实体 `KEY2` 的两阶段扫描流程 | 视觉、底盘和摆球任务必须就绪/空闲 |
 | `C4` | 停止要求 3 并让摆杆回中 | 仅停止摆球，不替代 `C0` 全局急停 |
 | 其他非零 `C` 信号 | Mission 单次事件 | 当前任务未定义的编号不消费 |
 | `L<number>` | 设置左轮开环 PWM | MotionManager 空闲时有效，范围 `-1000~1000` |
@@ -474,7 +474,7 @@ OLED默认只显示上电运行时间；K230钢球物理位置和步进 PWM 绝�
 | `Accomplish/26H.c/.h` | 当前题目控制器 | KEY1 启动单圈巡线、A 点终点软停、100 Hz 整数计时和组合急停冻结 |
 | `Application/Control/TimedLineRun.c/.h` | KEY3/KEY4 定时巡线控制器 | 独立快照加速度、巡航速度与运行时长；30 秒后软停，不含终点逻辑 |
 | `Application/Control/BallTargetCapture.c/.h` | KEY4 指定位置采样 | 按独立 K230 帧进行稳定性确认并输出平均目标位置，不重复实现摆球闭环 |
-| `Application/Control/BallSequence.c/.h` | 要求 3 摆球任务 | KEY2/C3 手动启动目标位置保持，C4停止与视觉失效保护 |
+| `Application/Control/BallSequence.c/.h` | 要求 3 摆球任务 | KEY2 第二次按下启动扫描，C3直接启动目标位置保持，C4停止与视觉失效保护 |
 | `Accomplish/25H.c/.h` | 保留题目状态图 | KEY1 启动的巡线、150 mm 直行和连续绝对左转循环 |
 | `Accomplish/Brushless_Motor_Test.c/.h` | 可选测试状态图 | F32C 双轴多圈位置循环测试；当前未加载 |
 | `状态机.md` | 使用说明 | 新建 Accomplish 状态图的编写流程 |
@@ -483,7 +483,7 @@ OLED默认只显示上电运行时间；K230钢球物理位置和步进 PWM 绝�
 
 | 文件 | 类型 | 职责 |
 |---|---|---|
-| `main.c` | C 源文件 | 当前唯一运行入口；无按键时默认保持钢球在 O 点，KEY1启动26H总任务、KEY2/C3切换摆球任务、KEY3启动定时巡线、KEY4三阶段启动任意位置巡线、KEY1+KEY2/C0急停 |
+| `main.c` | C 源文件 | 当前唯一运行入口；无按键时默认保持钢球在 O 点，KEY1启动26H总任务、KEY2两阶段启动摆球扫描、C3直接启动目标保持、KEY3启动定时巡线、KEY4三阶段启动任意位置巡线、KEY1+KEY2/C0急停 |
 | `Application/Core/Main26H.c/.h` | C 源文件 / 头文件 | 旧完整26H包装入口，保留在工程中但当前不由 `main.c` 调用 |
 | `main.syscfg` | TI SysConfig | 时钟、PinMux、GPIO、UART、I2C、PWM 和 SysTick 配置 |
 | `.project`、`.cproject`、`.settings/` | CCS 元数据 | 工程、编译器、SDK 和 IDE 配置 |
