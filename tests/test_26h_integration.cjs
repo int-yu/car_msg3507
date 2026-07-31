@@ -65,8 +65,15 @@ assert.match(main,
 assert.match(main,
     /Main_HasSignal\(&updateContext, MAIN_BALL_STOP_SIGNAL\)/,
     'C4 must still stop the ball task');
-assert.doesNotMatch(main, /BallHold|MAIN_HOLD|AutoStart|BALL_AUTO/,
-    'active main flow must not restore the old KEY3 ball-hold flow');
+assert.doesNotMatch(main, /#include[^\n]*BallHold|BallHold_|MAIN_HOLD/,
+    'active main flow must not restore the old KEY3 BallHold flow');
+assert.match(main, /s_defaultBallHoldPending\s*=\s*1U/,
+    'the no-key startup state must default to O-point ball control');
+assert.match(main, /Main_DefaultBallHoldIsReady\(\)/,
+    'default O hold must wait for existing readiness checks');
+assert.match(main,
+    /s_defaultBallHoldPending[\s\S]*?Main_StartOrRetargetBallTask\(\s*BALL_SEQUENCE_DEFAULT_TARGET_MM\)/,
+    'the pending no-key state must invoke the existing O-point BallSequence path');
 assert.match(main, /Telemetry_Update\(updateContext\.elapsedTicks,[\s\S]*?updateContext\.pressedKeys\);/,
     'telemetry sampling must happen after the task controllers in main');
 assert.match(main, /BeamActuator_Update\(updateContext\.dt\);/,

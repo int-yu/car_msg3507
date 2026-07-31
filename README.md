@@ -82,11 +82,11 @@
 
 ## 3. 当前程序说明
 
-`main.c` 是当前唯一运行入口，不再通过 `MAIN_STEPPER_TEST_MODE` 或 `Application/Core/Main26H.c` 切换主流程。烧录后进入完整 App 初始化，步进连续取得3帧有效MT6816 PWM后先运动到`238.0°`水平位置；要求3摆球任务不上电自动启动，当前先测试巡线，需要摆球时再按 `KEY2` 或从网页发送 `C3`。
+`main.c` 是当前唯一运行入口，不再通过 `MAIN_STEPPER_TEST_MODE` 或 `Application/Core/Main26H.c` 切换主流程。烧录后进入完整 App 初始化，步进连续取得3帧有效MT6816 PWM后先运动到 `STEPPER_INITIAL_ANGLE_DEG` 水平位置；无按键时，视觉和步进就绪后默认启动要求3的 O 点保持，`KEY2` 可切换到摆球扫描，网页 `C3` 可切换到指定目标。
 
 六路红外资源已经恢复为 `PA25=SDA、PA14=SCL`，但只有完整 26H 入口中的 `App_Init()` 会初始化并采样它们。
 
-当前 `main.c` 入口启用 PC/网页链路、K230Link、六路红外、MPU6050、舵机、底盘和步进摆杆。`KEY1` 保留为 H 题要求 2 的单圈巡线启动键，`KEY2` 保留为要求3摆球启动键，`KEY3` 启动不识别终点的 30 秒定时巡线，`KEY1+KEY2` 同时按下保持原有物理急停逻辑。
+当前 `main.c` 入口启用 PC/网页链路、K230Link、六路红外、MPU6050、舵机、底盘和步进摆杆。不按按键时，程序等待 K230 钢球位置有效、步进绝对角有效且摆杆到达水平位，然后默认启动 O 点 `0.0 mm` 保持。`KEY1` 保留为 H 题要求 2 的单圈巡线启动键，`KEY2` 保留为要求3摆球扫描启动键，`KEY3` 启动不识别终点的 30 秒定时巡线，`KEY1+KEY2` 同时按下保持原有物理急停逻辑。
 
 ### 3.2 100 Hz 主循环与 26H 单圈巡线
 
@@ -100,7 +100,7 @@ KEY3 由 `main.c` 像 KEY2 一样直接分发给 `Application/Control/TimedLineR
 
 ### 3.2.1 26H 摆杆滚球（要求 3）
 
-要求3由 `KEY2` 或 `C3` 手动启动：PID 闭环把钢球保持在调用方给定的位置，当前完整入口默认传入 O 点 `0.0 mm`。`C4`停止正在运行的摆球任务并回中。当前任务没有旧版“到 +5 cm 再折返到 -5 cm”的自动结束标志；只有 `C4`、KEY1+KEY2/C0 急停或视觉/控制错误会结束闭环。要求3与要求2是两个独立测试项，不会同时运行；KEY1+KEY2的物理急停会同时停掉底盘和摆杆。
+上电后的无按键默认状态使用现有 `BallSequence_Start(0.0f)` 和 `BallBalance` PID 闭环把钢球保持在 O 点；视觉或步进尚未就绪时保持等待，不会提前驱动。`KEY2` 把当前保持任务切换为 -50 mm 到 +50 mm 扫描，`C3` 启动或重定向到网页给定位置，`C4` 停止正在运行的摆球任务并回中。`C4` 或 KEY1+KEY2/C0 急停会同时取消本次上电默认启动等待，不会停车后自行重新启动。
 
 分四层，每层只做一件事：`BallSensor` 把 K230 的 `BALL_POSITION` 换算成以 O 为原点的毫米位置并估计滚动速度；`BallBalance` 用 PID 算出摆杆倾角，暂不加入车体加速度前馈；`BeamActuator` 把倾角换算成步进的绝对角度；`Application/Control/BallSequence` 只管启动、持续更新、停止和错误保护。K230 的 `-50.00~+50.00`覆盖250 mm水管，因此端点对应`-125~+125 mm`。
 
@@ -480,7 +480,7 @@ OLED默认只显示上电运行时间；K230钢球物理位置和步进 PWM 绝�
 
 | 文件 | 类型 | 职责 |
 |---|---|---|
-| `main.c` | C 源文件 | 当前唯一运行入口；KEY1启动26H总任务、KEY2/C3启动摆球、KEY3启动定时巡线、KEY1+KEY2/C0急停 |
+| `main.c` | C 源文件 | 当前唯一运行入口；无按键时默认保持钢球在 O 点，KEY1启动26H总任务、KEY2/C3切换摆球任务、KEY3启动定时巡线、KEY1+KEY2/C0急停 |
 | `Application/Core/Main26H.c/.h` | C 源文件 / 头文件 | 旧完整26H包装入口，保留在工程中但当前不由 `main.c` 调用 |
 | `main.syscfg` | TI SysConfig | 时钟、PinMux、GPIO、UART、I2C、PWM 和 SysTick 配置 |
 | `.project`、`.cproject`、`.settings/` | CCS 元数据 | 工程、编译器、SDK 和 IDE 配置 |
@@ -508,7 +508,7 @@ uint8_t TestApp_Update(App_UpdateContext_t *context); /* 更新测试通道并�
 
 | 文件或目录 | 类型 | 职责 |
 |---|---|---|
-| `main.c` | C 源文件 | 当前默认运行完整26H自动摆球；可通过顶部宏切换回独立步进测试入口 |
+| `main.c` | C 源文件 | 当前唯一入口；无按键时默认保持钢球在 O 点，并直接分发 KEY1、KEY2、KEY3 与 C0/C3/C4 |
 | `main.syscfg` | TI SysConfig | 时钟树、GPIO、UART、I2C、PWM、SysTick 和 PinMux 的唯一配置源 |
 | `car_debug.html` | 单文件调试网页 | 浏览器端上位机：Web Serial 连接无线串口，发送第 3.3 节命令、解析遥测 CSV、实时画曲线并导出。无外部依赖，不参与固件编译 |
 | `tests/*.mjs` | Node 测试脚本 | 无依赖，`node tests/<文件>` 直接跑。覆盖遥测解析、页面启动、固件-网页协议契约与教程源码一致性；清单见 4.2 节末 |

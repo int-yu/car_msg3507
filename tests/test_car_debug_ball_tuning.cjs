@@ -40,8 +40,15 @@ assert.ok(main.includes('BallSequence_Start(targetMM)'),
     'ball task must start with the selected target position');
 assert.ok(main.includes('BallSequence_SetTarget(s_ballTargetMM)'),
     'X must retarget an active requirement-3 task without restarting it');
-assert.doesNotMatch(main, /MAIN26H_BALL_AUTO_START_ENABLED|AutoStart|BallHold|MAIN_HOLD/,
-    'current main flow must not auto-start or load the old hold task');
+assert.ok(main.includes('s_defaultBallHoldPending = 1U'),
+    'the no-key startup state must wait to hold the ball at O');
+assert.ok(main.includes('Main_DefaultBallHoldIsReady()'),
+    'default O hold must wait for vision and stepper readiness');
+assert.match(main,
+    /s_defaultBallHoldPending[\s\S]*?Main_StartOrRetargetBallTask\(\s*BALL_SEQUENCE_DEFAULT_TARGET_MM\)/,
+    'the default state must reuse BallSequence to hold O');
+assert.doesNotMatch(main, /#include[^\n]*BallHold|BallHold_|MAIN_HOLD/,
+    'current main flow must not restore the old BallHold task');
 assert.doesNotMatch(app, /Telemetry_Update\(/,
     'telemetry sampling must happen after the requirement-3 update in main');
 
