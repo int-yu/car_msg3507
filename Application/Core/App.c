@@ -8,6 +8,7 @@
 #include "Application/Control/BallSensor.h"
 #include "Application/Control/BeamActuator.h"
 #include "Application/Control/MotionManager.h"
+#include "Application/Control/TaskTimer.h"
 #include "Application/Debug/DebugDisplay.h"
 #include "Application/Debug/Telemetry.h"
 #include "Application/Servo/Servo.h"
@@ -169,6 +170,7 @@ void App_Init(void)
 
     BluetoothDebug_Init();
     Telemetry_Init();
+    TaskTimer_Init();
     if (MotionManager_Init() != MOTION_MANAGER_RESULT_OK)
     {
         Beep_Long();
@@ -200,6 +202,8 @@ uint8_t App_Update(App_UpdateContext_t *context)
     context->dt = (float)elapsedTicks * TICK_DT;
     context->hasBluetoothSignal = 0U;
     context->bluetoothSignal = 0U;
+
+    TaskTimer_Update(elapsedTicks);
 
     Heading_Update(context->dt);
     Odometry_Update(elapsedTicks);

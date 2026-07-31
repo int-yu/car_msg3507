@@ -29,6 +29,7 @@ echo "--- test_26h ---"
 gcc $CFLAGS \
     "$ROOT/tests/host/test_26h.c" \
     "$ROOT/Accomplish/26H.c" \
+    "$ROOT/Application/Control/TaskTimer.c" \
     -o "$OUT/test_26h.exe"
 "$OUT/test_26h.exe"
 
@@ -53,9 +54,17 @@ echo "--- test_26h_ball ---"
 gcc $CFLAGS \
     "$ROOT/tests/host/test_26h_ball.c" \
     "$ROOT/Application/Control/BallSequence.c" \
+    "$ROOT/Application/Control/TaskTimer.c" \
     -lm \
     -o "$OUT/test_26h_ball.exe"
 "$OUT/test_26h_ball.exe"
+
+echo "--- test_tasktimer ---"
+gcc $CFLAGS \
+    "$ROOT/tests/host/test_tasktimer.c" \
+    "$ROOT/Application/Control/TaskTimer.c" \
+    -o "$OUT/test_tasktimer.exe"
+"$OUT/test_tasktimer.exe"
 
 echo "--- test_26h_ball4 ---"
 gcc $CFLAGS \

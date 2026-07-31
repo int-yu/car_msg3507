@@ -1,5 +1,6 @@
 #include "Accomplish/26H.h"
 #include "Application/Control/MotionManager.h"
+#include "Application/Control/TaskTimer.h"
 #include "Hardware/Sensors/Graydetect.h"
 #include "tests/host/test_assert.h"
 
@@ -91,6 +92,7 @@ MotionManager_Error_t MotionManager_GetError(void) { return s_motionError; }
 
 static void reset_fakes(void)
 {
+    TaskTimer_Init();
     s_lineOnline = 1U;
     s_lineState = 0x03U;
     s_distanceMM = 0.0f;
@@ -180,6 +182,8 @@ static void test_parameters_are_snapshotted_at_key1_start(void)
     start_one_lap();
 
     CHECK_NEAR(s_startLineSpeedMMps, 520.0f, 0.001f);
+    CHECK(TaskTimer_IsRunning() != 0U);
+    CHECK(TaskTimer_GetOwner() == TASK_TIMER_OWNER_LINE);
 
     /* 网页运行中继续写 K 参数，只能影响下一次 KEY1，不能改本圈阶段。 */
     Accomplish26H_TuneCruiseSpeedMMps = 700.0f;
@@ -248,6 +252,8 @@ static void test_key1_starts_line_and_timer(void)
           ACCOMPLISH_26H_STATE_LEAVING_START);
     CHECK(Accomplish26H_IsTiming() != 0U);
     CHECK(Accomplish26H_GetElapsedTicks() == 0U);
+    CHECK(TaskTimer_IsRunning() != 0U);
+    CHECK(TaskTimer_GetOwner() == TASK_TIMER_OWNER_LINE);
     CHECK_NEAR(s_startLineSpeedMMps,
                ACCOMPLISH_26H_CRUISE_SPEED_MMPS, 0.001f);
 }
@@ -298,6 +304,7 @@ static void test_marker_brakes_then_settles_before_freezing_time(void)
     CHECK(s_startBrakeCount == 1U);
     CHECK(s_requestStopCount == 0U);
     CHECK(Accomplish26H_GetState() == ACCOMPLISH_26H_STATE_SOFT_STOP);
+    CHECK(TaskTimer_IsRunning() == 0U);
 
     s_motionBusy = 0U;
     s_motionFinished = 1U;

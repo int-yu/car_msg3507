@@ -1,5 +1,6 @@
 #include "Application/Control/BallSequence.h"
 #include "Application/Control/BallBalance.h"
+#include "Application/Control/TaskTimer.h"
 
 typedef struct
 {
@@ -14,6 +15,7 @@ static BallSequence_Context_t s_context;
 static void BallSequence_Fail(BallSequence_Error_t error)
 {
     BallBalance_Stop();
+    TaskTimer_Stop(TASK_TIMER_OWNER_BALL);
     s_context.error = error;
     s_context.state = BALL_SEQUENCE_STATE_ERROR;
 }
@@ -62,6 +64,8 @@ uint8_t BallSequence_StartSweep(void)
 
 uint8_t BallSequence_SetTarget(float targetMM)
 {
+    BallSequence_State_t previousState = s_context.state;
+
     if ((BallSequence_IsActive() == 0U) ||
         (BallBalance_SetTarget(targetMM) != BALL_BALANCE_RESULT_OK))
     {
@@ -70,6 +74,10 @@ uint8_t BallSequence_SetTarget(float targetMM)
 
     s_context.targetMM = targetMM;
     s_context.state = BALL_SEQUENCE_STATE_HOLDING;
+    if (previousState != BALL_SEQUENCE_STATE_HOLDING)
+    {
+        TaskTimer_Stop(TASK_TIMER_OWNER_BALL);
+    }
     return 1U;
 }
 
@@ -108,6 +116,7 @@ void BallSequence_Update(float dt)
              (BallBalance_IsStable() != 0U))
     {
         s_context.state = BALL_SEQUENCE_STATE_SWEEP_HOLDING_POSITIVE;
+        TaskTimer_Stop(TASK_TIMER_OWNER_BALL);
     }
 
     if (s_context.elapsedTicks < UINT32_MAX)
@@ -119,6 +128,7 @@ void BallSequence_Update(float dt)
 void BallSequence_Stop(void)
 {
     BallBalance_Stop();
+    TaskTimer_Stop(TASK_TIMER_OWNER_BALL);
     s_context.state = BALL_SEQUENCE_STATE_FINISHED;
 }
 

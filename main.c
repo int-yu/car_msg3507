@@ -3,6 +3,7 @@
 #include "Application/Control/BallSequence.h"
 #include "Application/Control/BeamActuator.h"
 #include "Application/Control/MotionManager.h"
+#include "Application/Control/TaskTimer.h"
 #include "Application/Core/App.h"
 #include "Application/Debug/DebugDisplay.h"
 #include "Application/Debug/Telemetry.h"
@@ -81,6 +82,7 @@ static uint8_t Main_StartBallSweep(void)
         return 0U;
     }
 
+    TaskTimer_Start(TASK_TIMER_OWNER_BALL);
     Serial1_SendString("OK BALL SWEEP\r\n");
     return 1U;
 }
@@ -172,7 +174,7 @@ int main(void)
             BallSequence_Update(updateContext.dt);
             Telemetry_Update(updateContext.elapsedTicks, updateContext.pressedKeys);
             BeamActuator_Update(updateContext.dt);
-            DebugDisplay_Update(updateContext.elapsedTicks);
+            DebugDisplay_Update();
         }
     }
 }
