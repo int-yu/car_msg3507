@@ -11,6 +11,7 @@
 #include "Application/State/Heading.h"
 #include "Application/State/Odometry.h"
 #include "Hardware/Comms/Serial.h"
+#include "Hardware/Motor/Stepper.h"
 #include "Hardware/Sensors/Graydetect.h"
 #include "ti_msp_dl_config.h"
 #include <math.h>
@@ -30,7 +31,7 @@
 /* 一个通道的定义：名字、单位码、取值函数。表序即列序，与位定义一一对应。 */
 typedef struct
 {
-    uint16_t bit;
+    uint32_t bit;
     const char *name;
     uint8_t unit;
     float (*read)(void);
@@ -67,6 +68,13 @@ static float Telemetry_ReadBallReference(void)
 {
     return BallBalance_GetProfilePositionMM();
 }
+static float Telemetry_ReadStepperAngle(void)
+{
+    Stepper_Status_t status;
+
+    Stepper_GetStatus(&status);
+    return status.pwmValid ? status.absoluteAngleDeg : NAN;
+}
 
 /* 顺序必须与 TELEMETRY_CH_* 的位序一致：schema、sample、行长估算都遍历它。 */
 static const Telemetry_Channel_t s_channels[] = {
@@ -88,13 +96,15 @@ static const Telemetry_Channel_t s_channels[] = {
       Telemetry_ReadBallPosition },
     { TELEMETRY_CH_BREF,  "bref", TELEM_UNIT_MM,
       Telemetry_ReadBallReference },
+    { TELEMETRY_CH_SANG,  "sang", TELEM_UNIT_DEG,
+      Telemetry_ReadStepperAngle },
 };
 
 #define TELEMETRY_CHANNEL_COUNT \
     (sizeof(s_channels) / sizeof(s_channels[0]))
 
 static uint8_t s_rateHz;
-static uint16_t s_fieldMask;
+static uint32_t s_fieldMask;
 static uint8_t s_tickAccumulator;
 static uint8_t s_schemaPending;
 static uint32_t s_elapsedMs;
@@ -120,7 +130,7 @@ static void Telemetry_Emit(uint8_t *frame, uint16_t frameLength)
 #endif
 }
 
-static uint8_t Telemetry_CountChannels(uint16_t mask)
+static uint8_t Telemetry_CountChannels(uint32_t mask)
 {
     uint8_t count = 0U;
     uint32_t index;
@@ -136,7 +146,7 @@ static uint8_t Telemetry_CountChannels(uint16_t mask)
 }
 
 /* SAMPLE 帧字节数 = 帧开销 + payload(ms:4 + 通道数×4)。 */
-static uint16_t Telemetry_SampleFrameBytes(uint16_t mask)
+static uint16_t Telemetry_SampleFrameBytes(uint32_t mask)
 {
     uint16_t payload = (uint16_t)(4U + (uint16_t)Telemetry_CountChannels(mask) * 4U);
     return (uint16_t)(TELEM_FRAME_OVERHEAD + payload);
@@ -167,7 +177,7 @@ uint8_t Telemetry_GetMaxRateHz(void)
 }
 
 /* 按掩码把选中通道当前值写进 out，返回通道数。 */
-static uint8_t Telemetry_SampleChannels(uint16_t mask, float *out)
+static uint8_t Telemetry_SampleChannels(uint32_t mask, float *out)
 {
     uint8_t count = 0U;
     uint32_t index;
@@ -188,7 +198,7 @@ static uint8_t Telemetry_SampleChannels(uint16_t mask, float *out)
 }
 
 /* 发一帧 SCHEMA。板载捕获移除后只剩实时流一个调用方，故收回文件内部。 */
-static void Telemetry_SendSchema(uint16_t mask)
+static void Telemetry_SendSchema(uint32_t mask)
 {
     uint8_t payload[TELEM_FRAME_MAX_PAYLOAD];
     uint8_t frame[TELEM_FRAME_MAX_BYTES];
@@ -196,8 +206,8 @@ static void Telemetry_SendSchema(uint16_t mask)
     uint16_t frameLength;
     uint32_t index;
 
-    /* payload: channelMask(u16) + 每通道 { nameLen(u8), name[], unit(u8) }。 */
-    offset += TelemFrame_PackU16(&payload[offset], mask);
+    /* payload: channelMask(u32) + 每通道 { nameLen(u8), name[], unit(u8) }。 */
+    offset += TelemFrame_PackU32(&payload[offset], mask);
     for (index = 0U; index < TELEMETRY_CHANNEL_COUNT; index++)
     {
         const Telemetry_Channel_t *channel = &s_channels[index];
@@ -251,9 +261,8 @@ void Telemetry_Init(void)
 {
     uint8_t maxRate;
 
-    /* 默认掩码取轮速调参子集（TL/LV/PL/TR/RV/PR），比全字段更常用且更快。 */
-    s_fieldMask = TELEMETRY_CH_TL | TELEMETRY_CH_LV | TELEMETRY_CH_PL |
-                  TELEMETRY_CH_TR | TELEMETRY_CH_RV | TELEMETRY_CH_PR;
+    /* 默认只发摆球测试需要的钢球位置和步进 PWM 绝对角度。 */
+    s_fieldMask = TELEMETRY_CH_BPOS | TELEMETRY_CH_SANG;
     s_rateHz = TELEMETRY_DEFAULT_RATE_HZ;
 
     maxRate = Telemetry_GetMaxRateHz();
@@ -313,11 +322,11 @@ uint8_t Telemetry_SetRateHz(uint8_t rateHz)
     return 1U;
 }
 
-uint8_t Telemetry_SetFieldMask(uint16_t mask)
+uint8_t Telemetry_SetFieldMask(uint32_t mask)
 {
     uint8_t maxRate;
 
-    if (mask == 0U)
+    if ((mask == 0U) || ((mask & ~TELEMETRY_CH_ALL) != 0UL))
     {
         return 0U;
     }
@@ -337,7 +346,7 @@ uint8_t Telemetry_GetRateHz(void)
     return s_rateHz;
 }
 
-uint16_t Telemetry_GetFieldMask(void)
+uint32_t Telemetry_GetFieldMask(void)
 {
     return s_fieldMask;
 }

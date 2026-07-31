@@ -183,6 +183,29 @@ static bool Stepper_TargetIsWithinLimits(int32_t target)
            (target >= minimum) && (target <= maximum);
 }
 
+static bool Stepper_ClampTargetToLimits(int32_t *target)
+{
+    int32_t minimum;
+    int32_t maximum;
+    bool limited = false;
+
+    if ((target == NULL) || (!Stepper_GetLimitSteps(&minimum, &maximum)))
+    {
+        return false;
+    }
+    if (*target < minimum)
+    {
+        *target = minimum;
+        limited = true;
+    }
+    else if (*target > maximum)
+    {
+        *target = maximum;
+        limited = true;
+    }
+    return limited;
+}
+
 static bool Stepper_LimitedAngleToSteps(float degrees, int32_t *steps)
 {
     int32_t minimum;
@@ -323,13 +346,18 @@ static uint32_t Stepper_BrakingDistance(uint32_t rate)
 
 static void Stepper_StartSegment(void)
 {
+    int32_t limitedTarget = s_targetSteps;
     uint32_t remaining =
-        Stepper_AbsoluteDifference(s_targetSteps, s_emittedSteps);
+        Stepper_AbsoluteDifference(limitedTarget, s_emittedSteps);
     uint32_t segmentSteps =
         (s_currentRateHz + (STEPPER_CONTROL_HZ / 2U)) /
         STEPPER_CONTROL_HZ;
     uint32_t periodTicks;
     uint32_t loadValue;
+
+    (void)Stepper_ClampTargetToLimits(&limitedTarget);
+    s_targetSteps = limitedTarget;
+    remaining = Stepper_AbsoluteDifference(s_targetSteps, s_emittedSteps);
 
     if (segmentSteps == 0U)
     {
@@ -630,15 +658,17 @@ static Stepper_Result_t Stepper_TrackTo(
     uint32_t primask;
     int32_t brakingSteps;
     int32_t brakingTarget;
+    bool limited;
 
     if ((profile != NULL) && (!Stepper_ProfileIsValid(profile)))
     {
         return STEPPER_RESULT_INVALID_ARGUMENT;
     }
-    if (!Stepper_TargetIsWithinLimits(target))
+    if (!Stepper_GetLimitSteps(&brakingSteps, &brakingTarget))
     {
-        return STEPPER_RESULT_LIMIT;
+        return STEPPER_RESULT_INVALID_ARGUMENT;
     }
+    limited = Stepper_ClampTargetToLimits(&target);
 
     primask = __get_PRIMASK();
     __disable_irq();
@@ -667,7 +697,7 @@ static Stepper_Result_t Stepper_TrackTo(
         {
             s_targetSteps = target;
             __set_PRIMASK(primask);
-            return STEPPER_RESULT_OK;
+            return limited ? STEPPER_RESULT_LIMIT : STEPPER_RESULT_OK;
         }
         s_targetSteps = target;
         s_direction = (target > s_emittedSteps) ? 1 : -1;
@@ -677,7 +707,7 @@ static Stepper_Result_t Stepper_TrackTo(
         Stepper_SetDirection(s_direction);
         Stepper_StartSegment();
         __set_PRIMASK(primask);
-        return STEPPER_RESULT_OK;
+        return limited ? STEPPER_RESULT_LIMIT : STEPPER_RESULT_OK;
     }
 
     /* 运动中：新目标在当前前进方向的前方时直接改写即可。 */
@@ -687,16 +717,17 @@ static Stepper_Result_t Stepper_TrackTo(
         s_targetSteps = target;
         s_stopRequested = false;
         __set_PRIMASK(primask);
-        return STEPPER_RESULT_OK;
+        return limited ? STEPPER_RESULT_LIMIT : STEPPER_RESULT_OK;
     }
 
     /* 反向：先按当前速度刹停，别翻 DIR。 */
     brakingSteps = (int32_t)Stepper_BrakingDistance(s_currentRateHz);
     brakingTarget = s_emittedSteps + ((int32_t)s_direction * brakingSteps);
+    limited = Stepper_ClampTargetToLimits(&brakingTarget) || limited;
     s_targetSteps = brakingTarget;
     s_stopRequested = false;
     __set_PRIMASK(primask);
-    return STEPPER_RESULT_OK;
+    return limited ? STEPPER_RESULT_LIMIT : STEPPER_RESULT_OK;
 }
 
 Stepper_Result_t Stepper_TrackToSteps(

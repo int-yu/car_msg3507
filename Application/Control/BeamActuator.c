@@ -23,19 +23,6 @@ static const Stepper_Profile_t s_beamProfile = {
     .accelerationStepsPerSec2 = 20000U
 };
 
-static float BeamActuator_Clamp(float value, float limit)
-{
-    if (value > limit)
-    {
-        return limit;
-    }
-    if (value < -limit)
-    {
-        return -limit;
-    }
-    return value;
-}
-
 void BeamActuator_Init(void)
 {
     s_context.requestedTiltDeg = 0.0f;
@@ -56,15 +43,16 @@ void BeamActuator_SetTiltDeg(float tiltDeg)
     {
         return;
     }
-    s_context.requestedTiltDeg =
-        BeamActuator_Clamp(tiltDeg, BEAM_ACTUATOR_MAX_TILT_DEG);
+    s_context.requestedTiltDeg = tiltDeg;
 }
 
 void BeamActuator_Update(float dt)
 {
     float maximumStepDeg;
     float errorDeg;
+    float nextAppliedTiltDeg;
     float motorAngleDeg;
+    Stepper_Result_t result;
 
     if ((!isfinite(dt)) || (dt <= 0.0f))
     {
@@ -82,14 +70,18 @@ void BeamActuator_Update(float dt)
     {
         errorDeg = -maximumStepDeg;
     }
-    s_context.appliedTiltDeg += errorDeg;
+    nextAppliedTiltDeg = s_context.appliedTiltDeg + errorDeg;
 
     /* 摆杆倾角 -> 电机轴角度。传动比与零点偏置只在这里出现。 */
     motorAngleDeg =
         BeamActuator_TuneZeroOffsetDeg +
         BEAM_ACTUATOR_STEPPER_DIRECTION_SIGN *
-        s_context.appliedTiltDeg * BeamActuator_TuneGearRatio;
-    (void)Stepper_TrackToAngle(motorAngleDeg, &s_beamProfile);
+        nextAppliedTiltDeg * BeamActuator_TuneGearRatio;
+    result = Stepper_TrackToAngle(motorAngleDeg, &s_beamProfile);
+    if ((result == STEPPER_RESULT_OK) || (result == STEPPER_RESULT_LIMIT))
+    {
+        s_context.appliedTiltDeg = nextAppliedTiltDeg;
+    }
 }
 
 float BeamActuator_GetTiltDeg(void)

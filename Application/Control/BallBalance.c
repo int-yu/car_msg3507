@@ -155,7 +155,6 @@ void BallBalance_Update(float dt)
     tiltDeg = (BallBalance_TuneKp * errorMM) +
               (BallBalance_TuneKi * s_context.integralMMs) -
               (BallBalance_TuneKd * speedMMps);
-    tiltDeg = BallBalance_Clamp(tiltDeg, BALL_BALANCE_MAX_TILT_DEG);
 
     s_context.tiltCommandDeg = tiltDeg;
     BeamActuator_SetTiltDeg(tiltDeg);

@@ -90,17 +90,17 @@ static void test_derivative_damps_motion(void)
     CHECK(BallBalance_GetTiltCommandDeg() < noSpeedTilt);
 }
 
-static void test_tilt_command_is_clamped(void)
+static void test_tilt_command_is_not_clamped_above_pid(void)
 {
+    float expectedTiltDeg;
+
     reset_fakes();
     CHECK(BallBalance_Start(120.0f) == BALL_BALANCE_RESULT_OK);
 
     s_positionMM = -120.0f;
     BallBalance_Update(0.01f);
-    CHECK(BallBalance_GetTiltCommandDeg() <=
-          BALL_BALANCE_MAX_TILT_DEG + 0.001f);
-    CHECK(BallBalance_GetTiltCommandDeg() >=
-          -BALL_BALANCE_MAX_TILT_DEG - 0.001f);
+    expectedTiltDeg = BallBalance_TuneKp * 240.0f;
+    CHECK_NEAR(BallBalance_GetTiltCommandDeg(), expectedTiltDeg, 0.001f);
 }
 
 static void test_integral_is_limited_and_reset_on_retarget(void)
@@ -205,7 +205,7 @@ int main(void)
     test_start_sets_requested_hold_position();
     test_control_pushes_ball_toward_target();
     test_derivative_damps_motion();
-    test_tilt_command_is_clamped();
+    test_tilt_command_is_not_clamped_above_pid();
     test_integral_is_limited_and_reset_on_retarget();
     test_stable_requires_sustained_tolerance();
     test_vision_loss_recenters_and_errors();

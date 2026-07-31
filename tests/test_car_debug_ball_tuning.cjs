@@ -40,7 +40,8 @@ assert.doesNotMatch(app, /Telemetry_Update\(/,
 for (const required of [
     '#define TELEMETRY_CH_BPOS   0x4000U',
     '#define TELEMETRY_CH_BREF   0x8000U',
-    '#define TELEMETRY_CH_ALL    0xFFFFU',
+    '#define TELEMETRY_CH_SANG   0x10000UL',
+    '#define TELEMETRY_CH_ALL    0x1FFFFUL',
 ]) {
     assert.ok(telemetryHeader.includes(required),
         `Telemetry.h missing ${required}`);
@@ -48,8 +49,10 @@ for (const required of [
 for (const required of [
     'Telemetry_ReadBallPosition',
     'Telemetry_ReadBallReference',
+    'Telemetry_ReadStepperAngle',
     '{ TELEMETRY_CH_BPOS,  "bpos"',
     '{ TELEMETRY_CH_BREF,  "bref"',
+    '{ TELEMETRY_CH_SANG,  "sang"',
 ]) {
     assert.ok(telemetry.includes(required),
         `Telemetry.c missing ${required}`);
@@ -61,10 +64,12 @@ for (const required of [
     'id="btnBallVideoRun"',
     'id="btnBallVideoStop"',
     'data-ball-field="position"',
+    'data-ball-field="stepperAngle"',
     'data-ball-marker="position"',
     'bpos: 0x4000',
     'bref: 0x8000',
-    'const CH_ALL = 0xFFFF',
+    'sang: 0x10000',
+    'const CH_ALL = 0x1FFFF',
     "excite: () => 'C3'",
     "stopCmd: 'C4'",
     'function computeBallMetrics(',
@@ -86,7 +91,7 @@ for (const required of [
     "if (p.startReply)",
     "if (command === 'C4') return (line) => line === 'OK BALL STOP'",
     "if (session.loop === 'ball' && !session.stopRequested)",
-    "Math.abs(sample.bref) <= 0.5",
+    "!Number.isFinite(sample.bref) || Math.abs(sample.bref) <= 0.5",
 ]) {
     assert.ok(html.includes(required), `ball session lifecycle missing ${required}`);
 }

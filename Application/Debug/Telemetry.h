@@ -31,14 +31,15 @@
 #define TELEMETRY_CH_VAD    0x2000U /* 视觉差速修正量 mm/s，正 = 右转 */
 #define TELEMETRY_CH_BPOS   0x4000U /* 要求 3 钢球实测位置 mm */
 #define TELEMETRY_CH_BREF   0x8000U /* 要求 3 梯形轨迹参考位置 mm */
-#define TELEMETRY_CH_ALL    0xFFFFU
+#define TELEMETRY_CH_SANG   0x10000UL /* Stepper MT6816 PWM absolute angle deg */
+#define TELEMETRY_CH_ALL    0x1FFFFUL
 
 void Telemetry_Init(void);
 void Telemetry_Update(uint8_t elapsedTicks, uint8_t pressedKeys);
 uint8_t Telemetry_SetRateHz(uint8_t rateHz);
-uint8_t Telemetry_SetFieldMask(uint16_t mask);
+uint8_t Telemetry_SetFieldMask(uint32_t mask);
 uint8_t Telemetry_GetRateHz(void);
-uint16_t Telemetry_GetFieldMask(void);
+uint32_t Telemetry_GetFieldMask(void);
 uint8_t Telemetry_GetMaxRateHz(void);
 
 #endif

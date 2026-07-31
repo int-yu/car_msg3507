@@ -176,7 +176,6 @@ void App_Init(void)
 
     s_previousKeyMask = Key_GetPressedMask();
     s_previousMotionError = MotionManager_GetError();
-    DebugDisplay_Update(DEBUG_DISPLAY_REFRESH_TICKS);
 }
 
 uint8_t App_Update(App_UpdateContext_t *context)

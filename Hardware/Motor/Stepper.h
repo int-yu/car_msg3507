@@ -40,13 +40,13 @@
 #define STEPPER_AUTO_START_ENABLED             1U
 #endif
 #ifndef STEPPER_INITIAL_ANGLE_DEG
-#define STEPPER_INITIAL_ANGLE_DEG              200.0f
+#define STEPPER_INITIAL_ANGLE_DEG              238.0f
 #endif
 #ifndef STEPPER_MIN_ANGLE_DEG
-#define STEPPER_MIN_ANGLE_DEG                  79.0f
+#define STEPPER_MIN_ANGLE_DEG                  106.0f
 #endif
 #ifndef STEPPER_MAX_ANGLE_DEG
-#define STEPPER_MAX_ANGLE_DEG                  300.0f
+#define STEPPER_MAX_ANGLE_DEG                  309.0f
 #endif
 #ifndef STEPPER_STARTUP_START_RATE_HZ
 #define STEPPER_STARTUP_START_RATE_HZ          200U

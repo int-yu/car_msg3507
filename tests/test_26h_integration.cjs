@@ -26,8 +26,8 @@ assert.match(readme, /KEY1.*启动.*单圈/,
     'README 必须说明 KEY1 启动单圈');
 assert.match(readme, /KEY1\+KEY2 同时按下/,
     'README 必须记录物理组合急停');
-assert.match(readme, /OLED[^\n]*钢球位置/,
-    'README 必须记录 OLED 只显示钢球位置');
+assert.match(readme, /OLED[^\n]*时间/,
+    'README must document that OLED only displays time');
 
 assert.match(main, /MAIN_STEPPER_TEST_MODE\s+0U/,
     'main.c must default to the complete automatic ball task');
@@ -140,15 +140,13 @@ assert.doesNotMatch(task + read('Application/Control/MotionManager.h') +
     read('Application/Control/MotionManager.c'), /SetLineDeceleration/,
     'H2 must keep the existing MotionLine control path without a runtime deceleration setter');
 
-assert.match(display, /#include "Application\/Control\/BallSensor\.h"/,
-    'OLED must read the physical ball sensor interface');
-assert.ok(display.includes('BallSensor_GetPositionMM()'),
-    'OLED must display the physical ball position');
-assert.ok(display.includes('BallSensor_IsFresh()'),
-    'OLED must show WAIT when vision is unavailable');
+assert.doesNotMatch(display, /BallSensor_/,
+    'OLED must not read the ball sensor');
+assert.ok(display.includes('s_elapsedSeconds'),
+    'OLED must display elapsed time');
 assert.ok(display.includes('OLED_UpdateArea('),
-    'OLED refresh must be limited to the ball-value area');
-assert.doesNotMatch(display, /OLED_Update\(\)|IR:|KEY:|encoderCounts/,
+    'OLED refresh must be limited to the time-value area');
+assert.doesNotMatch(display, /OLED_Update\(\)|IR:|KEY:|encoderCounts|BALL:/,
     'OLED must not perform full-screen or unrelated status refreshes');
 assert.doesNotMatch(displayHeader, /ShowHeadingCalibration/,
     'OLED must not expose the removed MPU calibration page');
@@ -162,4 +160,4 @@ assert.match(stepperHeader, /STEPPER_MAX_ANGLE_DEG\s+300\.0f/,
 assert.match(grayHeader, /GRAYDETECT_ENABLED\s+1U/,
     'complete 26H mode must enable the six-channel infrared sensor');
 
-console.log('26H ring, ball display, and smooth-stop contract passed');
+console.log('26H ring, time display, and smooth-stop contract passed');

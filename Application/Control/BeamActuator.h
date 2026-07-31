@@ -27,9 +27,6 @@
  */
 #define BEAM_ACTUATOR_STEPPER_DIRECTION_SIGN (-1.0f)
 
-/* 摆杆机械软限位。与 BallBalance 的倾角上限一致，双重保护。 */
-#define BEAM_ACTUATOR_MAX_TILT_DEG 6.0f
-
 /*
  * 倾角命令的最大变化率（度/秒）。这个值只为防止步进丢步，不是为了
  * 平滑：设得过小会让外环爬不过齿轮回差和静摩擦死区，钢球会长时间
@@ -43,16 +40,16 @@ extern float BeamActuator_TuneZeroOffsetDeg;
 
 void BeamActuator_Init(void);
 
-/* 设置摆杆目标倾角。内部做软限位和斜率限制，再换算成步坐标下发。 */
+/* 设置摆杆目标倾角。内部只做斜率限制，再换算成步坐标下发。 */
 void BeamActuator_SetTiltDeg(float tiltDeg);
 
 /* 每个控制拍调用一次，推进斜率限制。 */
 void BeamActuator_Update(float dt);
 
-/* 最近一次实际下发的倾角（经限幅和限斜率之后）。 */
+/* 最近一次实际下发的倾角（经限斜率之后）。 */
 float BeamActuator_GetTiltDeg(void);
 
-/* 请求的倾角（限幅前）。与 GetTiltDeg 差得多说明正被斜率限制卡住。 */
+/* 请求的倾角。与 GetTiltDeg 差得多说明正被斜率限制卡住。 */
 float BeamActuator_GetRequestedTiltDeg(void);
 
 #endif

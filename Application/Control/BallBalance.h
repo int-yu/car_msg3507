@@ -18,12 +18,11 @@
  * angle, gear ratio, zero offset, direction and soft limits.
  */
 
-#define BALL_BALANCE_KP_DEG_PER_MM      0.24f
+#define BALL_BALANCE_KP_DEG_PER_MM      0.4f
 #define BALL_BALANCE_KI_DEG_PER_MM_S    0.0f
-#define BALL_BALANCE_KD_DEG_PER_MMPS    0.087f
+#define BALL_BALANCE_KD_DEG_PER_MMPS    0.08f
 
-#define BALL_BALANCE_MAX_TILT_DEG       6.0f
-#define BALL_BALANCE_INTEGRAL_LIMIT_MM_S 80.0f
+#define BALL_BALANCE_INTEGRAL_LIMIT_MM_S 300.0f
 
 #define BALL_BALANCE_TARGET_LIMIT_MM    120.0f
 #define BALL_BALANCE_SETTLE_TOLERANCE_MM 5.0f
