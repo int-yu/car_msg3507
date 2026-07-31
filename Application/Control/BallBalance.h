@@ -25,6 +25,7 @@
 #define BALL_BALANCE_VELOCITY_KI_DEG_PER_MM     0.20f
 #define BALL_BALANCE_MAX_VELOCITY_MMPS          150.0f
 #define BALL_BALANCE_FEEDFORWARD_DEG_PER_MMPS2  0.02f
+#define BALL_BALANCE_FEEDFORWARD_SPEED_THRESHOLD_MMPS 50.0f
 
 #define BALL_BALANCE_VELOCITY_INTEGRAL_LIMIT_MM 400.0f
 
@@ -40,6 +41,7 @@ extern float BallBalance_TuneVelocityKpDegPerMMps;
 extern float BallBalance_TuneVelocityKiDegPerMM;
 extern float BallBalance_TuneMaxVelocityMMps;
 extern float BallBalance_TuneFeedforwardDegPerMMps2;
+extern float BallBalance_TuneFeedforwardSpeedThresholdMMps;
 
 typedef enum
 {

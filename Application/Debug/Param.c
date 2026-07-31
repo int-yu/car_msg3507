@@ -1,5 +1,6 @@
 #include "Application/Debug/Param.h"
 #include "Accomplish/26H.h"
+#include "Accomplish/Key3.h"
 #include "Application/Control/BallBalance.h"
 #include "Application/Control/BallSensor.h"
 #include "Application/Control/BeamActuator.h"
@@ -160,9 +161,14 @@ PARAM_VAR_ACCESSORS(BallKi, BallBalance_TuneVelocityKiDegPerMM)
 PARAM_VAR_ACCESSORS(BallKd, BallBalance_TuneVelocityKpDegPerMMps)
 PARAM_VAR_ACCESSORS(BallMaxVelocity, BallBalance_TuneMaxVelocityMMps)
 PARAM_VAR_ACCESSORS(BallFeedforward, BallBalance_TuneFeedforwardDegPerMMps2)
+PARAM_VAR_ACCESSORS(BallFeedforwardThreshold, BallBalance_TuneFeedforwardSpeedThresholdMMps)
 PARAM_VAR_ACCESSORS(BallHalfLength, BallSensor_TuneHalfLengthMM)
 PARAM_VAR_ACCESSORS(BeamGearRatio, BeamActuator_TuneGearRatio)
 PARAM_VAR_ACCESSORS(BeamZeroOffset, BeamActuator_TuneZeroOffsetDeg)
+/* Key3 ball balance test parameters. */
+PARAM_VAR_ACCESSORS(Key3Acceleration, Key3_TuneAccelerationMMps2)
+PARAM_VAR_ACCESSORS(Key3CruiseSpeed, Key3_TuneCruiseSpeedMMps)
+PARAM_VAR_ACCESSORS(Key3RunDuration, Key3_TuneRunDurationTicks)
 /* 要求 4 保持 O 点：前馈比例现在恒作用在 0 上（车静止），A→B 直线接进来
  * 后才真正起作用，做成可调免去为调前馈强度重新烧录。 */
 
@@ -258,8 +264,17 @@ static const Param_Entry_t s_params[] = {
       10.0f, 500.0f },
     { "bff", Param_GetBallFeedforward, Param_SetBallFeedforward,
       0.0f, 0.1f },
+    { "bft", Param_GetBallFeedforwardThreshold, Param_SetBallFeedforwardThreshold,
+      0.0f, 500.0f },
     /* 巡线现在只有统一 PID，不再暴露弯道低速参数。 */
     { "lki", Param_GetLineKi, Param_SetLineKi, 0.0f, 50.0f },
+    /* Key3 ball balance test parameters. */
+    { "k3acc", Param_GetKey3Acceleration, Param_SetKey3Acceleration,
+      10.0f, 5000.0f },
+    { "k3cru", Param_GetKey3CruiseSpeed, Param_SetKey3CruiseSpeed,
+      20.0f, 2000.0f },
+    { "k3dur", Param_GetKey3RunDuration, Param_SetKey3RunDuration,
+      100.0f, 10000.0f },
 };
 
 #define PARAM_COUNT (sizeof(s_params) / sizeof(s_params[0]))

@@ -12,6 +12,8 @@ float BallBalance_TuneVelocityKiDegPerMM =
 float BallBalance_TuneMaxVelocityMMps = BALL_BALANCE_MAX_VELOCITY_MMPS;
 float BallBalance_TuneFeedforwardDegPerMMps2 =
     BALL_BALANCE_FEEDFORWARD_DEG_PER_MMPS2;
+float BallBalance_TuneFeedforwardSpeedThresholdMMps =
+    BALL_BALANCE_FEEDFORWARD_SPEED_THRESHOLD_MMPS;
 
 typedef struct
 {
@@ -85,6 +87,8 @@ void BallBalance_Init(void)
     BallBalance_TuneMaxVelocityMMps = BALL_BALANCE_MAX_VELOCITY_MMPS;
     BallBalance_TuneFeedforwardDegPerMMps2 =
         BALL_BALANCE_FEEDFORWARD_DEG_PER_MMPS2;
+    BallBalance_TuneFeedforwardSpeedThresholdMMps =
+        BALL_BALANCE_FEEDFORWARD_SPEED_THRESHOLD_MMPS;
 }
 
 BallBalance_Result_t BallBalance_Start(float targetMM)
@@ -183,7 +187,7 @@ void BallBalance_Update(float dt)
      * Only apply when vehicle has significant velocity to avoid forcing
      * the ball to move before the chassis actually accelerates. */
     chassisAccelMMps2 = MotionLine_GetProfileAccelerationMMps2();
-    if (MotionLine_GetProfileSpeedMMps() > 50.0f)
+    if (MotionLine_GetProfileSpeedMMps() > BallBalance_TuneFeedforwardSpeedThresholdMMps)
     {
         feedforwardDeg = chassisAccelMMps2 * BallBalance_TuneFeedforwardDegPerMMps2;
         tiltDeg += feedforwardDeg;
