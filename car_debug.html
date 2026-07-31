@@ -2214,8 +2214,9 @@ const TUNING_FOCUS = {
                 mask: CH.bpos | CH.bvel | CH.bvref | CH.sang,
                 params: {
                     converge: ['bkp', 'bkd'], damping: ['bkd'],
-                    position: ['bkp', 'bvm'], disturb: [],
-                    feedforward: [], verify: [],
+                    position: ['bkp', 'bvm'],
+                    disturb: ['bff'],
+                    feedforward: ['bff'], verify: [],
                 },
             },
         },
@@ -2243,7 +2244,9 @@ const PARAM_LABELS = {
     gsc: '陀螺尺度', cpm: '编码计数/mm',
     bkp: '位置外环 Kp（1/s）', bvm: '最大目标速度（mm/s）',
     bkd: '速度内环 Kp（度/(mm/s)）',
-    bki: '速度内环 Ki（度/mm）', bhl: '视觉半杆长（mm）',
+    bki: '速度内环 Ki（度/mm）',
+    bff: '车体加速度前馈系数（度/(mm/s²)）',
+    bhl: '视觉半杆长（mm）',
     bgr: '摆杆传动比', bzo: '摆杆水平零偏（度）',
 };
 const PARAM_GROUPS = {
