@@ -1,6 +1,7 @@
 #include "Application/Control/BallBalance.h"
 #include "Application/Control/BallSensor.h"
 #include "Application/Control/BeamActuator.h"
+#include "Application/Control/MotionLine.h"
 #include <math.h>
 
 float BallBalance_TunePositionKpPerS = BALL_BALANCE_POSITION_KP_PER_S;
@@ -9,6 +10,8 @@ float BallBalance_TuneVelocityKpDegPerMMps =
 float BallBalance_TuneVelocityKiDegPerMM =
     BALL_BALANCE_VELOCITY_KI_DEG_PER_MM;
 float BallBalance_TuneMaxVelocityMMps = BALL_BALANCE_MAX_VELOCITY_MMPS;
+float BallBalance_TuneFeedforwardDegPerMMps2 =
+    BALL_BALANCE_FEEDFORWARD_DEG_PER_MMPS2;
 
 typedef struct
 {
@@ -80,6 +83,8 @@ void BallBalance_Init(void)
     BallBalance_TuneVelocityKiDegPerMM =
         BALL_BALANCE_VELOCITY_KI_DEG_PER_MM;
     BallBalance_TuneMaxVelocityMMps = BALL_BALANCE_MAX_VELOCITY_MMPS;
+    BallBalance_TuneFeedforwardDegPerMMps2 =
+        BALL_BALANCE_FEEDFORWARD_DEG_PER_MMPS2;
 }
 
 BallBalance_Result_t BallBalance_Start(float targetMM)
@@ -122,6 +127,8 @@ void BallBalance_Update(float dt)
     float errorMM;
     float velocityErrorMMps;
     float tiltDeg;
+    float chassisAccelMMps2;
+    float feedforwardDeg;
 
     if (s_context.state != BALL_BALANCE_STATE_RUNNING)
     {
@@ -166,10 +173,16 @@ void BallBalance_Update(float dt)
         s_context.velocityIntegralMM,
         BALL_BALANCE_VELOCITY_INTEGRAL_LIMIT_MM);
 
+    /* PID control */
     tiltDeg =
         (BallBalance_TuneVelocityKpDegPerMMps * velocityErrorMMps) +
         (BallBalance_TuneVelocityKiDegPerMM *
          s_context.velocityIntegralMM);
+
+    /* Chassis acceleration feedforward compensation */
+    chassisAccelMMps2 = MotionLine_GetProfileAccelerationMMps2();
+    feedforwardDeg = chassisAccelMMps2 * BallBalance_TuneFeedforwardDegPerMMps2;
+    tiltDeg += feedforwardDeg;
 
     s_context.tiltCommandDeg = tiltDeg;
     BeamActuator_SetTiltDeg(tiltDeg);

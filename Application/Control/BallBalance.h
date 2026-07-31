@@ -12,16 +12,19 @@
  *     velocity_target = position_Kp * (target - position)
  *     tilt = velocity_Kp * (velocity_target - measured_velocity)
  *          + velocity_Ki * integral(velocity_target - measured_velocity)
+ *          + feedforward_coeff * chassis_acceleration
  *
- * No chassis acceleration feedforward and no generated O->+5->-5 task are
- * used here. BeamActuator owns the conversion from tilt angle to stepper
- * angle, gear ratio, zero offset, direction and soft limits.
+ * Chassis acceleration feedforward compensates for vehicle acceleration to
+ * reduce ball position disturbance during startup and speed changes.
+ * BeamActuator owns the conversion from tilt angle to stepper angle, gear
+ * ratio, zero offset, direction and soft limits.
  */
 
 #define BALL_BALANCE_POSITION_KP_PER_S          2.0f
 #define BALL_BALANCE_VELOCITY_KP_DEG_PER_MMPS   0.25f
 #define BALL_BALANCE_VELOCITY_KI_DEG_PER_MM     0.20f
 #define BALL_BALANCE_MAX_VELOCITY_MMPS          150.0f
+#define BALL_BALANCE_FEEDFORWARD_DEG_PER_MMPS2  0.02f
 
 #define BALL_BALANCE_VELOCITY_INTEGRAL_LIMIT_MM 400.0f
 
@@ -36,6 +39,7 @@ extern float BallBalance_TunePositionKpPerS;
 extern float BallBalance_TuneVelocityKpDegPerMMps;
 extern float BallBalance_TuneVelocityKiDegPerMM;
 extern float BallBalance_TuneMaxVelocityMMps;
+extern float BallBalance_TuneFeedforwardDegPerMMps2;
 
 typedef enum
 {

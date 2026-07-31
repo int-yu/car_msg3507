@@ -159,6 +159,7 @@ PARAM_VAR_ACCESSORS(BallKp, BallBalance_TunePositionKpPerS)
 PARAM_VAR_ACCESSORS(BallKi, BallBalance_TuneVelocityKiDegPerMM)
 PARAM_VAR_ACCESSORS(BallKd, BallBalance_TuneVelocityKpDegPerMMps)
 PARAM_VAR_ACCESSORS(BallMaxVelocity, BallBalance_TuneMaxVelocityMMps)
+PARAM_VAR_ACCESSORS(BallFeedforward, BallBalance_TuneFeedforwardDegPerMMps2)
 PARAM_VAR_ACCESSORS(BallHalfLength, BallSensor_TuneHalfLengthMM)
 PARAM_VAR_ACCESSORS(BeamGearRatio, BeamActuator_TuneGearRatio)
 PARAM_VAR_ACCESSORS(BeamZeroOffset, BeamActuator_TuneZeroOffsetDeg)
@@ -255,6 +256,8 @@ static const Param_Entry_t s_params[] = {
       Param_SetLegacyLineCurveHoldDistance, 100.0f, 5000.0f },
     { "bvm", Param_GetBallMaxVelocity, Param_SetBallMaxVelocity,
       10.0f, 500.0f },
+    { "bff", Param_GetBallFeedforward, Param_SetBallFeedforward,
+      0.0f, 0.1f },
     /* 巡线现在只有统一 PID，不再暴露弯道低速参数。 */
     { "lki", Param_GetLineKi, Param_SetLineKi, 0.0f, 50.0f },
 };

@@ -1,5 +1,6 @@
 #include "Application/Control/BallSequence.h"
 #include "Application/Control/BallBalance.h"
+#include "Application/Control/TaskTimer.h"
 #include "tests/host/test_assert.h"
 
 static BallBalance_State_t s_balanceState;
@@ -60,6 +61,7 @@ uint8_t BallBalance_IsStable(void) { return s_stable; }
 
 static void reset_fakes(void)
 {
+    TaskTimer_Init();
     s_balanceState = BALL_BALANCE_STATE_IDLE;
     s_balanceError = BALL_BALANCE_ERROR_NONE;
     s_startResult = BALL_BALANCE_RESULT_OK;
@@ -141,6 +143,7 @@ static void test_sweep_reverses_without_waiting_for_stability(void)
 {
     reset_fakes();
     CHECK(BallSequence_StartSweep() != 0U);
+    TaskTimer_Start(TASK_TIMER_OWNER_BALL);
     CHECK(BallSequence_GetState() ==
           BALL_SEQUENCE_STATE_SWEEP_TO_NEGATIVE);
     CHECK_NEAR(s_targetMM, -50.0f, 0.001f);
@@ -166,16 +169,19 @@ static void test_sweep_reverses_without_waiting_for_stability(void)
           BALL_SEQUENCE_STATE_SWEEP_HOLDING_POSITIVE);
     CHECK(BallSequence_IsActive() != 0U);
     CHECK(s_stopCount == 0U);
+    CHECK(TaskTimer_IsRunning() == 0U);
 }
 
 static void test_retarget_cancels_active_sweep(void)
 {
     reset_fakes();
     CHECK(BallSequence_StartSweep() != 0U);
+    TaskTimer_Start(TASK_TIMER_OWNER_BALL);
     CHECK(BallSequence_SetTarget(0.0f) != 0U);
 
     CHECK(BallSequence_GetState() == BALL_SEQUENCE_STATE_HOLDING);
     CHECK_NEAR(s_targetMM, 0.0f, 0.001f);
+    CHECK(TaskTimer_IsRunning() == 0U);
 }
 
 static void test_idle_hold_rejects_retarget(void)

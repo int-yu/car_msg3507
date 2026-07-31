@@ -203,7 +203,7 @@ void Main26H_Run(void)
             BallHold_Update(updateContext.dt);
             Telemetry_Update(updateContext.elapsedTicks, updateContext.pressedKeys);
             BeamActuator_Update(updateContext.dt);
-            DebugDisplay_Update(updateContext.elapsedTicks);
+            DebugDisplay_Update();
         }
     }
 }

@@ -10,6 +10,9 @@ const app = read('Application/Core/App.c');
 const task = read('Accomplish/26H.c');
 const taskHeader = read('Accomplish/26H.h');
 const line = read('Application/Control/MotionLine.c');
+const timer = read('Application/Control/TaskTimer.c');
+const timerHeader = read('Application/Control/TaskTimer.h');
+const makeDefs = read('makefile.defs');
 const param = read('Application/Debug/Param.c');
 const display = read('Application/Debug/DebugDisplay.c');
 const displayHeader = read('Application/Debug/DebugDisplay.h');
@@ -58,7 +61,7 @@ assert.match(main, /Telemetry_Update\(updateContext\.elapsedTicks,[\s\S]*?update
     'telemetry sampling must happen after the task controllers in main');
 assert.match(main, /BeamActuator_Update\(updateContext\.dt\);/,
     'main.c must apply the latest ball-task target to the stepper actuator');
-assert.match(main, /DebugDisplay_Update\(updateContext\.elapsedTicks\);/,
+assert.match(main, /DebugDisplay_Update\(\);/,
     'main.c must keep the minimal OLED time display refresh');
 assert.match(main, /Main_StartOrRetargetBallTask\([\s\S]*?BALL_SEQUENCE_DEFAULT_TARGET_MM/,
     'KEY1 must start or retarget ball hold to 0 mm');
@@ -118,6 +121,13 @@ for (const name of [
 }
 assert.ok(task.includes('Accomplish26H_SnapshotParameters()'),
     '26H must snapshot Param values only when KEY1 starts a new run');
+assert.ok(timer.includes('TaskTimer_Start') && timer.includes('TaskTimer_Stop'),
+    'task timer must expose reusable start and stop operations');
+assert.ok(timerHeader.includes('TASK_TIMER_OWNER_LINE') &&
+          timerHeader.includes('TASK_TIMER_OWNER_BALL'),
+    'task timer must distinguish line and ball owners');
+assert.ok(makeDefs.includes('Application/Control/TaskTimer.c'),
+    'CCS generated builds must include the task timer module');
 
 assert.ok(line.includes('MotionLine_SetSpeed'),
     'MotionLine must support in-place speed changes without PID reset');

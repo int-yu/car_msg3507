@@ -1,5 +1,6 @@
 #include "Accomplish/26H.h"
 #include "Application/Control/MotionManager.h"
+#include "Application/Control/TaskTimer.h"
 #include "Application/State/Odometry.h"
 #include "Hardware/Sensors/Graydetect.h"
 #include <limits.h>
@@ -149,6 +150,7 @@ static void Accomplish26H_Fail(Accomplish26H_Error_t error)
 {
     /* 传感器/控制故障时以安全停车优先；正常终点不走这里。 */
     MotionManager_Stop();
+    TaskTimer_Stop(TASK_TIMER_OWNER_LINE);
     s_timing = 0U;
     s_error = error;
     s_state = ACCOMPLISH_26H_STATE_ERROR;
@@ -174,6 +176,7 @@ static uint8_t Accomplish26H_LineIsHealthy(void)
 static void Accomplish26H_BeginSoftStop(
     Accomplish26H_Error_t finishError)
 {
+    TaskTimer_Stop(TASK_TIMER_OWNER_LINE);
     if (MotionManager_RequestLineStop() != MOTION_MANAGER_RESULT_OK)
     {
         Accomplish26H_Fail(ACCOMPLISH_26H_ERROR_MOTION);
@@ -187,6 +190,7 @@ static void Accomplish26H_BeginSoftStop(
 static void Accomplish26H_BeginBrakeStop(
     Accomplish26H_Error_t finishError)
 {
+    TaskTimer_Stop(TASK_TIMER_OWNER_LINE);
     if (MotionManager_StartBrake() != MOTION_MANAGER_RESULT_OK)
     {
         Accomplish26H_Fail(ACCOMPLISH_26H_ERROR_MOTION);
@@ -224,6 +228,7 @@ static void Accomplish26H_Start(void)
 
     s_elapsedTicks = 0U;
     s_timing = 1U;
+    TaskTimer_Start(TASK_TIMER_OWNER_LINE);
     s_error = ACCOMPLISH_26H_ERROR_NONE;
     s_startDistanceMM = Odometry_GetDistanceMM();
     s_markerDistanceMM = 0.0f;
@@ -419,6 +424,7 @@ void Accomplish26H_Update(const App_UpdateContext_t *context)
          (context->bluetoothSignal == 0U)))
     {
         MotionManager_Stop();
+        TaskTimer_Stop(TASK_TIMER_OWNER_LINE);
         s_timing = 0U;
         s_error = ACCOMPLISH_26H_ERROR_EMERGENCY_STOP;
         s_state = ACCOMPLISH_26H_STATE_ERROR;

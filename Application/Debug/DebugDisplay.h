@@ -3,9 +3,7 @@
 
 #include <stdint.h>
 
-#define DEBUG_DISPLAY_REFRESH_TICKS 100U
-
 void DebugDisplay_Init(void);
-void DebugDisplay_Update(uint8_t elapsedTicks);
+void DebugDisplay_Update(void);
 
 #endif

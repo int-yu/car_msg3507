@@ -1,0 +1,12 @@
+# Project-owned additions to the CCS generated build.
+# Keep this conditional because a refreshed CCS workspace may discover the
+# source itself and add it to the generated lists.
+ifeq ($(findstring TaskTimer.o,$(OBJS)),)
+C_SRCS += ../Application/Control/TaskTimer.c
+C_DEPS += ./Application/Control/TaskTimer.d
+OBJS += ./Application/Control/TaskTimer.o
+endif
+
+ifeq ($(findstring TaskTimer.o,$(ORDERED_OBJS)),)
+ORDERED_OBJS := "./Application/Control/TaskTimer.o" $(ORDERED_OBJS)
+endif
