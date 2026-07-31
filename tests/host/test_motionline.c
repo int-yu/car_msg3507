@@ -58,11 +58,9 @@ static void reset_fakes(void)
     s_lastCommand.targetSpeedRMMps = 0.0f;
     s_lastCommand.trimLPWM = 0.0f;
     s_lastCommand.trimRPWM = 0.0f;
-    MotionLine_TuneMaxAdjustRatio = MOTION_LINE_MAX_ADJUST_RATIO;
-    MotionLine_TuneWeightKd = 0.0f;
-    MotionLine_TuneCurveSpeedMMps = MOTION_LINE_CURVE_SPEED_MMPS;
-    MotionLine_TuneCurveHoldDistanceMM =
-        MOTION_LINE_CURVE_HOLD_DISTANCE_MM;
+    MotionLine_TuneKpMMpsPerWeight = MOTION_LINE_KP_MMPS_PER_WEIGHT;
+    MotionLine_TuneKiMMpsPerWeight = MOTION_LINE_KI_MMPS_PER_WEIGHT;
+    MotionLine_TuneKdMMpsPerWeight = 0.0f;
     MotionLine_TuneAccelerationMMps2 = MOTION_LINE_ACCELERATION_MMPS2;
     MotionLine_TuneDecelerationMMps2 = MOTION_LINE_DECELERATION_MMPS2;
 }
@@ -162,16 +160,7 @@ static void test_ir_side_controls_the_matching_wheel(void)
     CHECK(MotionLine_GetProfileSpeedMMps() <=
           speedBefore + MOTION_LINE_ACCELERATION_MMPS2 * 0.01f + 0.001f);
     CHECK(s_lastCommand.targetSpeedLMMps < s_lastCommand.targetSpeedRMMps);
-    CHECK((s_lastCommand.targetSpeedRMMps -
-           s_lastCommand.targetSpeedLMMps) <=
-          (2.0f * MOTION_LINE_MAX_ADJUST_RATE_MMPS2 * 0.01f + 0.001f));
-
-    for (index = 0U; index < 100U; index++)
-    {
-        MotionLine_Update(0.01f);
-    }
-    CHECK(MotionLine_GetProfileSpeedMMps() <=
-          450.0f * MOTION_LINE_CURVE_MIN_SPEED_RATIO + 0.1f);
+    CHECK(MotionLine_GetProfileSpeedMMps() >= speedBefore - 0.001f);
 
     reset_fakes();
     init_and_start(450.0f);
@@ -232,50 +221,32 @@ static void test_line_loss_is_confirmed_quickly(void)
     CHECK(s_wheelStopCount >= 1U);
 }
 
-static void test_curve_speed_is_held_until_encoder_distance(void)
+static void test_no_curve_or_pressure_speed_reduction(void)
 {
     uint8_t index;
 
     reset_fakes();
-    MotionLine_TuneCurveSpeedMMps = 400.0f;
-    MotionLine_TuneCurveHoldDistanceMM = 1500.0f;
     init_and_start(450.0f);
 
-    for (index = 0U; index < 200U; index++)
+    for (index = 0U; index < 160U; index++)
     {
         MotionLine_Update(0.01f);
     }
-    CHECK(MotionLine_GetProfileSpeedMMps() > 400.0f);
+    CHECK_NEAR(MotionLine_GetProfileSpeedMMps(), 450.0f, 0.001f);
 
-    /* CH2 连续三拍进入低速区；全程仍使用同一套 lra/lkd。 */
     s_grayState = 0x02U;
-    for (index = 0U; index < MOTION_LINE_CURVE_ENTRY_CONFIRM_TICKS; index++)
-    {
-        MotionLine_Update(0.01f);
-    }
-    CHECK(MotionLine_GetPathState() == MOTION_LINE_PATH_CURVE);
-
-    /* 红外回中不能让车在弧线中提前提速。 */
-    s_grayState = 0x0CU;
     for (index = 0U; index < 100U; index++)
     {
         MotionLine_Update(0.01f);
     }
-    CHECK(MotionLine_GetPathState() == MOTION_LINE_PATH_CURVE);
-    CHECK_NEAR(MotionLine_GetProfileSpeedMMps(), 400.0f, 0.1f);
+    CHECK_NEAR(MotionLine_GetProfileSpeedMMps(), 450.0f, 0.001f);
 
-    s_distanceMM = 1499.9f;
-    MotionLine_Update(0.01f);
-    CHECK(MotionLine_GetPathState() == MOTION_LINE_PATH_CURVE);
-    s_distanceMM = 1500.0f;
-    MotionLine_Update(0.01f);
-    CHECK(MotionLine_GetPathState() == MOTION_LINE_PATH_STRAIGHT);
-
-    for (index = 0U; index < 20U; index++)
+    s_grayState = 0x01U;
+    for (index = 0U; index < 100U; index++)
     {
         MotionLine_Update(0.01f);
     }
-    CHECK(MotionLine_GetProfileSpeedMMps() > 400.0f);
+    CHECK_NEAR(MotionLine_GetProfileSpeedMMps(), 450.0f, 0.001f);
 }
 
 int main(void)
@@ -286,7 +257,7 @@ int main(void)
     test_ir_side_controls_the_matching_wheel();
     test_finish_speed_and_stop_remain_continuous();
     test_line_loss_is_confirmed_quickly();
-    test_curve_speed_is_held_until_encoder_distance();
+    test_no_curve_or_pressure_speed_reduction();
 
     if (s_failures == 0)
     {

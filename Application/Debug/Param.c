@@ -120,13 +120,10 @@ PARAM_VAR_APPLY_ACCESSORS(StraightKp, MotionStraight_TuneHeadingKp,
 PARAM_VAR_APPLY_ACCESSORS(StraightKd, MotionStraight_TuneHeadingKd,
                           MotionStraight_ApplyHeadingTunings)
 PARAM_VAR_ACCESSORS(StraightAcceleration, MotionStraight_TuneAccelerationMMps2)
-PARAM_VAR_ACCESSORS(LineRatio, MotionLine_TuneMaxAdjustRatio)
-PARAM_VAR_ACCESSORS(LineWeightKd, MotionLine_TuneWeightKd)
+PARAM_VAR_ACCESSORS(LineKp, MotionLine_TuneKpMMpsPerWeight)
+PARAM_VAR_ACCESSORS(LineKi, MotionLine_TuneKiMMpsPerWeight)
+PARAM_VAR_ACCESSORS(LineKd, MotionLine_TuneKdMMpsPerWeight)
 /* K46/K47 已发布，保留为单套巡线 P/D 的兼容别名。 */
-PARAM_VAR_ACCESSORS(LineCurveRatio, MotionLine_TuneMaxAdjustRatio)
-PARAM_VAR_ACCESSORS(LineCurveWeightKd, MotionLine_TuneWeightKd)
-PARAM_VAR_ACCESSORS(LineCurveSpeed, MotionLine_TuneCurveSpeedMMps)
-PARAM_VAR_ACCESSORS(LineCurveHoldDistance, MotionLine_TuneCurveHoldDistanceMM)
 PARAM_VAR_ACCESSORS(LaneKp, MotionLane_TuneKp)
 PARAM_VAR_ACCESSORS(LaneKdYaw, MotionLane_TuneKdYaw)
 PARAM_VAR_ACCESSORS(LaneRatio, MotionLane_TuneMaxAdjustRatio)
@@ -178,8 +175,8 @@ static const Param_Entry_t s_params[] = {
     { "skd", Param_GetStraightKd, Param_SetStraightKd, 0.0f, 50.0f },
     { "sac", Param_GetStraightAcceleration, Param_SetStraightAcceleration,
       10.0f, 5000.0f },
-    { "lra", Param_GetLineRatio, Param_SetLineRatio, 0.01f, 1.0f },
-    { "lkd", Param_GetLineWeightKd, Param_SetLineWeightKd, 0.0f, 100.0f },
+    { "lra", Param_GetLineKp, Param_SetLineKp, 0.0f, 200.0f },
+    { "lkd", Param_GetLineKd, Param_SetLineKd, 0.0f, 200.0f },
     { "nvx", Param_GetNavMaxSpeed, Param_SetNavMaxSpeed, 10.0f, 500.0f },
     { "nvn", Param_GetNavMinSpeed, Param_SetNavMinSpeed, 1.0f, 500.0f },
     { "nsa", Param_GetNavSlowdownAngle, Param_SetNavSlowdownAngle,
@@ -220,9 +217,9 @@ static const Param_Entry_t s_params[] = {
       STEPPER_MIN_ANGLE_DEG, STEPPER_MAX_ANGLE_DEG },
     /* 要求 2 仍沿用既有 26H 阶段；这些值只在下一次 KEY1 启动时快照。 */
     { "h2cru", Param_GetH2CruiseSpeed, Param_SetH2CruiseSpeed,
-      20.0f, 1000.0f },
+      20.0f, 2000.0f },
     { "h2fin", Param_GetH2FinishSpeed, Param_SetH2FinishSpeed,
-      10.0f, 1000.0f },
+      10.0f, 2000.0f },
     { "h2clr", Param_GetH2StartClear, Param_SetH2StartClear,
       0.0f, 1000.0f },
     { "h2lap", Param_GetH2NominalLap, Param_SetH2NominalLap,
@@ -238,15 +235,8 @@ static const Param_Entry_t s_params[] = {
     { "ldec", Param_GetLineDeceleration, Param_SetLineDeceleration,
       10.0f, 5000.0f },
     /* 要求 4 保持 O 点，追加在表尾，保持既有 id 不变。增益仍用 bkp/bkd。 */
-    /* K46/K47 是已发布的直线 P/D 兼容别名；弧线仅控制低速速度和保持距离。 */
-    { "lcra", Param_GetLineCurveRatio, Param_SetLineCurveRatio,
-      0.01f, 1.0f },
-    { "lckd", Param_GetLineCurveWeightKd, Param_SetLineCurveWeightKd,
-      0.0f, 100.0f },
-    { "lcv", Param_GetLineCurveSpeed, Param_SetLineCurveSpeed,
-      20.0f, 1000.0f },
-    { "lch", Param_GetLineCurveHoldDistance,
-      Param_SetLineCurveHoldDistance, 100.0f, 5000.0f },
+    /* 巡线现在只有统一 PID，不再暴露弯道低速参数。 */
+    { "lki", Param_GetLineKi, Param_SetLineKi, 0.0f, 50.0f },
 };
 
 #define PARAM_COUNT (sizeof(s_params) / sizeof(s_params[0]))

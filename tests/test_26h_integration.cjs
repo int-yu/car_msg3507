@@ -116,29 +116,27 @@ assert.ok(line.includes('MotionLine_RequestStop'),
     'MotionLine must support a zero-speed soft-stop request');
 assert.ok(line.includes('MOTION_LINE_ACCELERATION_MMPS2'),
     'MotionLine must ramp cruise speed');
-assert.ok(line.includes('MOTION_LINE_MAX_ADJUST_RATE_MMPS2'),
-    'MotionLine must limit correction-rate steps');
+assert.ok(line.includes('PID_Update'),
+    'MotionLine must use one PID controller for line correction');
 assert.ok(line.includes('MotionLine_SnapshotTunings()'),
     'MotionLine must snapshot acceleration/deceleration at Start');
-assert.match(line, /Odometry_GetDistanceMM|Application\/State\/Odometry\.h/,
-    'MotionLine must use encoder odometry to measure the curve hold distance');
-assert.ok(line.includes('MOTION_LINE_CURVE_TRIGGER_MASK'),
-    'MotionLine must use CH2/CH5 as the curve-entry signal');
-assert.ok(line.includes('MOTION_LINE_CURVE_HOLD_DISTANCE_MM') &&
-          line.includes('curveEntryDistanceMM'),
-    'MotionLine must exit the low-speed arc zone after the configured encoder distance');
-assert.ok(line.includes('MotionLine_TuneCurveSpeedMMps'),
-    'MotionLine must snapshot the curve speed limit');
+assert.doesNotMatch(line,
+    /MOTION_LINE_MAX_ADJUST_RATE_MMPS2|MOTION_LINE_CURVE|curveEntryDistanceMM|MotionLine_TuneCurve/,
+    'MotionLine must not keep the old curve speed or correction-rate limits');
+assert.match(line, /MotionLine_TuneKpMMpsPerWeight[\s\S]*MotionLine_TuneKiMMpsPerWeight[\s\S]*MotionLine_TuneKdMMpsPerWeight/,
+    'MotionLine must expose one PID parameter set');
 
 assert.ok(param.includes('"h2off"'),
     'K parameter table must expose the H2 parking-offset calibration');
 for (const name of [
     'h2cru', 'h2fin', 'h2clr', 'h2lap', 'h2app', 'h2arm', 'h2max',
-    'lacc', 'ldec', 'lcra', 'lckd', 'lcv', 'lch',
+    'lacc', 'ldec', 'lra', 'lki', 'lkd',
 ]) {
     assert.ok(param.includes(`{ "${name}"`),
         `K parameter table must append ${name}`);
 }
+assert.doesNotMatch(param, /"lcra"|"lckd"|"lcv"|"lch"/,
+    'K parameter table must not expose removed curve-speed controls');
 assert.doesNotMatch(task + read('Application/Control/MotionManager.h') +
     read('Application/Control/MotionManager.c'), /SetLineDeceleration/,
     'H2 must keep the existing MotionLine control path without a runtime deceleration setter');
