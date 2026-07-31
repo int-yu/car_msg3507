@@ -4,6 +4,7 @@
 #include "Application/Control/BeamActuator.h"
 #include "Application/Control/MotionManager.h"
 #include "Application/Control/TaskTimer.h"
+#include "Application/Control/TimedLineRun.h"
 #include "Application/Core/App.h"
 #include "Application/Debug/DebugDisplay.h"
 #include "Application/Debug/Telemetry.h"
@@ -14,6 +15,7 @@
 
 #define MAIN_LINE_START_KEY_MASK  0x01U
 #define MAIN_BALL_START_KEY_MASK  0x02U
+#define MAIN_TIMED_LINE_START_KEY_MASK 0x04U
 #define MAIN_EMERGENCY_CHORD_MASK (0x01U | 0x02U)
 #define MAIN_BALL_START_SIGNAL 3U
 #define MAIN_BALL_STOP_SIGNAL  4U
@@ -91,9 +93,11 @@ static uint8_t Main_LineCanStart(void)
 {
     Accomplish26H_State_t state = Accomplish26H_GetState();
 
-    return ((state == ACCOMPLISH_26H_STATE_READY) ||
-            (state == ACCOMPLISH_26H_STATE_FINISHED) ||
-            (state == ACCOMPLISH_26H_STATE_ERROR)) ? 1U : 0U;
+    return ((((state == ACCOMPLISH_26H_STATE_READY) ||
+              (state == ACCOMPLISH_26H_STATE_FINISHED) ||
+              (state == ACCOMPLISH_26H_STATE_ERROR))) &&
+            (TimedLineRun_IsActive() == 0U) &&
+            (TimedLineRun_CanStart() != 0U)) ? 1U : 0U;
 }
 
 int main(void)
@@ -102,6 +106,7 @@ int main(void)
 
     App_Init();
     Accomplish26H_Init();
+    TimedLineRun_Init();
     BallSequence_Init();
     s_ballTargetMM = BALL_SEQUENCE_DEFAULT_TARGET_MM;
     Interrupt_Enable();
@@ -119,6 +124,9 @@ int main(void)
             uint8_t lineStartKeyPressed =
                 ((updateContext.pressedEdges &
                   MAIN_LINE_START_KEY_MASK) != 0U) ? 1U : 0U;
+            uint8_t timedLineStartKeyPressed =
+                ((updateContext.pressedEdges &
+                  MAIN_TIMED_LINE_START_KEY_MASK) != 0U) ? 1U : 0U;
             uint8_t ballStartKeyPressed =
                 ((updateContext.pressedEdges &
                   MAIN_BALL_START_KEY_MASK) != 0U) ? 1U : 0U;
@@ -154,6 +162,23 @@ int main(void)
             }
 
             Accomplish26H_Update(&updateContext);
+
+            if ((timedLineStartKeyPressed != 0U) &&
+                (Main_LineCanStart() != 0U))
+            {
+                s_ballTargetMM = BALL_SEQUENCE_DEFAULT_TARGET_MM;
+                if ((startAllowed != 0U) &&
+                    (ballStopRequested == 0U) &&
+                    (Main_StartOrRetargetBallTask(
+                         BALL_SEQUENCE_DEFAULT_TARGET_MM) != 0U) &&
+                    (TimedLineRun_Start() == 0U))
+                {
+                    BallSequence_Stop();
+                    Serial1_SendString("ERR KEY3 LINE START\r\n");
+                }
+            }
+
+            TimedLineRun_Update(&updateContext);
 
             if (ballStopRequested != 0U)
             {

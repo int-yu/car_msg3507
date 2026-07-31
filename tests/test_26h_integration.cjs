@@ -9,6 +9,8 @@ const main = read('main.c');
 const app = read('Application/Core/App.c');
 const task = read('Accomplish/26H.c');
 const taskHeader = read('Accomplish/26H.h');
+const timedLine = read('Application/Control/TimedLineRun.c');
+const timedLineHeader = read('Application/Control/TimedLineRun.h');
 const line = read('Application/Control/MotionLine.c');
 const timer = read('Application/Control/TaskTimer.c');
 const timerHeader = read('Application/Control/TaskTimer.h');
@@ -43,6 +45,14 @@ assert.match(main, /MAIN_BALL_START_KEY_MASK\s+0x02U/,
     'KEY2 must remain the physical ball-sweep start key');
 assert.match(main, /MAIN_LINE_START_KEY_MASK\s+0x01U/,
     'KEY1 must remain the line-run start key');
+assert.match(main, /MAIN_TIMED_LINE_START_KEY_MASK\s+0x04U/,
+    'KEY3 must start the timed line run');
+assert.match(main, /TimedLineRun_Init\(\);/,
+    'main must initialize the KEY3 timed line controller');
+assert.match(main, /TimedLineRun_Start\(\)/,
+    'main must dispatch the KEY3 edge to the timed line controller');
+assert.match(main, /TimedLineRun_Update\(&updateContext\);/,
+    'main must update the KEY3 timed line controller every valid tick');
 assert.match(main, /MAIN_EMERGENCY_CHORD_MASK \(0x01U \| 0x02U\)/,
     'main.c must protect KEY1+KEY2 as the emergency chord');
 assert.match(main, /BallSequence_Init\(\);/,
@@ -56,7 +66,7 @@ assert.match(main,
     /Main_HasSignal\(&updateContext, MAIN_BALL_STOP_SIGNAL\)/,
     'C4 must still stop the ball task');
 assert.doesNotMatch(main, /BallHold|MAIN_HOLD|AutoStart|BALL_AUTO/,
-    'active main flow must not load the old KEY3/auto ball flows');
+    'active main flow must not restore the old KEY3 ball-hold flow');
 assert.match(main, /Telemetry_Update\(updateContext\.elapsedTicks,[\s\S]*?updateContext\.pressedKeys\);/,
     'telemetry sampling must happen after the task controllers in main');
 assert.match(main, /BeamActuator_Update\(updateContext\.dt\);/,
@@ -121,6 +131,20 @@ for (const name of [
 }
 assert.ok(task.includes('Accomplish26H_SnapshotParameters()'),
     '26H must snapshot Param values only when KEY1 starts a new run');
+assert.doesNotMatch(task, /KEY3|TimedLineRun/,
+    'Accomplish26H must remain the KEY1 total-task controller');
+assert.match(timedLineHeader, /TIMED_LINE_RUN_ACCELERATION_MMPS2\s+100\.0f/,
+    'KEY3 default acceleration must be 100 mm/s2');
+assert.match(timedLineHeader, /TIMED_LINE_RUN_CRUISE_SPEED_MMPS\s+400\.0f/,
+    'KEY3 default cruise speed must be 400 mm/s');
+assert.match(timedLineHeader, /TIMED_LINE_RUN_DURATION_SECONDS\s+30\.0f/,
+    'KEY3 timed run must default to 30 seconds');
+assert.ok(timedLine.includes('TimedLineRun_TuneAccelerationMMps2') &&
+          timedLine.includes('TimedLineRun_TuneCruiseSpeedMMps'),
+    'KEY3 acceleration and cruise speed must remain field-tunable');
+assert.doesNotMatch(timedLine,
+    /FinishMarker|MARKER|NominalLap|SetLineSpeed|StartBrake/,
+    'KEY3 controller must not contain finish slowdown, marker, or distance-stop logic');
 assert.ok(timer.includes('TaskTimer_Start') && timer.includes('TaskTimer_Stop'),
     'task timer must expose reusable start and stop operations');
 assert.ok(timerHeader.includes('TASK_TIMER_OWNER_LINE') &&
@@ -128,6 +152,8 @@ assert.ok(timerHeader.includes('TASK_TIMER_OWNER_LINE') &&
     'task timer must distinguish line and ball owners');
 assert.ok(makeDefs.includes('Application/Control/TaskTimer.c'),
     'CCS generated builds must include the task timer module');
+assert.ok(makeDefs.includes('Application/Control/TimedLineRun.c'),
+    'CCS generated builds must include the KEY3 timed line module');
 
 assert.ok(line.includes('MotionLine_SetSpeed'),
     'MotionLine must support in-place speed changes without PID reset');
@@ -150,6 +176,7 @@ assert.ok(param.includes('"h2off"'),
 for (const name of [
     'h2cru', 'h2fin', 'h2clr', 'h2lap', 'h2app', 'h2arm', 'h2max',
     'lacc', 'ldec', 'lra', 'lki', 'lkd',
+    'k3acc', 'k3cru', 'k3dur',
 ]) {
     assert.ok(param.includes(`{ "${name}"`),
         `K parameter table must append ${name}`);

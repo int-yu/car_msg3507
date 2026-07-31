@@ -59,7 +59,7 @@
 | PB11 | GPIO 输入、上拉 | KEY2 | 低电平按下，按键位图 bit1；当前主流程中单独按下启动要求3摆球任务，与KEY1同时按下为物理急停 |
 | PB12 | GPIO 输出 | MS42CG EN | 高电平使能 |
 | PB13 | TIMG12 CCP0 捕获 | MS42CG 绝对角 PWM | MT6816 单圈绝对角 |
-| PB14 | GPIO 输入、上拉 | KEY3 | 低电平按下，按键位图 bit2；App 生成按下沿事件，具体含义由 Mission 决定 |
+| PB14 | GPIO 输入、上拉 | KEY3 | 低电平按下，按键位图 bit2；启动 30 秒定时巡线，不执行 KEY1 的终点减速和终点停车逻辑 |
 | PB15 | TIMG8 CCP0 | 右电机 PWM | TB6612 A 通道，20 kHz；由 MotionManager 当前模式经 MotionWheel 输出 |
 | PB16 | TIMG8 CCP1 | 左电机 PWM | TB6612 B 通道，20 kHz；由 MotionManager 当前模式经 MotionWheel 输出 |
 | PB17 | GPIO 输出 | 蜂鸣器 | 低电平有效 |
@@ -86,11 +86,13 @@
 
 六路红外资源已经恢复为 `PA25=SDA、PA14=SCL`，但只有完整 26H 入口中的 `App_Init()` 会初始化并采样它们。
 
-当前 `main.c` 入口启用 PC/网页链路、K230Link、六路红外、MPU6050、舵机、底盘和步进摆杆。`KEY1` 保留为 H 题要求 2 的单圈巡线启动键，`KEY2` 保留为要求3摆球启动键，`KEY1+KEY2` 同时按下保持原有物理急停逻辑。
+当前 `main.c` 入口启用 PC/网页链路、K230Link、六路红外、MPU6050、舵机、底盘和步进摆杆。`KEY1` 保留为 H 题要求 2 的单圈巡线启动键，`KEY2` 保留为要求3摆球启动键，`KEY3` 启动不识别终点的 30 秒定时巡线，`KEY1+KEY2` 同时按下保持原有物理急停逻辑。
 
 ### 3.2 100 Hz 主循环与 26H 单圈巡线
 
 完整26H模式加载`Accomplish/26H.c`独立控制器，实现H题要求2。KEY1在READY、完成或错误后按下时清零累计Tick并启动平滑巡线。正常巡线的左右差速由六路红外权重 PID 生成；里程计路程大于 `ACCOMPLISH_26H_FINISH_MARKER_ARM_DISTANCE_MM`（默认 1700 mm）后，若六路灰度中至少 3 路同时检测到黑线并连续维持 `ACCOMPLISH_26H_MARKER_CONFIRM_TICKS`（默认 2）个 100 Hz 节拍，立即进入 `MotionManager_StartBrake()` 主动刹车并在静止确认后冻结计时。**KEY1+KEY2 同时按下**为物理急停。
+
+KEY3 由 `main.c` 像 KEY2 一样直接分发给 `Application/Control/TimedLineRun`，不进入 `Accomplish/26H` 总任务。它复用同一套六路红外 `MotionLine` 巡线与 O 点摆球保持，默认以 `100 mm/s²` 加速到 `400 mm/s`，运行 30 秒后请求软停。KEY3 控制器不读取终点横线、不切换终点慢速，也不按圈长或最大里程停车。`k3acc`、`k3cru` 和 `k3dur` 可通过 K 参数或网页“KEY3 定时巡线”阶段调整，并在下一次 KEY3 启动时快照。
 
 当前 KEY1 测试入口的停车触发点由 `K42`（`h2arm`，单位 mm）控制，初值为 1700 mm；该距离以前即使检测到 3 路以上黑线也不会触发终点。`K30`（`h2off`）仍作为保留的停车偏移参数参与启动快照，但当前终点条件满足后直接主动刹车，不再用它延后巡线软停。
 
@@ -468,6 +470,7 @@ OLED默认只显示上电运行时间；K230钢球物理位置和步进 PWM 绝�
 | `Application/Mission/Mission.c/.h` | 通用任务执行层 | 校验并执行静态状态图、回调和有序转换 |
 | `Accomplish/25E.c/.h` | 题目状态图 | 25E 参数、状态、回调和转换表 |
 | `Accomplish/26H.c/.h` | 当前题目控制器 | KEY1 启动单圈巡线、A 点终点软停、100 Hz 整数计时和组合急停冻结 |
+| `Application/Control/TimedLineRun.c/.h` | KEY3 定时巡线控制器 | 独立快照加速度、巡航速度与运行时长；30 秒后软停，不含终点逻辑 |
 | `Application/Control/BallSequence.c/.h` | 要求 3 摆球任务 | KEY2/C3 手动启动目标位置保持，C4停止与视觉失效保护 |
 | `Accomplish/25H.c/.h` | 保留题目状态图 | KEY1 启动的巡线、150 mm 直行和连续绝对左转循环 |
 | `Accomplish/Brushless_Motor_Test.c/.h` | 可选测试状态图 | F32C 双轴多圈位置循环测试；当前未加载 |
@@ -477,7 +480,7 @@ OLED默认只显示上电运行时间；K230钢球物理位置和步进 PWM 绝�
 
 | 文件 | 类型 | 职责 |
 |---|---|---|
-| `main.c` | C 源文件 | 当前唯一运行入口；KEY1启动26H巡线、KEY2/C3启动摆球、KEY1+KEY2/C0急停 |
+| `main.c` | C 源文件 | 当前唯一运行入口；KEY1启动26H总任务、KEY2/C3启动摆球、KEY3启动定时巡线、KEY1+KEY2/C0急停 |
 | `Application/Core/Main26H.c/.h` | C 源文件 / 头文件 | 旧完整26H包装入口，保留在工程中但当前不由 `main.c` 调用 |
 | `main.syscfg` | TI SysConfig | 时钟、PinMux、GPIO、UART、I2C、PWM 和 SysTick 配置 |
 | `.project`、`.cproject`、`.settings/` | CCS 元数据 | 工程、编译器、SDK 和 IDE 配置 |

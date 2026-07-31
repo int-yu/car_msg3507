@@ -42,6 +42,15 @@ gcc $CFLAGS \
     -o "$OUT/test_motionline.exe"
 "$OUT/test_motionline.exe"
 
+echo "--- test_timedlinerun ---"
+gcc $CFLAGS \
+    "$ROOT/tests/host/test_timedlinerun.c" \
+    "$ROOT/Application/Control/TimedLineRun.c" \
+    "$ROOT/Application/Control/TaskTimer.c" \
+    -lm \
+    -o "$OUT/test_timedlinerun.exe"
+"$OUT/test_timedlinerun.exe"
+
 echo "--- test_ballsensor ---"
 gcc $CFLAGS \
     "$ROOT/tests/host/test_ballsensor.c" \

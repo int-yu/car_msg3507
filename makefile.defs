@@ -10,3 +10,13 @@ endif
 ifeq ($(findstring TaskTimer.o,$(ORDERED_OBJS)),)
 ORDERED_OBJS := "./Application/Control/TaskTimer.o" $(ORDERED_OBJS)
 endif
+
+ifeq ($(findstring TimedLineRun.o,$(OBJS)),)
+C_SRCS += ../Application/Control/TimedLineRun.c
+C_DEPS += ./Application/Control/TimedLineRun.d
+OBJS += ./Application/Control/TimedLineRun.o
+endif
+
+ifeq ($(findstring TimedLineRun.o,$(ORDERED_OBJS)),)
+ORDERED_OBJS := "./Application/Control/TimedLineRun.o" $(ORDERED_OBJS)
+endif
