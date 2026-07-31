@@ -1,4 +1,5 @@
 #include "Accomplish/26H.h"
+#include "Application/Comms/BluetoothDebug.h"
 #include "Application/Control/BallSequence.h"
 #include "Application/Control/BeamActuator.h"
 #include "Application/Control/MotionManager.h"
@@ -22,7 +23,7 @@ static uint8_t Main_HasSignal(const App_UpdateContext_t *context,
             (context->bluetoothSignal == signal)) ? 1U : 0U;
 }
 
-static uint8_t Main_StartBallTask(void)
+static uint8_t Main_StartBallTask(float targetMM)
 {
     if (MotionManager_IsBusy() != 0U)
     {
@@ -34,7 +35,7 @@ static uint8_t Main_StartBallTask(void)
         Serial1_SendString("ERR BALL BUSY\r\n");
         return 0U;
     }
-    if (BallSequence_Start(BALL_SEQUENCE_DEFAULT_TARGET_MM) == 0U)
+    if (BallSequence_Start(targetMM) == 0U)
     {
         Serial1_SendString("ERR BALL VISION\r\n");
         return 0U;
@@ -68,6 +69,12 @@ int main(void)
                  ((updateContext.pressedKeys &
                    MAIN_EMERGENCY_CHORD_MASK) !=
                   MAIN_EMERGENCY_CHORD_MASK)) ? 1U : 0U;
+            float ballTargetMM = BALL_SEQUENCE_DEFAULT_TARGET_MM;
+
+            if (ballStartRequested != 0U)
+            {
+                (void)BluetoothDebug_TakeBallTargetMM(&ballTargetMM);
+            }
 
             Accomplish26H_Update(&updateContext);
 
@@ -81,7 +88,7 @@ int main(void)
                         MAIN_BALL_START_KEY_MASK) != 0U) ||
                       (ballStartRequested != 0U)))
             {
-                (void)Main_StartBallTask();
+                (void)Main_StartBallTask(ballTargetMM);
             }
 
             BallSequence_Update(updateContext.dt);

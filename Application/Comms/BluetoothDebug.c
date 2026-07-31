@@ -38,6 +38,8 @@ static int16_t s_rightCommand;
 static uint8_t s_manualMotorEnabled;
 static uint8_t s_signalPending;
 static uint8_t s_pendingSignal;
+static uint8_t s_ballTargetPending;
+static float s_ballTargetMM;
 static int16_t s_debugSpeedMMps;
 
 static uint8_t BluetoothDebug_IsCommand(char value)
@@ -52,7 +54,7 @@ static uint8_t BluetoothDebug_IsCommand(char value)
             (value == 'K') || (value == 'W') || (value == 'N') ||
             (value == 'H') ||
             (value == 'E') || (value == 'Y') ||
-            (value == 'Q') || (value == 'J')) ? 1U : 0U;
+            (value == 'Q') || (value == 'J') || (value == 'X')) ? 1U : 0U;
 }
 
 static uint8_t BluetoothDebug_IsTerminator(char value)
@@ -371,6 +373,10 @@ static void BluetoothDebug_ExecuteCommand(void)
             }
             else
             {
+                if (s_parser.magnitude != 3)
+                {
+                    s_ballTargetPending = 0U;
+                }
                 if (BluetoothDebug_PublishSignal(
                         (uint8_t)s_parser.magnitude) != 0U)
                 {
@@ -382,6 +388,12 @@ static void BluetoothDebug_ExecuteCommand(void)
                     Serial1_SendString("ERR STOP PENDING\r\n");
                 }
             }
+            break;
+
+        case 'X':
+            s_ballTargetMM = (float)value;
+            s_ballTargetPending = 1U;
+            Serial1_Printf("OK X=%d\r\n", (int)value);
             break;
 
         case 'O':
@@ -744,8 +756,8 @@ static void BluetoothDebug_ExecuteCommand(void)
         case 'Q':
             /* 上位机据此自适应频率，不再各存一份阈值。数值本身与 M/G 无关，
              * 任何参数都接受，一律回报当前状态。
-             * 板载捕获（原 X 命令）已移除：二进制 + DMA 后实时流本身就是
-             * 100 Hz 无损，24 KB 捕获缓冲只剩下挤爆 RAM 这一个作用。
+             * 原 X 板载捕获已移除；X 现用于携带要求3目标位置。二进制 + DMA
+             * 后实时流本身就是 100 Hz 无损，24 KB 捕获缓冲只会挤爆 RAM。
              * CAPST/CAPN/CAPMAX 三个字段一并撤掉，网页按缺省处理即可。 */
             Serial1_Printf(
                 "OK Q MAX=%u MASK=%lu RATE=%u\r\n",
@@ -944,6 +956,8 @@ void BluetoothDebug_Init(void)
     s_manualMotorEnabled = 1U;
     s_signalPending = 0U;
     s_pendingSignal = 0U;
+    s_ballTargetPending = 0U;
+    s_ballTargetMM = 0.0f;
     s_debugSpeedMMps = BLUETOOTH_DEBUG_DEFAULT_SPEED_MMPS;
     Motor_StopAll();
     Serial1_SendString(
@@ -1036,6 +1050,18 @@ uint8_t BluetoothDebug_PopSignal(uint8_t *signal)
 
     *signal = s_pendingSignal;
     s_signalPending = 0U;
+    return 1U;
+}
+
+uint8_t BluetoothDebug_TakeBallTargetMM(float *targetMM)
+{
+    if ((targetMM == NULL) || (s_ballTargetPending == 0U))
+    {
+        return 0U;
+    }
+
+    *targetMM = s_ballTargetMM;
+    s_ballTargetPending = 0U;
     return 1U;
 }
 

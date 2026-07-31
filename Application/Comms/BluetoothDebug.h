@@ -18,6 +18,7 @@ void BluetoothDebug_Init(void);
 void BluetoothDebug_Update(uint8_t elapsedTicks,
                            uint8_t manualMotorEnabled);
 uint8_t BluetoothDebug_PopSignal(uint8_t *signal);
+uint8_t BluetoothDebug_TakeBallTargetMM(float *targetMM);
 int16_t BluetoothDebug_GetLeftCommand(void);
 int16_t BluetoothDebug_GetRightCommand(void);
 /* 从机把 CarLink 转发来的 ASCII 命令喂进解析器，复用全部现有命令。 */

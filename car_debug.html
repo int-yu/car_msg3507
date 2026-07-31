@@ -746,6 +746,8 @@ kbd {
         <div class="panel" id="ballTaskPanel">
             <h2>摆杆滚球 <small>KEY2 / KEY3 等效任务</small></h2>
             <div class="row">
+                <label for="ballTargetMM">目标 mm</label>
+                <input type="number" id="ballTargetMM" value="0" step="1" style="width:64px">
                 <button type="button" id="btnBallVideoRun" class="primary" disabled>要求3 运行并记录</button>
                 <button type="button" id="btnBallVideoStop" disabled>回中停止 C4</button>
             </div>
@@ -2024,9 +2026,12 @@ const SESSIONS = {
         expectation: '正常压线时 gray 不应长时间全 0；CH2/CH5 连续 3 拍后进入弧线，lerr 仅显示巡线修正，TL/TR 差速方向正确，LV/RV 轮速 MAE 较小，弧线基准速度受 lcv 限制',
     },
     ball: {
-        label: '要求3摆球', mask: CH.bpos | CH.sang,
-        fixedAmp: 50, ampVisible: false, timed: true, durDefault: 5, rate: 100,
-        excite: () => 'C3', stopCmd: 'C4', startReply: 'OK BALL START',
+        label: '要求3摆球', mask: CH.bpos | CH.bref | CH.sang,
+        ampLabel: '目标位置 mm', ampDefault: 0,
+        timed: true, durDefault: 5, rate: 100,
+        targetCommand: (target) => 'X' + Math.round(target),
+        excite: () => 'C3',
+        stopCmd: 'C4', startReply: 'OK BALL START',
         stopReply: 'OK BALL STOP',
         params: ['bgr', 'bzo', 'bhl', 'bkp', 'bkd', 'bki'],
         structure: 'K230 球位 -> PID(bkp,bki,bkd) -> 摆杆倾角 -> 齿轮比(bgr)+零偏(bzo) -> 步进；C3 当前默认保持 O 点 0 mm，不使用前馈',
@@ -4018,6 +4023,11 @@ async function startSession() {
     $('sessStatus').textContent = `试验进行中：${excitation}（直启，指标使用实时流）…`;
 
     try {
+        if (p.targetCommand) {
+            const targetCommand = p.targetCommand(amp);
+            await sendAndWait(targetCommand,
+                (line) => line === `OK X=${Math.round(amp)}`);
+        }
         await sendAndWait(excitation, excitationReplyMatcher(p, amp));
     } catch (err) {
         await stopSession('激励失败：' + err.message, true);
@@ -5529,6 +5539,7 @@ $('btnBallVideoRun').onclick = async () => {
     }
     try {
         await selectFocusLoop('ball', true);
+        $('sessAmp').value = $('ballTargetMM').value;
         await startSession();
     } catch (err) {
         log('要求3启动准备失败：' + err.message, 'err');

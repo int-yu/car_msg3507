@@ -11,12 +11,14 @@ const app = read('Application/Core/App.c');
 const telemetry = read('Application/Debug/Telemetry.c');
 const telemetryHeader = read('Application/Debug/Telemetry.h');
 const param = read('Application/Debug/Param.c');
+const bluetooth = read('Application/Comms/BluetoothDebug.c');
+const bluetoothHeader = read('Application/Comms/BluetoothDebug.h');
 const readme = read('README.md');
 
 for (const required of [
     '#define MAIN_BALL_START_SIGNAL 3U',
     '#define MAIN_BALL_STOP_SIGNAL  4U',
-    'static uint8_t Main_StartBallTask(void)',
+    'static uint8_t Main_StartBallTask(float targetMM)',
     'OK BALL START',
     'ERR BALL VISION',
     'ERR BALL CAR BUSY',
@@ -32,6 +34,10 @@ assert.match(main,
 assert.match(main,
     /Main_HasSignal\(&updateContext, MAIN_BALL_STOP_SIGNAL\)/,
     'C4 must stop and recenter the ball task');
+assert.ok(main.includes('BluetoothDebug_TakeBallTargetMM(&ballTargetMM)'),
+    'targeted X command must pass its requested position to the ball task');
+assert.ok(main.includes('BallSequence_Start(targetMM)'),
+    'ball task must start with the selected target position');
 assert.doesNotMatch(main, /MAIN26H_BALL_AUTO_START_ENABLED|AutoStart|BallHold|MAIN_HOLD/,
     'current main flow must not auto-start or load the old hold task');
 assert.doesNotMatch(app, /Telemetry_Update\(/,
@@ -63,6 +69,7 @@ for (const required of [
     'id="ballTaskPanel"',
     'id="btnBallVideoRun"',
     'id="btnBallVideoStop"',
+    'id="ballTargetMM"',
     'data-ball-field="position"',
     'data-ball-field="stepperAngle"',
     'data-ball-marker="position"',
@@ -70,14 +77,34 @@ for (const required of [
     'bref: 0x8000',
     'sang: 0x10000',
     'const CH_ALL = 0x1FFFF',
+    "ampLabel: '目标位置 mm'",
+    'mask: CH.bpos | CH.bref | CH.sang',
+    "targetCommand: (target) => 'X' + Math.round(target)",
     "excite: () => 'C3'",
     "stopCmd: 'C4'",
     'function computeBallMetrics(',
     'function renderBallMonitor(',
     'function selectFocusLoop(',
+    "$('sessAmp').value = $('ballTargetMM').value",
+    'if (p.targetCommand)',
 ]) {
     assert.ok(html.includes(required), `car_debug.html missing ${required}`);
 }
+
+for (const required of [
+    "(value == 'X')",
+    "case 'X':",
+    'BluetoothDebug_TakeBallTargetMM',
+]) {
+    assert.ok(bluetooth.includes(required),
+        `BluetoothDebug.c missing targeted ball command support: ${required}`);
+}
+assert.doesNotMatch(bluetooth,
+    /case 'X':[^]*?BluetoothDebug_PublishSignal\(3U\)[^]*?break;/,
+    'X must only store the ball target and must not publish a vehicle event');
+assert.ok(bluetoothHeader.includes(
+    'uint8_t BluetoothDebug_TakeBallTargetMM(float *targetMM);'),
+    'BluetoothDebug.h must expose the one-shot ball target');
 
 for (const name of ['bgr', 'bzo', 'bhl', 'bki', 'bkd', 'bkp']) {
     assert.ok(html.includes(`${name}:`),

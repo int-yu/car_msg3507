@@ -1,6 +1,7 @@
 #include "Application/Core/Main26H.h"
 
 #include "Accomplish/26H.h"
+#include "Application/Comms/BluetoothDebug.h"
 #include "Application/Control/BallHold.h"
 #include "Application/Control/BallSensor.h"
 #include "Application/Control/BallSequence.h"
@@ -35,7 +36,7 @@ static uint8_t Main26H_BallIsActive(void)
     return BallSequence_IsActive();
 }
 
-static uint8_t Main26H_ReportBallStart(void)
+static uint8_t Main26H_ReportBallStart(float targetMM)
 {
     if (MotionManager_IsBusy() != 0U)
     {
@@ -48,7 +49,7 @@ static uint8_t Main26H_ReportBallStart(void)
         Serial1_SendString("ERR BALL BUSY\r\n");
         return 0U;
     }
-    if (BallSequence_Start(BALL_SEQUENCE_DEFAULT_TARGET_MM) == 0U)
+    if (BallSequence_Start(targetMM) == 0U)
     {
         Serial1_SendString("ERR BALL VISION\r\n");
         return 0U;
@@ -140,6 +141,12 @@ void Main26H_Run(void)
                  ((updateContext.pressedKeys &
                    MAIN_EMERGENCY_CHORD_MASK) !=
                   MAIN_EMERGENCY_CHORD_MASK)) ? 1U : 0U;
+            float ballTargetMM = BALL_SEQUENCE_DEFAULT_TARGET_MM;
+
+            if (ballStartRequested != 0U)
+            {
+                (void)BluetoothDebug_TakeBallTargetMM(&ballTargetMM);
+            }
 
             Accomplish26H_Update(&updateContext);
 
@@ -160,7 +167,7 @@ void Main26H_Run(void)
                       (ballStartRequested != 0U)))
             {
                 s_ballAutoStartPending = 0U;
-                (void)Main26H_ReportBallStart();
+                (void)Main26H_ReportBallStart(ballTargetMM);
             }
 
             if (holdStopRequested != 0U)
@@ -180,7 +187,8 @@ void Main26H_Run(void)
                 (startAllowed != 0U) &&
                 (holdStartRequested == 0U) &&
                 (Main26H_AutoStartIsReady() != 0U) &&
-                (Main26H_ReportBallStart() != 0U))
+                (Main26H_ReportBallStart(
+                     BALL_SEQUENCE_DEFAULT_TARGET_MM) != 0U))
             {
                 s_ballAutoStartPending = 0U;
             }
