@@ -16,6 +16,7 @@ static MotionManager_Result_t s_startResult;
 static uint16_t s_startLineCount;
 static uint16_t s_setSpeedCount;
 static uint16_t s_requestStopCount;
+static uint16_t s_startBrakeCount;
 static uint16_t s_stopCount;
 static float s_startLineSpeedMMps;
 static float s_lastLineSpeedMMps;
@@ -63,6 +64,17 @@ MotionManager_Result_t MotionManager_RequestLineStop(void)
     return MOTION_MANAGER_RESULT_OK;
 }
 
+MotionManager_Result_t MotionManager_StartBrake(void)
+{
+    s_startBrakeCount++;
+    MotionManager_Stop();
+    s_motionMode = MOTION_MANAGER_MODE_BRAKE;
+    s_motionBusy = 1U;
+    s_motionFinished = 0U;
+    s_motionError = MOTION_MANAGER_ERROR_NONE;
+    return MOTION_MANAGER_RESULT_OK;
+}
+
 void MotionManager_Stop(void)
 {
     s_stopCount++;
@@ -92,6 +104,7 @@ static void reset_fakes(void)
     s_startLineCount = 0U;
     s_setSpeedCount = 0U;
     s_requestStopCount = 0U;
+    s_startBrakeCount = 0U;
     s_stopCount = 0U;
     s_startLineSpeedMMps = 0.0f;
     s_lastLineSpeedMMps = 0.0f;
@@ -160,7 +173,7 @@ static void test_parameters_are_snapshotted_at_key1_start(void)
     Accomplish26H_TuneStartClearDistanceMM = 120.0f;
     Accomplish26H_TuneNominalLapDistanceMM = 6200.0f;
     Accomplish26H_TuneFinishApproachDistanceMM = 500.0f;
-    Accomplish26H_TuneFinishMarkerArmDistanceMM = 6100.0f;
+    Accomplish26H_TuneFinishMarkerArmDistanceMM = 1700.0f;
     Accomplish26H_TuneMaxLapDistanceMM = 6800.0f;
     Accomplish26H_TuneFinishRolloutMM = 40.0f;
     Accomplish26H_Init();
@@ -193,20 +206,12 @@ static void test_parameters_are_snapshotted_at_key1_start(void)
     CHECK(s_setSpeedCount == 1U);
     CHECK_NEAR(s_lastLineSpeedMMps, 180.0f, 0.001f);
 
-    s_distanceMM = 6100.0f;
+    s_distanceMM = 1701.0f;
     s_lineState = 0x3FU;
     Accomplish26H_Update(&context);
     Accomplish26H_Update(&context);
-    Accomplish26H_Update(&context);
-    CHECK(Accomplish26H_GetState() ==
-          ACCOMPLISH_26H_STATE_FINISH_ROLLOUT);
-
-    s_distanceMM = 6139.0f;
-    Accomplish26H_Update(&context);
-    CHECK(s_requestStopCount == 0U);
-    s_distanceMM = 6140.0f;
-    Accomplish26H_Update(&context);
-    CHECK(s_requestStopCount == 1U);
+    CHECK(s_startBrakeCount == 1U);
+    CHECK(Accomplish26H_GetState() == ACCOMPLISH_26H_STATE_SOFT_STOP);
 }
 
 static void test_next_key1_uses_new_parameters(void)
@@ -275,7 +280,7 @@ static void test_finish_approach_slows_before_marker(void)
                ACCOMPLISH_26H_FINISH_CRAWL_SPEED_MMPS, 0.001f);
 }
 
-static void test_marker_soft_stops_then_settles_before_freezing_time(void)
+static void test_marker_brakes_then_settles_before_freezing_time(void)
 {
     App_UpdateContext_t context = make_context(1U, 0U);
 
@@ -284,22 +289,15 @@ static void test_marker_soft_stops_then_settles_before_freezing_time(void)
     start_one_lap();
     leave_start_line();
 
-    s_distanceMM = ACCOMPLISH_26H_NOMINAL_LAP_DISTANCE_MM;
+    s_distanceMM = ACCOMPLISH_26H_FINISH_MARKER_ARM_DISTANCE_MM + 1.0f;
     s_lineState = 0x3FU;
     Accomplish26H_Update(&context);
     CHECK(Accomplish26H_GetState() == ACCOMPLISH_26H_STATE_RUNNING);
 
     Accomplish26H_Update(&context);
-    CHECK(Accomplish26H_GetState() == ACCOMPLISH_26H_STATE_RUNNING);
-
-    Accomplish26H_Update(&context);
-    CHECK(Accomplish26H_GetState() ==
-          ACCOMPLISH_26H_STATE_FINISH_ROLLOUT);
-
-    Accomplish26H_Update(&context);
-    CHECK(s_requestStopCount == 1U);
-    CHECK(Accomplish26H_GetState() ==
-          ACCOMPLISH_26H_STATE_SOFT_STOP);
+    CHECK(s_startBrakeCount == 1U);
+    CHECK(s_requestStopCount == 0U);
+    CHECK(Accomplish26H_GetState() == ACCOMPLISH_26H_STATE_SOFT_STOP);
 
     s_motionBusy = 0U;
     s_motionFinished = 1U;
@@ -316,7 +314,7 @@ static void test_marker_soft_stops_then_settles_before_freezing_time(void)
     CHECK(Accomplish26H_GetError() == ACCOMPLISH_26H_ERROR_NONE);
 }
 
-static void test_marker_requires_three_consecutive_three_or_more_channel_samples(void)
+static void test_marker_requires_two_consecutive_three_or_more_channel_samples(void)
 {
     App_UpdateContext_t context = make_context(1U, 0U);
 
@@ -325,10 +323,9 @@ static void test_marker_requires_three_consecutive_three_or_more_channel_samples
     start_one_lap();
     leave_start_line();
 
-    s_distanceMM = ACCOMPLISH_26H_NOMINAL_LAP_DISTANCE_MM;
+    s_distanceMM = ACCOMPLISH_26H_FINISH_MARKER_ARM_DISTANCE_MM + 1.0f;
     /* 任意三个通道压线都可作为终点横线，不要求相邻或六路全黑。 */
     s_lineState = 0x25U;
-    Accomplish26H_Update(&context);
     Accomplish26H_Update(&context);
     CHECK(Accomplish26H_GetState() == ACCOMPLISH_26H_STATE_RUNNING);
 
@@ -339,12 +336,11 @@ static void test_marker_requires_three_consecutive_three_or_more_channel_samples
     s_lineState = 0x25U;
     Accomplish26H_Update(&context);
     Accomplish26H_Update(&context);
-    Accomplish26H_Update(&context);
-    CHECK(Accomplish26H_GetState() ==
-          ACCOMPLISH_26H_STATE_FINISH_ROLLOUT);
+    CHECK(s_startBrakeCount == 1U);
+    CHECK(Accomplish26H_GetState() == ACCOMPLISH_26H_STATE_SOFT_STOP);
 }
 
-static void test_marker_is_ignored_before_finish_approach(void)
+static void test_marker_is_ignored_until_distance_is_greater_than_threshold(void)
 {
     App_UpdateContext_t context = make_context(1U, 0U);
 
@@ -353,12 +349,13 @@ static void test_marker_is_ignored_before_finish_approach(void)
     start_one_lap();
     leave_start_line();
 
-    s_distanceMM = ACCOMPLISH_26H_FINISH_MARKER_ARM_DISTANCE_MM - 1.0f;
+    s_distanceMM = ACCOMPLISH_26H_FINISH_MARKER_ARM_DISTANCE_MM;
     s_lineState = 0x3FU;
     Accomplish26H_Update(&context);
     Accomplish26H_Update(&context);
     Accomplish26H_Update(&context);
     CHECK(Accomplish26H_GetState() == ACCOMPLISH_26H_STATE_RUNNING);
+    CHECK(s_startBrakeCount == 0U);
 }
 
 static void test_time_limit_freezes_timer_and_soft_stops(void)
@@ -427,9 +424,9 @@ int main(void)
     test_invalid_stage_configuration_is_rejected_before_motion();
     test_start_line_is_left_before_finish_is_armed();
     test_finish_approach_slows_before_marker();
-    test_marker_soft_stops_then_settles_before_freezing_time();
-    test_marker_requires_three_consecutive_three_or_more_channel_samples();
-    test_marker_is_ignored_before_finish_approach();
+    test_marker_brakes_then_settles_before_freezing_time();
+    test_marker_requires_two_consecutive_three_or_more_channel_samples();
+    test_marker_is_ignored_until_distance_is_greater_than_threshold();
     test_time_limit_freezes_timer_and_soft_stops();
     test_sensor_offline_stops_without_blind_run();
     test_key_chord_stops_and_freezes();

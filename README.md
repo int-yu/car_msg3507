@@ -90,9 +90,9 @@
 
 ### 3.2 100 Hz 主循环与 26H 单圈巡线
 
-完整26H模式加载`Accomplish/26H.c`独立控制器，实现H题要求2。KEY1在READY、完成或错误后按下时清零累计Tick并启动平滑巡线。正常巡线的左右差速由六路红外权重P/D生成；回到A点前平滑降速，确认横向启停线后软停并冻结计时。**KEY1+KEY2 同时按下**为物理急停。
+完整26H模式加载`Accomplish/26H.c`独立控制器，实现H题要求2。KEY1在READY、完成或错误后按下时清零累计Tick并启动平滑巡线。正常巡线的左右差速由六路红外权重 PID 生成；里程计路程大于 `ACCOMPLISH_26H_FINISH_MARKER_ARM_DISTANCE_MM`（默认 1700 mm）后，若六路灰度中至少 3 路同时检测到黑线并连续维持 `ACCOMPLISH_26H_MARKER_CONFIRM_TICKS`（默认 2）个 100 Hz 节拍，立即进入 `MotionManager_StartBrake()` 主动刹车并在静止确认后冻结计时。**KEY1+KEY2 同时按下**为物理急停。
 
-题面 A 点是一条垂直于环线、长 5 cm 的黑色启停线，停车误差按车身指定测试点相对于该线中心的距离判定，而不是红外条的位置。`K30`（`h2off`，单位 mm）控制“首次确认横线后，继续巡线多少距离再开始软停”；其初值为 0，必须在实车上标定。车停在基准线之前就增大 `K30`，停过基准线就减小它；完成标定后把稳定值写回 `ACCOMPLISH_26H_FINISH_ROLLOUT_MM`。
+当前 KEY1 测试入口的停车触发点由 `K42`（`h2arm`，单位 mm）控制，初值为 1700 mm；该距离以前即使检测到 3 路以上黑线也不会触发终点。`K30`（`h2off`）仍作为保留的停车偏移参数参与启动快照，但当前终点条件满足后直接主动刹车，不再用它延后巡线软停。
 
 `App_Init()` 继续初始化并校准 MPU6050，`App_Update()` 继续更新 Heading 和里程，并在此后采样一次六路红外状态；保留的航向运动和调试命令仍可使用。OLED不再显示MPU校准、巡线、按键、编码器或钢球页面，只显示上电运行时间。
 
@@ -289,8 +289,8 @@ Heading -> Odometry -> 六路红外 -> Stepper -> Key -> K230Link -> BallSensor
 | 6 | `skp` | `MOTION_STRAIGHT_HEADING_KP` | PWM/° | 0~100 |
 | 7 | `skd` | `MOTION_STRAIGHT_HEADING_KD` | PWM/(°/s) | 0~50 |
 | 8 | `sac` | `MOTION_STRAIGHT_ACCELERATION_MMPS2` | mm/s² | 10~5000 |
-| 9 | `lra` | `MOTION_LINE_MAX_ADJUST_RATIO` | 比例 | 0.01~1 |
-| 10 | `lkd` | `MotionLine_TuneWeightKd`（新增，默认 0） | mm/s 每 权重/s | 0~100 |
+| 9 | `lra` | `MotionLine_TuneKpMMpsPerWeight` | mm/s 每 权重 | 0~200 |
+| 10 | `lkd` | `MotionLine_TuneKdMMpsPerWeight` | mm/s 每 权重/s | 0~200 |
 | 11 | `nvx` | `NAV_MAX_TURN_SPEED_MMPS` | mm/s | 10~500 |
 | 12 | `nvn` | `NAV_MIN_TURN_SPEED_MMPS` | mm/s | 1~500 |
 | 13 | `nsa` | `NAV_SLOWDOWN_ANGLE_DEG` | ° | 5~180 |
@@ -316,9 +316,9 @@ Heading -> Odometry -> 六路红外 -> Stepper -> Key -> K230Link -> BallSensor
 | 33 | `bki` | `BallBalance_TuneKi` | 度/(mm·s) | 0~0.2 |
 | 34 | `bhl` | `BallSensor_TuneHalfLengthMM` | mm | 50~200 |
 | 35 | `bgr` | `BeamActuator_TuneGearRatio` | 倍 | 0.1~50 |
-| 36 | `bzo` | `BeamActuator_TuneZeroOffsetDeg` | 度 | 79~300 |
-| 37 | `h2cru` | `Accomplish26H_TuneCruiseSpeedMMps` | mm/s | 20~1000 |
-| 38 | `h2fin` | `Accomplish26H_TuneFinishCrawlSpeedMMps` | mm/s | 10~1000 |
+| 36 | `bzo` | `BeamActuator_TuneZeroOffsetDeg` | 度 | 106~309 |
+| 37 | `h2cru` | `Accomplish26H_TuneCruiseSpeedMMps` | mm/s | 20~2000 |
+| 38 | `h2fin` | `Accomplish26H_TuneFinishCrawlSpeedMMps` | mm/s | 10~2000 |
 | 39 | `h2clr` | `Accomplish26H_TuneStartClearDistanceMM` | mm | 0~1000 |
 | 40 | `h2lap` | `Accomplish26H_TuneNominalLapDistanceMM` | mm | 1000~20000 |
 | 41 | `h2app` | `Accomplish26H_TuneFinishApproachDistanceMM` | mm | 0~5000 |
@@ -326,12 +326,9 @@ Heading -> Odometry -> 六路红外 -> Stepper -> Key -> K230Link -> BallSensor
 | 43 | `h2max` | `Accomplish26H_TuneMaxLapDistanceMM` | mm | 1000~25000 |
 | 44 | `lacc` | `MotionLine_TuneAccelerationMMps2` | mm/s² | 10~5000 |
 | 45 | `ldec` | `MotionLine_TuneDecelerationMMps2` | mm/s² | 10~5000 |
-| 46 | `lcra` | `MotionLine_TuneMaxAdjustRatio`（兼容别名） | 比例 | 0.01~1 |
-| 47 | `lckd` | `MotionLine_TuneWeightKd`（兼容别名） | mm/s 每 权重/s | 0~100 |
-| 48 | `lcv` | `MotionLine_TuneCurveSpeedMMps` | mm/s | 20~1000 |
-| 49 | `lch` | `MotionLine_TuneCurveHoldDistanceMM` | mm | 100~5000 |
+| 46 | `lki` | `MotionLine_TuneKiMMpsPerWeight` | mm/s 每 权重·s | 0~50 |
 
-id 一经发布不得重排，新增参数只能在尾部追加。K1~K5 为旧上位机保留：写入会同时覆盖左右轮，读取返回两侧当前值的平均数；新调参应使用 K17~K26 分别设置左右轮。基础前馈公式为 `PWMbase = speed×ff + sign(speed)×sf`，再叠加该轮 PI 与上层 trim，最终夹到 ±1000。K37~K49 与 `h2off`、`lra`、`lkd` 都在下一次 KEY1/N 启动时快照，当前运行中写入不会切换本圈参数；`lcra/lckd` 为向后一致保留的 `lra/lkd` 别名，巡线始终只有一套 P/D。`lcv` 是入弯后固定的低速上限，编码器从减速区入口累计 `lch` 后才允许恢复巡航。`ldec` 沿用 MotionLine 现有统一减速度，同时负责终点降速和最终软停，不增加额外状态机配置。`gsc` 由 `E1`→原地转 N 圈→`Y<n>` 标定流程自动写入；`cpm` 建议用网页里程标定向导。
+id 一经发布不得重排，新增参数只能在尾部追加。K1~K5 为旧上位机保留：写入会同时覆盖左右轮，读取返回两侧当前值的平均数；新调参应使用 K17~K26 分别设置左右轮。基础前馈公式为 `PWMbase = speed×ff + sign(speed)×sf`，再叠加该轮 PI 与上层 trim，最终夹到 ±1000；这是底层轮速环标定，不属于巡线层额外前馈。K37~K46 与 `h2off`、`lra`、`lki`、`lkd` 都在下一次 KEY1/N 启动时快照，当前运行中写入不会切换本圈参数。巡线层只保留统一 PID，不再有弯道低速上限、压线降速、差速变化率限幅或弯道保持距离。`ldec` 沿用 MotionLine 统一减速度，同时负责终点降速和最终软停，不增加额外状态机配置。`gsc` 由 `E1`→原地转 N 圈→`Y<n>` 标定流程自动写入；`cpm` 建议用网页里程标定向导。
 
 K31~K36 是要求 3 摆球的标定量，**全部为未实测的初值**，必须按下面顺序在实车上标定，每轮只改一个：先 `bgr`（实测齿轮比）和 `bzo`（摆杆水平零点），再 `bhl`（钢球放 0/±25/±50 mm 处读数反推半杆长），然后调 `bkp` 让钢球能回目标，调 `bkd` 压住过冲和往复。`bki` 默认 0，只有确认 P/D 已经调顺且仍存在稳定偏差时才小量加入；第一轮测试建议继续保持 0。
 
@@ -755,11 +752,16 @@ float MotionWheel_GetTargetSpeedR(void);
 ### 5.5 `Application/Control/MotionLine.h`
 
 ```c
-extern float MotionLine_TuneMaxAdjustRatio;
-extern float MotionLine_TuneWeightKd;
+extern float MotionLine_TuneKpMMpsPerWeight;
+extern float MotionLine_TuneKiMMpsPerWeight;
+extern float MotionLine_TuneKdMMpsPerWeight;
+extern float MotionLine_TuneAccelerationMMps2;
+extern float MotionLine_TuneDecelerationMMps2;
 
 MotionLine_Result_t MotionLine_Init(void);
 MotionLine_Result_t MotionLine_Start(float speedMMps);
+MotionLine_Result_t MotionLine_SetSpeed(float speedMMps);
+MotionLine_Result_t MotionLine_RequestStop(void);
 void MotionLine_Update(float dt);
 void MotionLine_Stop(void);
 uint8_t MotionLine_IsConfigured(void);
@@ -768,9 +770,11 @@ uint8_t MotionLine_IsFinished(void);
 MotionLine_State_t MotionLine_GetState(void);
 MotionLine_Error_t MotionLine_GetError(void);
 float MotionLine_GetLineError(void);
+float MotionLine_GetProfileSpeedMMps(void);
+float MotionLine_GetProfileAccelerationMMps2(void);
 ```
 
-`MotionLine_GetLineError()` 当前返回最近一次有效六路红外状态位图得到的离散权重，范围为 `-6~+6`，它不再是 PID 输入误差。四个 `Tune` 变量由 `MotionLine_Start()` 一次性快照：最大调整比例、权重变化率阻尼、统一加速度和统一减速度；运行中写入只影响下一次启动，差速修正总量仍限制在 ±巡航速度内。
+`MotionLine_GetLineError()` 返回六路红外加权平均并低通后的 PID 输入误差，范围约为 `-6~+6`。`MotionLine_Start()` 一次性快照 `lra/lki/lkd/lacc/ldec`：运行中继续写 K 只影响下一次启动。巡线层不再区分直道和弯道，不再按压线程度降低基准速度，也不再使用上层前馈或差速变化率限幅；左右轮目标速度为 `profileSpeed ± PID(lerr)`，最终 PWM 只由公共轮速层限制。
 
 ### 5.6 `Application/Control/Nav.h`
 
@@ -882,7 +886,7 @@ Accomplish26H_State_t Accomplish26H_GetState(void);
 Accomplish26H_Error_t Accomplish26H_GetError(void);
 ```
 
-这些接口实现当前独立单圈控制器，不经过 Mission；`main.c`调用初始化和更新接口，累计Tick通过遥测读取。正常状态依次为READY、离开A、巡线、终点后软停和低速确认；I2C离线、丢线/控制错误、超出最大圈长、急停或静止超时会进入ERROR。
+这些接口实现当前独立单圈控制器，不经过 Mission；`main.c`调用初始化和更新接口，累计Tick通过遥测读取。正常状态依次为READY、离开起点、巡线、终点主动刹车和低速确认；I2C离线、丢线/控制错误、超出最大圈长、急停或静止超时会进入ERROR。
 
 ### 5.6.6 `Accomplish/Test.h`
 
@@ -1055,7 +1059,7 @@ const Mission_GraphDefinition_t *BrushlessMotorTest_GetMissionGraph(void); /* �
 | `MotionStraight.h` | `MOTION_STRAIGHT_*` | 见 6.2 | 航向 PD、直线速度规划、减速起点比例和距离允许误差 |
 | `MotionManager.h` | `MOTION_MANAGER_BRAKE_*` / `MOTION_MANAGER_SPEED_MAX_MMPS` | 见 6.2.1 | 定距软停后的 PWM 释放与短暂主动刹车时间；W 恒速调试模式速度上限 |
 | `MotionWheel.h` | `MOTION_WHEEL_*` | 见 6.1 | MotionStraight、MotionLine 与 Nav 共用的速度 PI、前馈和 PWM 限幅 |
-| `MotionLine.h` | `MOTION_LINE_*` | 见 6.3 | 六路权重滤波、曲线限速、加减速度、差速限变化率和丢线确认节拍 |
+| `MotionLine.h` | `MOTION_LINE_*` | 见 6.3 | 六路权重滤波、统一 PID、加减速度和丢线确认节拍 |
 | `Accomplish/25E.h` | `ACCOMPLISH_25E_*` | 见 6.5 | 25E 启动按键、直线距离与速度、入线确认、巡线速度和转向参数 |
 | `Accomplish/25H.h` | `ACCOMPLISH_25H_*` | 见 6.6 | 25H 启动按键、左侧标志掩码、巡线、150 mm 直行和绝对左转参数 |
 | `Accomplish/26H.h` | `ACCOMPLISH_26H_*` | 见头文件 | 单圈速度、A 点识别、软停偏移、静止确认与 KEY1+KEY2 急停参数 |
@@ -1153,20 +1157,18 @@ const Mission_GraphDefinition_t *BrushlessMotorTest_GetMissionGraph(void); /* �
 
 ### 6.3 `MotionLine.h` 参数
 
-以下宏位于 `Application/Control/MotionLine.h` 开头。26H 与保留的 25H 都通过 MotionManager 启动巡线；基准速度、弯道限速、差速修正均经连续滤波/斜坡，不应循环调用 `MotionManager_StartLine()`：
+以下宏位于 `Application/Control/MotionLine.h` 开头。26H 与保留的 25H 都通过 MotionManager 启动巡线；基准速度只由请求速度和加减速斜坡决定，红外误差统一进入 PID 生成左右轮目标差速，不应循环调用 `MotionManager_StartLine()`：
 
 | 宏 | 单位 | 当前值 | 作用 |
 |---|---:|---:|---|
 | `MOTION_LINE_OUTER_WEIGHT` | 无 | `6` | 六路最外侧红外权重的绝对值，对应最大修正力度 |
-| `MOTION_LINE_INNER_WEIGHT` | 无 | `3` | 六路内侧红外权重的绝对值，对应最大修正力度的一半 |
-| `MOTION_LINE_MAX_ADJUST_RATIO` | 比例 | `0.2f` | 权重达到正负 6 时，一侧减去、另一侧增加的巡线速度比例 |
-| `MOTION_LINE_MAX_SPEED_MMPS` | mm/s | `1000.0f` | 巡线请求软件上限；应结合公共轮速前馈和最终 PWM 上限设置 |
-| `MOTION_LINE_ACCELERATION_MMPS2` / `DECELERATION` | mm/s² | `300` / `360` | 起步、入弯、终点软停的基准速度斜坡 |
-| `MOTION_LINE_CURVE_MIN_SPEED_RATIO` | 比例 | `0.68f` | 最大红外横向误差时相对请求速度的下限；26H 的 450 mm/s 约降到 306 mm/s |
-| `MOTION_LINE_WEIGHT_FILTER_ALPHA` / `MAX_ADJUST_RATE_MMPS2` | — / mm/s² | `0.25` / `1200` | 六路离散误差低通与左右差速修正变化率上限；循迹不使用 IMU |
+| `MOTION_LINE_INNER_WEIGHT` | 无 | `2.5f` | 六路内侧红外权重的绝对值 |
+| `MOTION_LINE_KP/KI/KD_MMPS_PER_WEIGHT` | mm/s | `26 / 0 / 1` | 统一巡线 PID 初值；输出直接作为左右轮目标差速 |
+| `MOTION_LINE_ACCELERATION_MMPS2` / `DECELERATION` | mm/s² | `300` / `360` | 起步、终点降速和软停的基准速度斜坡 |
+| `MOTION_LINE_WEIGHT_FILTER_ALPHA` | — | `0.25` | 六路加权误差低通系数；循迹不使用 IMU |
 | `MOTION_LINE_LOST_CONFIRM_TICKS` | 100 Hz 节拍 | `8U` | 连续所有有效红外通道全白达到 8 次后确认丢线，当前约为 80 ms |
 
-`MAX_ADJUST_RATIO` 是运行时变量 `MotionLine_TuneMaxAdjustRatio` 的上电默认值（`K9` lra）；另有仅运行时的权重变化率阻尼 `MotionLine_TuneWeightKd`（`K10` lkd，默认 0，行为与原纯离散权重差速一致）。
+`lra/lki/lkd` 分别写入 `MotionLine_TuneKp/Ki/KdMMpsPerWeight`，由 `MotionLine_Start()` 快照。弯道和直线不再分区；CH2/CH5 只作为普通红外通道参与误差计算，不触发任何低速上限或保持距离。
 
 ### 6.4 `Nav.h` 参数
 

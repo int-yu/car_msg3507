@@ -37,7 +37,9 @@ assert.match(main, /Accomplish26H_Update\(&updateContext\);/,
 assert.doesNotMatch(main, /Accomplish\/25H\.h|Mission_Init\(|Mission_Update\(/,
     'the active entry must not launch the legacy 25H Mission');
 assert.match(main, /MAIN_BALL_START_KEY_MASK\s+0x02U/,
-    'KEY2 must remain the physical ball-task start key');
+    'KEY2 must remain the physical ball-sweep start key');
+assert.match(main, /MAIN_LINE_START_KEY_MASK\s+0x01U/,
+    'KEY1 must remain the line-run start key');
 assert.match(main, /MAIN_EMERGENCY_CHORD_MASK \(0x01U \| 0x02U\)/,
     'main.c must protect KEY1+KEY2 as the emergency chord');
 assert.match(main, /BallSequence_Init\(\);/,
@@ -46,7 +48,7 @@ assert.match(main, /BallSequence_Update\(updateContext\.dt\);/,
     'main.c must update the ball task after 26H');
 assert.match(main,
     /Main_HasSignal\(&updateContext, MAIN_BALL_START_SIGNAL\)/,
-    'C3 must still start the same ball task as KEY2');
+    'C3 must still start the selected-position ball hold');
 assert.match(main,
     /Main_HasSignal\(&updateContext, MAIN_BALL_STOP_SIGNAL\)/,
     'C4 must still stop the ball task');
@@ -58,6 +60,10 @@ assert.match(main, /BeamActuator_Update\(updateContext\.dt\);/,
     'main.c must apply the latest ball-task target to the stepper actuator');
 assert.match(main, /DebugDisplay_Update\(updateContext\.elapsedTicks\);/,
     'main.c must keep the minimal OLED time display refresh');
+assert.match(main, /Main_StartOrRetargetBallTask\([\s\S]*?BALL_SEQUENCE_DEFAULT_TARGET_MM/,
+    'KEY1 must start or retarget ball hold to 0 mm');
+assert.match(main, /Main_StartBallSweep\(\);/,
+    'KEY2 must start the -50 mm to +50 mm ball sweep');
 
 for (const required of [
     '#include "Application/State/Heading.h"',
@@ -81,6 +87,7 @@ for (const required of [
     'MotionManager_StartLine(',
     'MotionManager_SetLineSpeed(',
     'MotionManager_RequestLineStop(',
+    'MotionManager_StartBrake(',
     'Graydetect_IsOnline()',
     'Accomplish26H_CountActiveChannels()',
     'ACCOMPLISH_26H_STATE_SETTLING',
@@ -90,10 +97,12 @@ for (const required of [
 }
 assert.match(taskHeader, /ACCOMPLISH_26H_MARKER_MIN_ACTIVE_CHANNELS/,
     '26H header must expose the six-channel finish-marker criterion');
+assert.match(taskHeader, /ACCOMPLISH_26H_FINISH_MARKER_ARM_DISTANCE_MM\s+1700\.0f/,
+    '26H finish marker must be armed only after 1700 mm');
 assert.match(taskHeader, /ACCOMPLISH_26H_FINISH_ROLLOUT_MM/,
     '26H header must expose the physical stop-offset calibration');
-assert.match(taskHeader, /ACCOMPLISH_26H_MARKER_CONFIRM_TICKS/,
-    '26H header must require several independent marker samples');
+assert.match(taskHeader, /ACCOMPLISH_26H_MARKER_CONFIRM_TICKS\s+2U/,
+    '26H header must require two independent marker samples');
 assert.match(taskHeader, /Accomplish26H_TuneFinishRolloutMM/,
     '26H header must expose the field parking-offset calibration');
 for (const name of [
@@ -116,29 +125,31 @@ assert.ok(line.includes('MotionLine_RequestStop'),
     'MotionLine must support a zero-speed soft-stop request');
 assert.ok(line.includes('MOTION_LINE_ACCELERATION_MMPS2'),
     'MotionLine must ramp cruise speed');
-assert.ok(line.includes('MOTION_LINE_MAX_ADJUST_RATE_MMPS2'),
-    'MotionLine must limit correction-rate steps');
+assert.ok(line.includes('PID_Update'),
+    'MotionLine must use one PID controller for line correction');
 assert.ok(line.includes('MotionLine_SnapshotTunings()'),
     'MotionLine must snapshot acceleration/deceleration at Start');
-assert.match(line, /Odometry_GetDistanceMM|Application\/State\/Odometry\.h/,
-    'MotionLine must use encoder odometry to measure the curve hold distance');
-assert.ok(line.includes('MOTION_LINE_CURVE_TRIGGER_MASK'),
-    'MotionLine must use CH2/CH5 as the curve-entry signal');
-assert.ok(line.includes('MOTION_LINE_CURVE_HOLD_DISTANCE_MM') &&
-          line.includes('curveEntryDistanceMM'),
-    'MotionLine must exit the low-speed arc zone after the configured encoder distance');
-assert.ok(line.includes('MotionLine_TuneCurveSpeedMMps'),
-    'MotionLine must snapshot the curve speed limit');
+assert.doesNotMatch(line,
+    /MOTION_LINE_MAX_ADJUST_RATE_MMPS2|MOTION_LINE_CURVE|curveEntryDistanceMM|MotionLine_TuneCurve/,
+    'MotionLine must not keep the old curve speed or correction-rate limits');
+assert.match(line, /MotionLine_TuneKpMMpsPerWeight[\s\S]*MotionLine_TuneKiMMpsPerWeight[\s\S]*MotionLine_TuneKdMMpsPerWeight/,
+    'MotionLine must expose one PID parameter set');
 
 assert.ok(param.includes('"h2off"'),
     'K parameter table must expose the H2 parking-offset calibration');
 for (const name of [
     'h2cru', 'h2fin', 'h2clr', 'h2lap', 'h2app', 'h2arm', 'h2max',
-    'lacc', 'ldec', 'lcra', 'lckd', 'lcv', 'lch',
+    'lacc', 'ldec', 'lra', 'lki', 'lkd',
 ]) {
     assert.ok(param.includes(`{ "${name}"`),
         `K parameter table must append ${name}`);
 }
+assert.match(param, /"lcra"[\s\S]*?Param_GetLineCurveKp/,
+    'K46 must remain a compatible alias of the unified line Kp');
+assert.match(param, /"lckd"[\s\S]*?Param_GetLineCurveKd/,
+    'K47 must remain a compatible alias of the unified line Kd');
+assert.ok(param.indexOf('{ "bvm"') < param.indexOf('{ "lki"'),
+    'bvm must retain its published K50 slot before the appended line Ki');
 assert.doesNotMatch(task + read('Application/Control/MotionManager.h') +
     read('Application/Control/MotionManager.c'), /SetLineDeceleration/,
     'H2 must keep the existing MotionLine control path without a runtime deceleration setter');
@@ -156,11 +167,11 @@ assert.doesNotMatch(displayHeader, /ShowHeadingCalibration/,
 
 assert.match(stepperHeader, /STEPPER_INITIAL_ANGLE_DEG\s+166\.0f/,
     'stepper horizontal angle must be 166 degrees');
-assert.match(stepperHeader, /STEPPER_MIN_ANGLE_DEG\s+106\.0f/,
-    'stepper minimum limit must be 106 degrees');
-assert.match(stepperHeader, /STEPPER_MAX_ANGLE_DEG\s+309\.0f/,
-    'stepper maximum limit must be 309 degrees');
+assert.match(stepperHeader, /STEPPER_MIN_ANGLE_DEG\s+0\.0f/,
+    'stepper minimum limit must be 0 degrees');
+assert.match(stepperHeader, /STEPPER_MAX_ANGLE_DEG\s+360\.0f/,
+    'stepper maximum limit must be 360 degrees');
 assert.match(grayHeader, /GRAYDETECT_ENABLED\s+1U/,
     'complete 26H mode must enable the six-channel infrared sensor');
 
-console.log('26H ring, time display, and smooth-stop contract passed');
+console.log('26H ring, time display, and brake-stop contract passed');

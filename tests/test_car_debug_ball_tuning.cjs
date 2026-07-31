@@ -30,7 +30,7 @@ for (const required of [
 
 assert.match(main,
     /Main_HasSignal\(&updateContext, MAIN_BALL_START_SIGNAL\)/,
-    'C3 must start the same requirement-3 task as KEY2');
+    'C3 must start the selected-position ball hold');
 assert.match(main,
     /Main_HasSignal\(&updateContext, MAIN_BALL_STOP_SIGNAL\)/,
     'C4 must stop and recenter the ball task');

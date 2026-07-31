@@ -184,6 +184,19 @@ static void Accomplish26H_BeginSoftStop(
     s_state = ACCOMPLISH_26H_STATE_SOFT_STOP;
 }
 
+static void Accomplish26H_BeginBrakeStop(
+    Accomplish26H_Error_t finishError)
+{
+    if (MotionManager_StartBrake() != MOTION_MANAGER_RESULT_OK)
+    {
+        Accomplish26H_Fail(ACCOMPLISH_26H_ERROR_MOTION);
+        return;
+    }
+
+    s_error = finishError;
+    s_state = ACCOMPLISH_26H_STATE_SOFT_STOP;
+}
+
 static void Accomplish26H_Start(void)
 {
     if (Graydetect_IsOnline() == 0U)
@@ -275,7 +288,7 @@ static void Accomplish26H_UpdateRunning(void)
     }
 
     /* 只在已离开 A 且接近一圈后识别横向启停线，防止刚起跑就停。 */
-    if (travelledDistanceMM >=
+    if (travelledDistanceMM >
         s_runParameters.finishMarkerArmDistanceMM)
     {
         if (Accomplish26H_IsStartFinishMarker() != 0U)
@@ -291,7 +304,7 @@ static void Accomplish26H_UpdateRunning(void)
             }
             if (s_markerConfirmTicks >= ACCOMPLISH_26H_MARKER_CONFIRM_TICKS)
             {
-                s_state = ACCOMPLISH_26H_STATE_FINISH_ROLLOUT;
+                Accomplish26H_BeginBrakeStop(ACCOMPLISH_26H_ERROR_NONE);
                 return;
             }
         }

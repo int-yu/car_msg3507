@@ -11,6 +11,7 @@
 
 #include <stdint.h>
 
+#define MAIN_LINE_START_KEY_MASK  0x01U
 #define MAIN_BALL_START_KEY_MASK  0x02U
 #define MAIN_EMERGENCY_CHORD_MASK (0x01U | 0x02U)
 #define MAIN_BALL_START_SIGNAL 3U
@@ -47,6 +48,52 @@ static uint8_t Main_StartBallTask(float targetMM)
     return 1U;
 }
 
+static uint8_t Main_StartOrRetargetBallTask(float targetMM)
+{
+    if (BallSequence_IsActive() != 0U)
+    {
+        if (BallSequence_SetTarget(targetMM) == 0U)
+        {
+            Serial1_SendString("ERR BALL TARGET\r\n");
+            return 0U;
+        }
+    }
+    else if (BallSequence_Start(targetMM) == 0U)
+    {
+        Serial1_SendString("ERR BALL VISION\r\n");
+        return 0U;
+    }
+
+    Serial1_SendString("OK BALL HOLD 0\r\n");
+    return 1U;
+}
+
+static uint8_t Main_StartBallSweep(void)
+{
+    if (MotionManager_IsBusy() != 0U)
+    {
+        Serial1_SendString("ERR BALL CAR BUSY\r\n");
+        return 0U;
+    }
+    if (BallSequence_StartSweep() == 0U)
+    {
+        Serial1_SendString("ERR BALL VISION\r\n");
+        return 0U;
+    }
+
+    Serial1_SendString("OK BALL SWEEP\r\n");
+    return 1U;
+}
+
+static uint8_t Main_LineCanStart(void)
+{
+    Accomplish26H_State_t state = Accomplish26H_GetState();
+
+    return ((state == ACCOMPLISH_26H_STATE_READY) ||
+            (state == ACCOMPLISH_26H_STATE_FINISHED) ||
+            (state == ACCOMPLISH_26H_STATE_ERROR)) ? 1U : 0U;
+}
+
 int main(void)
 {
     App_UpdateContext_t updateContext;
@@ -67,6 +114,12 @@ int main(void)
                 Main_HasSignal(&updateContext, MAIN_BALL_STOP_SIGNAL);
             uint8_t ballStartRequested =
                 Main_HasSignal(&updateContext, MAIN_BALL_START_SIGNAL);
+            uint8_t lineStartKeyPressed =
+                ((updateContext.pressedEdges &
+                  MAIN_LINE_START_KEY_MASK) != 0U) ? 1U : 0U;
+            uint8_t ballStartKeyPressed =
+                ((updateContext.pressedEdges &
+                  MAIN_BALL_START_KEY_MASK) != 0U) ? 1U : 0U;
             uint8_t startAllowed =
                 ((emergencyStopRequested == 0U) &&
                  ((updateContext.pressedKeys &
@@ -84,6 +137,20 @@ int main(void)
                 }
             }
 
+            if ((lineStartKeyPressed != 0U) &&
+                (Main_LineCanStart() != 0U))
+            {
+                s_ballTargetMM = BALL_SEQUENCE_DEFAULT_TARGET_MM;
+                if ((startAllowed == 0U) ||
+                    (ballStopRequested != 0U) ||
+                    (Main_StartOrRetargetBallTask(
+                         BALL_SEQUENCE_DEFAULT_TARGET_MM) == 0U))
+                {
+                    updateContext.pressedEdges &=
+                        (uint8_t)~MAIN_LINE_START_KEY_MASK;
+                }
+            }
+
             Accomplish26H_Update(&updateContext);
 
             if (ballStopRequested != 0U)
@@ -92,9 +159,12 @@ int main(void)
                 Serial1_SendString("OK BALL STOP\r\n");
             }
             else if ((startAllowed != 0U) &&
-                     (((updateContext.pressedEdges &
-                        MAIN_BALL_START_KEY_MASK) != 0U) ||
-                      (ballStartRequested != 0U)))
+                     (ballStartKeyPressed != 0U))
+            {
+                (void)Main_StartBallSweep();
+            }
+            else if ((startAllowed != 0U) &&
+                     (ballStartRequested != 0U))
             {
                 (void)Main_StartBallTask(s_ballTargetMM);
             }

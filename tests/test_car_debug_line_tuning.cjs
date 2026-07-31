@@ -16,7 +16,7 @@ assert.ok(!params.includes('{ "h4ff"') && !params.includes('{ "h4to"'),
     'firmware K table must not expose requirement 4 tuning parameters');
 
 for (const name of [
-    'lra', 'lkd', 'lcv', 'lch', 'h2cru', 'h2fin', 'h2clr', 'h2lap', 'h2app',
+    'lra', 'lki', 'lkd', 'h2cru', 'h2fin', 'h2clr', 'h2lap', 'h2app',
     'h2arm', 'h2max', 'h2off', 'lacc', 'ldec',
 ]) {
     assert.ok(params.includes(`{ "${name}"`),
@@ -37,8 +37,8 @@ for (const required of [
     'function renderLineMonitor()',
     'lostPct:',
     'wheelMaeMMps:',
-    "line: ['lra'], damping: ['lkd'], curveSpeed: ['lcv', 'lch']",
-    'lra: 0.01, lkd: 0.05, lcv: 10, lch: 100',
+    "line: ['lra'], integral: ['lki'], damping: ['lkd']",
+    'lra: 1, lki: 0.1, lkd: 0.5',
     'CH.yaw | CH.lerr | CH.gray | CH.TL | CH.TR | CH.LV | CH.RV',
     "start: ['h2cru', 'h2clr', 'lacc']",
     "position: ['h2lap', 'h2arm', 'h2max']",
@@ -57,10 +57,13 @@ for (const required of [
     assert.ok(html.includes(required), `巡线调参面板缺少 ${required}`);
 }
 
-assert.ok(html.includes('CH2/CH5 连续压线 3 拍后进入弧线低速区'),
-    '巡线结构说明必须包含当前直弯判断');
-assert.ok(html.includes('固定基准速度上限，不随 lerr 回中而提速'),
-    '巡线面板必须说明弧线速度不再依赖偏差回中');
+assert.ok(html.includes('PID(lra,lki,lkd)'),
+    '巡线结构说明必须包含统一 PID');
+assert.ok(html.includes('不因压线或弯道额外降速'),
+    '巡线面板必须说明不再区分弯道或按压线降速');
+assert.ok(!html.includes("'lcv'") && !html.includes("'lch'") &&
+          !html.includes('curveSpeed'),
+    '巡线面板不能继续暴露弯道低速参数');
 assert.ok(html.includes('全 0 连续 80 ms 判丢线'),
     '巡线面板必须说明当前固件的丢线确认时长');
 assert.ok(!html.includes('五路灰度离散权重(-6..+6)'),
@@ -80,8 +83,8 @@ const describeLineDetection = new Function(
 
 assert.equal(describeLineDetection(null), '—');
 assert.match(describeLineDetection(0x00), /未检测/);
-assert.equal(describeLineDetection(0x02), 'CH2 弧线入口');
-assert.equal(describeLineDetection(0x10), 'CH5 弧线入口');
+assert.equal(describeLineDetection(0x02), '已检测');
+assert.equal(describeLineDetection(0x10), '已检测');
 assert.equal(describeLineDetection(0x25), '多路 / 横线');
 assert.equal(describeLineDetection(0x3F), '多路 / 横线');
 

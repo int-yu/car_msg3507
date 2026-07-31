@@ -4,20 +4,22 @@
 #include <stdint.h>
 
 /*
- * Generic ball-position hold task.
- *
- * The old O->+50mm->-50mm sequence has been removed. The public start
- * function now takes the desired ball hold position in millimeters from the
- * beam center O. The task keeps running closed-loop until the caller stops it
- * or the balance controller reports an error.
+ * Ball-position task with generic hold and the KEY2 -50 mm -> +50 mm sweep.
+ * Both modes keep running closed-loop until stopped or an error is reported.
  */
 
 #define BALL_SEQUENCE_DEFAULT_TARGET_MM 0.0f
+#define BALL_SEQUENCE_NEGATIVE_TARGET_MM (-50.0f)
+#define BALL_SEQUENCE_POSITIVE_TARGET_MM 50.0f
+#define BALL_SEQUENCE_REVERSAL_POSITION_MM (-45.0f)
 
 typedef enum
 {
     BALL_SEQUENCE_STATE_READY = 0,
     BALL_SEQUENCE_STATE_HOLDING,
+    BALL_SEQUENCE_STATE_SWEEP_TO_NEGATIVE,
+    BALL_SEQUENCE_STATE_SWEEP_TO_POSITIVE,
+    BALL_SEQUENCE_STATE_SWEEP_HOLDING_POSITIVE,
     BALL_SEQUENCE_STATE_FINISHED,
     BALL_SEQUENCE_STATE_ERROR
 } BallSequence_State_t;
@@ -33,6 +35,9 @@ void BallSequence_Init(void);
 
 /* Start holding targetMM. Returns 0 if vision or target validation fails. */
 uint8_t BallSequence_Start(float targetMM);
+
+/* Move to -50 mm, reverse immediately near the target, then hold +50 mm. */
+uint8_t BallSequence_StartSweep(void);
 
 /* Update the target of an active hold without restarting the task. */
 uint8_t BallSequence_SetTarget(float targetMM);

@@ -11,6 +11,8 @@ static uint16_t s_startCount;
 static uint16_t s_setTargetCount;
 static uint16_t s_stopCount;
 static uint16_t s_updateCount;
+static float s_positionMM;
+static uint8_t s_stable;
 
 void BallBalance_Init(void)
 {
@@ -53,6 +55,8 @@ void BallBalance_Stop(void)
 
 BallBalance_State_t BallBalance_GetState(void) { return s_balanceState; }
 BallBalance_Error_t BallBalance_GetError(void) { return s_balanceError; }
+float BallBalance_GetPositionMM(void) { return s_positionMM; }
+uint8_t BallBalance_IsStable(void) { return s_stable; }
 
 static void reset_fakes(void)
 {
@@ -65,6 +69,8 @@ static void reset_fakes(void)
     s_setTargetCount = 0U;
     s_stopCount = 0U;
     s_updateCount = 0U;
+    s_positionMM = 0.0f;
+    s_stable = 0U;
     BallSequence_Init();
 }
 
@@ -131,6 +137,47 @@ static void test_active_hold_retargets_without_restart(void)
     CHECK_NEAR(BallSequence_GetTargetMM(), -20.0f, 0.001f);
 }
 
+static void test_sweep_reverses_without_waiting_for_stability(void)
+{
+    reset_fakes();
+    CHECK(BallSequence_StartSweep() != 0U);
+    CHECK(BallSequence_GetState() ==
+          BALL_SEQUENCE_STATE_SWEEP_TO_NEGATIVE);
+    CHECK_NEAR(s_targetMM, -50.0f, 0.001f);
+
+    s_positionMM = -44.0f;
+    BallSequence_Update(0.01f);
+    CHECK(s_setTargetCount == 0U);
+
+    s_positionMM = -45.0f;
+    s_stable = 0U;
+    BallSequence_Update(0.01f);
+    CHECK(s_setTargetCount == 1U);
+    CHECK_NEAR(s_targetMM, 50.0f, 0.001f);
+    CHECK(BallSequence_GetState() ==
+          BALL_SEQUENCE_STATE_SWEEP_TO_POSITIVE);
+
+    BallSequence_Update(0.01f);
+    CHECK(BallSequence_GetState() ==
+          BALL_SEQUENCE_STATE_SWEEP_TO_POSITIVE);
+    s_stable = 1U;
+    BallSequence_Update(0.01f);
+    CHECK(BallSequence_GetState() ==
+          BALL_SEQUENCE_STATE_SWEEP_HOLDING_POSITIVE);
+    CHECK(BallSequence_IsActive() != 0U);
+    CHECK(s_stopCount == 0U);
+}
+
+static void test_retarget_cancels_active_sweep(void)
+{
+    reset_fakes();
+    CHECK(BallSequence_StartSweep() != 0U);
+    CHECK(BallSequence_SetTarget(0.0f) != 0U);
+
+    CHECK(BallSequence_GetState() == BALL_SEQUENCE_STATE_HOLDING);
+    CHECK_NEAR(s_targetMM, 0.0f, 0.001f);
+}
+
 static void test_idle_hold_rejects_retarget(void)
 {
     reset_fakes();
@@ -193,6 +240,8 @@ int main(void)
     test_start_fails_without_vision_or_invalid_target();
     test_holds_closed_loop_until_stopped();
     test_active_hold_retargets_without_restart();
+    test_sweep_reverses_without_waiting_for_stability();
+    test_retarget_cancels_active_sweep();
     test_idle_hold_rejects_retarget();
     test_balance_error_aborts();
     test_elapsed_ticks_track_holding_time();
