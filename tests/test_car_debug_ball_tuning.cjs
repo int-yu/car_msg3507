@@ -6,7 +6,7 @@ const root = join(__dirname, '..');
 const read = (path) => readFileSync(join(root, path), 'utf8');
 
 const html = read('car_debug.html');
-const main = read('Application/Core/Main26H.c');
+const main = read('main.c');
 const app = read('Application/Core/App.c');
 const telemetry = read('Application/Debug/Telemetry.c');
 const telemetryHeader = read('Application/Debug/Telemetry.h');
@@ -16,9 +16,7 @@ const readme = read('README.md');
 for (const required of [
     '#define MAIN_BALL_START_SIGNAL 3U',
     '#define MAIN_BALL_STOP_SIGNAL  4U',
-    'static uint8_t Main26H_ReportBallStart(void)',
-    'MAIN26H_BALL_AUTO_START_ENABLED',
-    'Main26H_AutoStartIsReady()',
+    'static uint8_t Main_StartBallTask(void)',
     'OK BALL START',
     'ERR BALL VISION',
     'ERR BALL CAR BUSY',
@@ -29,11 +27,13 @@ for (const required of [
 }
 
 assert.match(main,
-    /Main26H_HasSignal\(&updateContext, MAIN_BALL_START_SIGNAL\)/,
+    /Main_HasSignal\(&updateContext, MAIN_BALL_START_SIGNAL\)/,
     'C3 must start the same requirement-3 task as KEY2');
 assert.match(main,
-    /Main26H_HasSignal\(&updateContext, MAIN_BALL_STOP_SIGNAL\)/,
+    /Main_HasSignal\(&updateContext, MAIN_BALL_STOP_SIGNAL\)/,
     'C4 must stop and recenter the ball task');
+assert.doesNotMatch(main, /MAIN26H_BALL_AUTO_START_ENABLED|AutoStart|BallHold|MAIN_HOLD/,
+    'current main flow must not auto-start or load the old hold task');
 assert.doesNotMatch(app, /Telemetry_Update\(/,
     'telemetry sampling must happen after the requirement-3 update in main');
 

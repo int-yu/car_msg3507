@@ -56,7 +56,7 @@
 | PB8 | TIMA0 CCP0 输出 | MS42CG ST | 步进脉冲输出，3200 ST/rev |
 | PB9 | GPIO 输出 | MS42CG DIR | 角度增大为上升，角度减小为下降 |
 | PB10 | GPIO 输入、上拉 | KEY4 | 低电平按下，按键位图 bit3；App 生成按下沿事件，具体含义由 Mission 决定 |
-| PB11 | GPIO 输入、上拉 | KEY2 | 低电平按下，按键位图 bit1；要求3当前上电自动启动，单独按下可手动重启，与KEY1同时按下为物理急停 |
+| PB11 | GPIO 输入、上拉 | KEY2 | 低电平按下，按键位图 bit1；当前主流程中单独按下启动要求3摆球任务，与KEY1同时按下为物理急停 |
 | PB12 | GPIO 输出 | MS42CG EN | 高电平使能 |
 | PB13 | TIMG12 CCP0 捕获 | MS42CG 绝对角 PWM | MT6816 单圈绝对角 |
 | PB14 | GPIO 输入、上拉 | KEY3 | 低电平按下，按键位图 bit2；App 生成按下沿事件，具体含义由 Mission 决定 |
@@ -82,11 +82,11 @@
 
 ## 3. 当前程序说明
 
-`main.c` 中 `MAIN_STEPPER_TEST_MODE` 当前默认为 `0U`，烧录后直接进入 `Application/Core/Main26H.c`。步进连续取得3帧有效MT6816 PWM后先运动到`200.0°`水平位置；程序同时等待K230钢球位置有效。确认步进已停止、PWM实测角与水平角误差不超过`1.0°`后，自动启动要求3的 PID 摆球保持任务，默认目标为 O 点 `0.0 mm`，不需要先按按键。需要回到独立步进测试入口时才把该宏改为`1U`。
+`main.c` 是当前唯一运行入口，不再通过 `MAIN_STEPPER_TEST_MODE` 或 `Application/Core/Main26H.c` 切换主流程。烧录后进入完整 App 初始化，步进连续取得3帧有效MT6816 PWM后先运动到`238.0°`水平位置；要求3摆球任务不上电自动启动，当前先测试巡线，需要摆球时再按 `KEY2` 或从网页发送 `C3`。
 
 六路红外资源已经恢复为 `PA25=SDA、PA14=SCL`，但只有完整 26H 入口中的 `App_Init()` 会初始化并采样它们。
 
-完整 `App/26H` 入口启用 PC/网页链路、K230Link、六路红外、MPU6050、舵机、底盘和步进摆杆。要求3当前上电自动启动；KEY1仍保留为 H 题要求 2 的单圈巡线启动键。
+当前 `main.c` 入口启用 PC/网页链路、K230Link、六路红外、MPU6050、舵机、底盘和步进摆杆。`KEY1` 保留为 H 题要求 2 的单圈巡线启动键，`KEY2` 保留为要求3摆球启动键，`KEY1+KEY2` 同时按下保持原有物理急停逻辑。
 
 ### 3.2 100 Hz 主循环与 26H 单圈巡线
 
@@ -98,17 +98,21 @@
 
 ### 3.2.1 26H 摆杆滚球（要求 3）
 
-上电满足水平和视觉条件后自动启动要求3：PID 闭环把钢球保持在调用方给定的位置，当前完整入口默认传入 O 点 `0.0 mm`。`KEY2`或`C3`仍可用于手动启动默认目标，`C4`取消尚未发生的自动启动或停止正在运行的摆球任务。当前任务没有旧版“到 +5 cm 再折返到 -5 cm”的自动结束标志；只有 `C4`、KEY1+KEY2/C0 急停或视觉/控制错误会结束闭环。要求3与要求2是两个独立测试项，不会同时运行；KEY1+KEY2的物理急停会取消本次上电自动启动并同时停掉底盘和摆杆。
+要求3由 `KEY2` 或 `C3` 手动启动：PID 闭环把钢球保持在调用方给定的位置，当前完整入口默认传入 O 点 `0.0 mm`。`C4`停止正在运行的摆球任务并回中。当前任务没有旧版“到 +5 cm 再折返到 -5 cm”的自动结束标志；只有 `C4`、KEY1+KEY2/C0 急停或视觉/控制错误会结束闭环。要求3与要求2是两个独立测试项，不会同时运行；KEY1+KEY2的物理急停会同时停掉底盘和摆杆。
 
 分四层，每层只做一件事：`BallSensor` 把 K230 的 `BALL_POSITION` 换算成以 O 为原点的毫米位置并估计滚动速度；`BallBalance` 用 PID 算出摆杆倾角，暂不加入车体加速度前馈；`BeamActuator` 把倾角换算成步进的绝对角度；`Application/Control/BallSequence` 只管启动、持续更新、停止和错误保护。K230 的 `-50.00~+50.00`覆盖250 mm水管，因此端点对应`-125~+125 mm`。
 
 三处关键保护已在实现中处理：目标位置先经过轨迹发生器；钢球速度按`BALL_POSITION`帧间实际时间估计，同一序号重复读取时不做差分；视觉失效后立即标记数据陈旧，闭环超过保护时间会回中报错。
 
-摆杆由步进电机驱动，MT6816 PWM和AB反馈均启用。`200.0°`是水平绝对角，软限位为`79.0°~300.0°`。控制器正倾角与机构电机角方向相反：球位为正且需要回到O点时，执行器会增大电机绝对角并抬高正位置一侧。上层 PID 和执行器换算层不再额外限制倾角，最终只由 `Stepper_TrackToSteps()`/`TrackToAngle()` 的绝对角软限位约束；79°和300°只是软件允许边界，必须在机构确认不会碰撞后才能手动测试极限。
+摆杆由步进电机驱动，MT6816 PWM和AB反馈均启用。`238.0°`是水平绝对角，软限位为`106.0°~309.0°`。控制器正倾角与机构电机角方向相反：球位为正且需要回到O点时，执行器会增大电机绝对角并抬高正位置一侧。上层 PID 和执行器换算层不再额外限制倾角，最终只由 `Stepper_TrackToSteps()`/`TrackToAngle()` 的绝对角软限位约束；106°和309°只是软件允许边界，必须在机构确认不会碰撞后才能手动测试极限。
 
 ```c
 #include "Accomplish/26H.h"
+#include "Application/Control/BallSequence.h"
+#include "Application/Control/BeamActuator.h"
 #include "Application/Core/App.h"
+#include "Application/Debug/DebugDisplay.h"
+#include "Application/Debug/Telemetry.h"
 #include "System/Interrupt.h"
 
 int main(void)
@@ -117,6 +121,7 @@ int main(void)
 
     App_Init();
     Accomplish26H_Init();
+    BallSequence_Init();
     Interrupt_Enable();
 
     for (;;)
@@ -124,18 +129,23 @@ int main(void)
         if (App_Update(&updateContext) != 0U)
         {
             Accomplish26H_Update(&updateContext);
+            /* KEY2/C3 启动 BallSequence；C4 停止 BallSequence。 */
+            BallSequence_Update(updateContext.dt);
+            Telemetry_Update(updateContext.elapsedTicks, updateContext.pressedKeys);
+            BeamActuator_Update(updateContext.dt);
+            DebugDisplay_Update(updateContext.elapsedTicks);
         }
     }
 }
 ```
 
-完整26H入口的`App_Init()`初始化整车、OLED、MPU6050、左右轮编码器、串口、K230Link、六路红外和步进接口。`Stepper_Init()`连续取得3帧有效PWM后建立绝对角基准并自动运动到`200.0°`水平位置；`BeamActuator`保留该绝对坐标，不再把当前位置重写为0°。
+当前入口的`App_Init()`初始化整车、OLED、MPU6050、左右轮编码器、串口、K230Link、六路红外和步进接口。`Stepper_Init()`连续取得3帧有效PWM后建立绝对角基准并自动运动到`238.0°`水平位置；`BeamActuator`保留该绝对坐标，不再把当前位置重写为0°。
 
 ```text
 Heading -> Odometry -> 六路红外 I2C -> Stepper -> 按键边沿 -> CarLink -> K230Link
         -> BallSensor（须在 K230Link 之后）-> BluetoothDebug
         -> C0 全局停车（同时停摆杆闭环）-> MotionManager -> K230 ACK -> Beep
-        -> Accomplish26H_Update -> 自动启动判定 -> BallSequence_Update
+        -> Accomplish26H_Update -> KEY2/C3摆球判定 -> BallSequence_Update
         -> BeamActuator_Update -> OLED时间局部刷新
 ```
 
@@ -461,7 +471,7 @@ OLED默认只显示上电运行时间；K230钢球物理位置和步进 PWM 绝�
 | `Application/Mission/Mission.c/.h` | 通用任务执行层 | 校验并执行静态状态图、回调和有序转换 |
 | `Accomplish/25E.c/.h` | 题目状态图 | 25E 参数、状态、回调和转换表 |
 | `Accomplish/26H.c/.h` | 当前题目控制器 | KEY1 启动单圈巡线、A 点终点软停、100 Hz 整数计时和组合急停冻结 |
-| `Application/Control/BallSequence.c/.h` | 要求 3 摆球任务 | 上电条件满足后自动启动目标位置保持，保留KEY2/C3手动启动、C4停止与视觉失效保护 |
+| `Application/Control/BallSequence.c/.h` | 要求 3 摆球任务 | KEY2/C3 手动启动目标位置保持，C4停止与视觉失效保护 |
 | `Accomplish/25H.c/.h` | 保留题目状态图 | KEY1 启动的巡线、150 mm 直行和连续绝对左转循环 |
 | `Accomplish/Brushless_Motor_Test.c/.h` | 可选测试状态图 | F32C 双轴多圈位置循环测试；当前未加载 |
 | `状态机.md` | 使用说明 | 新建 Accomplish 状态图的编写流程 |
@@ -470,8 +480,8 @@ OLED默认只显示上电运行时间；K230钢球物理位置和步进 PWM 绝�
 
 | 文件 | 类型 | 职责 |
 |---|---|---|
-| `main.c` | C 源文件 | `MAIN_STEPPER_TEST_MODE=0U`选择当前完整26H自动摆球入口 |
-| `Application/Core/Main26H.c/.h` | C 源文件 / 头文件 | 完整26H巡线与上电自动摆球入口；等待水平角和视觉有效后启动 |
+| `main.c` | C 源文件 | 当前唯一运行入口；KEY1启动26H巡线、KEY2/C3启动摆球、KEY1+KEY2/C0急停 |
+| `Application/Core/Main26H.c/.h` | C 源文件 / 头文件 | 旧完整26H包装入口，保留在工程中但当前不由 `main.c` 调用 |
 | `main.syscfg` | TI SysConfig | 时钟、PinMux、GPIO、UART、I2C、PWM 和 SysTick 配置 |
 | `.project`、`.cproject`、`.settings/` | CCS 元数据 | 工程、编译器、SDK 和 IDE 配置 |
 | `targetConfigs/*.ccxml` | CCS 目标配置 | MSPM0G3507 调试连接 |
@@ -1016,7 +1026,7 @@ bool Stepper_IsBusy(void);
 void Stepper_GetStatus(Stepper_Status_t *status);
 ```
 
-`Stepper_Init()`在测试入口和完整`App_Init()`中均可调用。资源固定为ST=PB8、DIR=PB9、EN=PB12、AB=PA13/PA29、绝对PWM=PB13；PWM连续3帧有效后建立绝对角基准，上电自动运动到200.0°。
+`Stepper_Init()`在当前`App_Init()`中调用。资源固定为ST=PB8、DIR=PB9、EN=PB12、AB=PA13/PA29、绝对PWM=PB13；PWM连续3帧有效后建立绝对角基准，上电自动运动到238.0°。
 
 转换数组从前到后就是优先级。动作运行时只检查打断转换，动作完成后只检查正常转换；每个系统节拍最多转换一次。`C0` 不受 `interruptible` 限制，始终停止并复位任务。
 
@@ -1060,7 +1070,7 @@ const Mission_GraphDefinition_t *BrushlessMotorTest_GetMissionGraph(void); /* �
 | `Heading.h` | `HEADING_CALIBRATION_INTERVAL_MS` | `2U` | 零漂采样间隔 |
 | `Odometry.h` | `Odometry_CountsPerMM` | `float`，初值 `6.44086f` | 1:28 减速比、65 mm 轮胎的每毫米编码器计数初值，必须按实车标定 |
 | `Stepper.h` | `STEPPER_ENABLED` / `STEPPER_FEEDBACK_ENABLED` | `1U` / `1U` | 启用步进驱动、PWM绝对角和AB反馈 |
-| `Stepper.h` | `STEPPER_INITIAL/MIN/MAX_ANGLE_DEG` | `200.0°` / `79.0°` / `300.0°` | 水平绝对角和机构软件运动边界 |
+| `Stepper.h` | `STEPPER_INITIAL/MIN/MAX_ANGLE_DEG` | `238.0°` / `106.0°` / `309.0°` | 水平绝对角和机构软件运动边界 |
 | `Stepper.h` | `STEPPER_STEPS_PER_REVOLUTION` 等参数 | 3200 ST/rev、4096 AB count/rev | ST=PB8、DIR=PB9、EN=PB12、AB=PA13/PA29、绝对PWM=PB13 |
 | `Serial.h` | `SERIAL1_RX_BUFFER_SIZE` | `1024U` | `Serial1`/UART2 DAPLink 环形接收缓冲区容量 |
 | `Serial.h` | `SERIAL2_RX_BUFFER_SIZE` | `256U` | `Serial2` 软件接口保留容量；当前无 UART1 硬件实例 |
@@ -1203,7 +1213,7 @@ const Mission_GraphDefinition_t *BrushlessMotorTest_GetMissionGraph(void); /* �
 
 ### 6.7 `Accomplish/Test.h` 参数
 
-`Test.c/.h` 只用于上机观察短刹时的滑行量。它已包含在 CCS 工程中；当前 `MAIN_STEPPER_TEST_MODE=0U` 运行完整26H自动摆球入口，但不会自动加载该独立测试图。需要测试短刹时应显式接入 `AccomplishTest_GetMissionGraph()`，完成后恢复对应入口。
+`Test.c/.h` 只用于上机观察短刹时的滑行量。它已包含在 CCS 工程中；当前 `main.c` 直接运行26H巡线与手动摆球入口，不会自动加载该独立测试图。需要测试短刹时应显式接入 `AccomplishTest_GetMissionGraph()`，完成后恢复对应入口。
 
 | 宏 | 单位 | 当前值 | 作用 |
 |---|---:|---:|---|

@@ -6,7 +6,6 @@ const root = join(__dirname, '..');
 const read = (path) => readFileSync(join(root, path), 'utf8');
 
 const main = read('main.c');
-const fullMain = read('Application/Core/Main26H.c');
 const app = read('Application/Core/App.c');
 const task = read('Accomplish/26H.c');
 const taskHeader = read('Accomplish/26H.h');
@@ -17,8 +16,6 @@ const displayHeader = read('Application/Debug/DebugDisplay.h');
 const stepperHeader = read('Hardware/Motor/Stepper.h');
 const grayHeader = read('Hardware/Sensors/Graydetect.h');
 const readme = read('README.md');
-const ball4 = read('Application/Control/BallHold.c');
-const ball4Header = read('Application/Control/BallHold.h');
 
 assert.match(readme, /H 题要求 2/,
     'README 必须标明当前 26H 是要求2单圈巡线');
@@ -29,32 +26,38 @@ assert.match(readme, /KEY1\+KEY2 同时按下/,
 assert.match(readme, /OLED[^\n]*时间/,
     'README must document that OLED only displays time');
 
-assert.match(main, /MAIN_STEPPER_TEST_MODE\s+0U/,
-    'main.c must default to the complete automatic ball task');
-assert.match(main, /Main26H_Run\(\);/,
-    'main.c must retain a switchable complete 26H entry');
-assert.match(fullMain, /#include "Accomplish\/26H\.h"/,
-    'Main26H.c must select the 26H controller');
-assert.match(fullMain, /Accomplish26H_Init\(\);/,
-    'Main26H.c must initialize the 26H controller');
-assert.match(fullMain, /Accomplish26H_Update\(&updateContext\);/,
-    'Main26H.c must update 26H after a valid App update');
-assert.doesNotMatch(fullMain, /Accomplish\/25H\.h|Mission_Init\(|Mission_Update\(/,
-    'the 26H entry must not launch the legacy 25H Mission');
-assert.match(fullMain, /MAIN_HOLD_START_SIGNAL\s+5U/,
-    'C5 must be reserved for requirement 4 O-point hold start');
-assert.match(fullMain, /MAIN_HOLD_STOP_SIGNAL\s+6U/,
-    'C6 must be reserved for requirement 4 O-point hold stop');
-assert.match(fullMain, /holdStartRequested[\s\S]*?Main26H_ReportHoldStart\(\);/,
-    'C5 must invoke the requirement 4 start path');
-assert.match(fullMain, /if \(holdStopRequested != 0U\)[\s\S]*?BallHold_Stop\(\);/,
-    'C6 must stop the requirement 4 balance task');
-assert.ok(ball4.includes('BallBalance_Start(BALL_HOLD_TARGET_MM)'),
-    'requirement 4 must start the PID controller with its fixed O-point target');
-assert.doesNotMatch(ball4, /BallBalance_SetCarAcceleration/,
-    'PID-only ball hold must not apply chassis feedforward');
-assert.doesNotMatch(ball4Header, /TuneFeedforward|TuneConvergeTimeout/,
-    'requirement 4 must not publish runtime tuning variables');
+assert.doesNotMatch(main, /MAIN_STEPPER_TEST_MODE|Main26H_Run\(\)/,
+    'main.c must not keep the old switchable wrapper entry');
+assert.match(main, /#include "Accomplish\/26H\.h"/,
+    'main.c must select the 26H controller directly');
+assert.match(main, /Accomplish26H_Init\(\);/,
+    'main.c must initialize the 26H controller');
+assert.match(main, /Accomplish26H_Update\(&updateContext\);/,
+    'main.c must update 26H after a valid App update');
+assert.doesNotMatch(main, /Accomplish\/25H\.h|Mission_Init\(|Mission_Update\(/,
+    'the active entry must not launch the legacy 25H Mission');
+assert.match(main, /MAIN_BALL_START_KEY_MASK\s+0x02U/,
+    'KEY2 must remain the physical ball-task start key');
+assert.match(main, /MAIN_EMERGENCY_CHORD_MASK \(0x01U \| 0x02U\)/,
+    'main.c must protect KEY1+KEY2 as the emergency chord');
+assert.match(main, /BallSequence_Init\(\);/,
+    'main.c must initialize the ball task library');
+assert.match(main, /BallSequence_Update\(updateContext\.dt\);/,
+    'main.c must update the ball task after 26H');
+assert.match(main,
+    /Main_HasSignal\(&updateContext, MAIN_BALL_START_SIGNAL\)/,
+    'C3 must still start the same ball task as KEY2');
+assert.match(main,
+    /Main_HasSignal\(&updateContext, MAIN_BALL_STOP_SIGNAL\)/,
+    'C4 must still stop the ball task');
+assert.doesNotMatch(main, /BallHold|MAIN_HOLD|AutoStart|BALL_AUTO/,
+    'active main flow must not load the old KEY3/auto ball flows');
+assert.match(main, /Telemetry_Update\(updateContext\.elapsedTicks,[\s\S]*?updateContext\.pressedKeys\);/,
+    'telemetry sampling must happen after the task controllers in main');
+assert.match(main, /BeamActuator_Update\(updateContext\.dt\);/,
+    'main.c must apply the latest ball-task target to the stepper actuator');
+assert.match(main, /DebugDisplay_Update\(updateContext\.elapsedTicks\);/,
+    'main.c must keep the minimal OLED time display refresh');
 
 for (const required of [
     '#include "Application/State/Heading.h"',
@@ -151,12 +154,12 @@ assert.doesNotMatch(display, /OLED_Update\(\)|IR:|KEY:|encoderCounts|BALL:/,
 assert.doesNotMatch(displayHeader, /ShowHeadingCalibration/,
     'OLED must not expose the removed MPU calibration page');
 
-assert.match(stepperHeader, /STEPPER_INITIAL_ANGLE_DEG\s+200\.0f/,
-    'stepper horizontal angle must be 200 degrees');
-assert.match(stepperHeader, /STEPPER_MIN_ANGLE_DEG\s+79\.0f/,
-    'stepper minimum limit must be 79 degrees');
-assert.match(stepperHeader, /STEPPER_MAX_ANGLE_DEG\s+300\.0f/,
-    'stepper maximum limit must be 300 degrees');
+assert.match(stepperHeader, /STEPPER_INITIAL_ANGLE_DEG\s+238\.0f/,
+    'stepper horizontal angle must be 238 degrees');
+assert.match(stepperHeader, /STEPPER_MIN_ANGLE_DEG\s+106\.0f/,
+    'stepper minimum limit must be 106 degrees');
+assert.match(stepperHeader, /STEPPER_MAX_ANGLE_DEG\s+309\.0f/,
+    'stepper maximum limit must be 309 degrees');
 assert.match(grayHeader, /GRAYDETECT_ENABLED\s+1U/,
     'complete 26H mode must enable the six-channel infrared sensor');
 
