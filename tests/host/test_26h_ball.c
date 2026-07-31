@@ -125,6 +125,19 @@ static void test_holds_closed_loop_until_stopped(void)
     CHECK_NEAR(s_targetMM, -30.0f, 0.001f);
 }
 
+static void test_hold_reports_existing_balance_stability(void)
+{
+    reset_fakes();
+    CHECK(BallSequence_Start(35.0f) != 0U);
+    CHECK(BallSequence_IsStable() == 0U);
+
+    s_stable = 1U;
+    CHECK(BallSequence_IsStable() != 0U);
+
+    CHECK(BallSequence_StartSweep() != 0U);
+    CHECK(BallSequence_IsStable() == 0U);
+}
+
 static void test_active_hold_retargets_without_restart(void)
 {
     reset_fakes();
@@ -245,6 +258,7 @@ int main(void)
     test_start_passes_requested_target();
     test_start_fails_without_vision_or_invalid_target();
     test_holds_closed_loop_until_stopped();
+    test_hold_reports_existing_balance_stability();
     test_active_hold_retargets_without_restart();
     test_sweep_reverses_without_waiting_for_stability();
     test_retarget_cancels_active_sweep();

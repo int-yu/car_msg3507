@@ -50,5 +50,7 @@ BallSequence_Error_t BallSequence_GetError(void);
 uint32_t BallSequence_GetElapsedTicks(void);
 float BallSequence_GetTargetMM(void);
 uint8_t BallSequence_IsActive(void);
+/* 仅目标保持模式达到 BallBalance 的稳定判据时返回 1。 */
+uint8_t BallSequence_IsStable(void);
 
 #endif

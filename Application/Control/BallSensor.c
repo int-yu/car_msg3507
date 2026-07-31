@@ -142,3 +142,8 @@ BallSensor_SpeedSource_t BallSensor_GetSpeedSource(void)
 {
     return s_context.speedSource;
 }
+
+uint8_t BallSensor_GetFrameSequence(void)
+{
+    return s_context.previousSequence;
+}

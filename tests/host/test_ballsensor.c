@@ -65,6 +65,7 @@ static void test_pipe_coordinate_maps_to_millimetres(void)
 
     CHECK(BallSensor_IsFresh() != 0U);
     CHECK_NEAR(BallSensor_GetPositionMM(), 50.0f, 0.001f);
+    CHECK(BallSensor_GetFrameSequence() == s_ball.sequence);
 }
 
 static void test_negative_position_is_signed(void)

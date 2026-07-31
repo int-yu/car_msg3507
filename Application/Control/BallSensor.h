@@ -50,5 +50,7 @@ uint8_t BallSensor_IsFresh(void);
 float BallSensor_GetPositionMM(void);
 float BallSensor_GetSpeedMMps(void);
 BallSensor_SpeedSource_t BallSensor_GetSpeedSource(void);
+/* 当前有效视觉帧的序号；配合 IsFresh() 判断后使用。 */
+uint8_t BallSensor_GetFrameSequence(void);
 
 #endif

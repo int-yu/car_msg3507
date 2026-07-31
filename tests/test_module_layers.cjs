@@ -19,6 +19,8 @@ assert.deepEqual(accomplishFiles, [
     'Application/Control/BallSequence.h',
     'Application/Control/BallHold.c',
     'Application/Control/BallHold.h',
+    'Application/Control/BallTargetCapture.c',
+    'Application/Control/BallTargetCapture.h',
 ].forEach((relativePath) => {
     assert.ok(fs.existsSync(fromRoot(relativePath)),
         `${relativePath} must be in its layer`);

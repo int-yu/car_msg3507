@@ -160,3 +160,9 @@ uint8_t BallSequence_IsActive(void)
             (s_context.state ==
              BALL_SEQUENCE_STATE_SWEEP_HOLDING_POSITIVE)) ? 1U : 0U;
 }
+
+uint8_t BallSequence_IsStable(void)
+{
+    return ((s_context.state == BALL_SEQUENCE_STATE_HOLDING) &&
+            (BallBalance_IsStable() != 0U)) ? 1U : 0U;
+}

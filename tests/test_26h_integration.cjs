@@ -11,6 +11,8 @@ const task = read('Accomplish/26H.c');
 const taskHeader = read('Accomplish/26H.h');
 const timedLine = read('Application/Control/TimedLineRun.c');
 const timedLineHeader = read('Application/Control/TimedLineRun.h');
+const ballTargetCapture = read('Application/Control/BallTargetCapture.c');
+const ballTargetCaptureHeader = read('Application/Control/BallTargetCapture.h');
 const line = read('Application/Control/MotionLine.c');
 const timer = read('Application/Control/TaskTimer.c');
 const timerHeader = read('Application/Control/TaskTimer.h');
@@ -47,6 +49,8 @@ assert.match(main, /MAIN_LINE_START_KEY_MASK\s+0x01U/,
     'KEY1 must remain the line-run start key');
 assert.match(main, /MAIN_TIMED_LINE_START_KEY_MASK\s+0x04U/,
     'KEY3 must start the timed line run');
+assert.match(main, /MAIN_KEY4_START_KEY_MASK\s+0x08U/,
+    'KEY4 must use physical key bit3');
 assert.match(main, /TimedLineRun_Init\(\);/,
     'main must initialize the KEY3 timed line controller');
 assert.match(main, /TimedLineRun_Start\(\)/,
@@ -69,7 +73,7 @@ assert.doesNotMatch(main, /#include[^\n]*BallHold|BallHold_|MAIN_HOLD/,
     'active main flow must not restore the old KEY3 BallHold flow');
 assert.match(main, /s_defaultBallHoldPending\s*=\s*1U/,
     'the no-key startup state must default to O-point ball control');
-assert.match(main, /Main_DefaultBallHoldIsReady\(\)/,
+assert.match(main, /Main_BallHoldCanStart\(\)/,
     'default O hold must wait for existing readiness checks');
 assert.match(main,
     /s_defaultBallHoldPending[\s\S]*?Main_StartOrRetargetBallTask\(\s*BALL_SEQUENCE_DEFAULT_TARGET_MM\)/,
@@ -84,6 +88,25 @@ assert.match(main, /Main_StartOrRetargetBallTask\([\s\S]*?BALL_SEQUENCE_DEFAULT_
     'KEY1 must start or retarget ball hold to 0 mm');
 assert.match(main, /Main_StartBallSweep\(\);/,
     'KEY2 must start the -50 mm to +50 mm ball sweep');
+assert.match(main, /BallTargetCapture_Start\(\)/,
+    'the first KEY4 press must start multi-frame target capture');
+assert.match(main, /BallTargetCapture_GetTargetMM\(\)/,
+    'KEY4 must hold the captured arbitrary ball target');
+assert.match(main, /BallSequence_IsStable\(\)/,
+    'the second KEY4 press must wait until the ball is stable');
+assert.match(main,
+    /Main_StartTimedLineAtBallTarget\([\s\S]*?BallTargetCapture_GetTargetMM\(\)/,
+    'the second KEY4 press must reuse the KEY3 timed-line controller');
+assert.match(ballTargetCaptureHeader,
+    /BALL_TARGET_CAPTURE_CONFIRM_FRAMES\s+8U/,
+    'KEY4 target confirmation frame count must be easy to adjust');
+assert.match(ballTargetCaptureHeader,
+    /BALL_TARGET_CAPTURE_STABILITY_TOLERANCE_MM\s+5\.0f/,
+    'KEY4 target capture stability tolerance must be explicit');
+assert.match(ballTargetCapture, /BallSensor_GetFrameSequence\(\)/,
+    'KEY4 capture must count independent camera frames, not 100 Hz repeats');
+assert.doesNotMatch(main, /ERR KEY4 BALL LOST/,
+    'KEY4 ball-control failure must not add a chassis-stop coupling');
 
 for (const required of [
     '#include "Application/State/Heading.h"',
@@ -161,6 +184,8 @@ assert.ok(makeDefs.includes('Application/Control/TaskTimer.c'),
     'CCS generated builds must include the task timer module');
 assert.ok(makeDefs.includes('Application/Control/TimedLineRun.c'),
     'CCS generated builds must include the KEY3 timed line module');
+assert.ok(makeDefs.includes('Application/Control/BallTargetCapture.c'),
+    'CCS generated builds must include the KEY4 target capture module');
 
 assert.ok(line.includes('MotionLine_SetSpeed'),
     'MotionLine must support in-place speed changes without PID reset');

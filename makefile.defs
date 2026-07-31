@@ -20,3 +20,13 @@ endif
 ifeq ($(findstring TimedLineRun.o,$(ORDERED_OBJS)),)
 ORDERED_OBJS := "./Application/Control/TimedLineRun.o" $(ORDERED_OBJS)
 endif
+
+ifeq ($(findstring BallTargetCapture.o,$(OBJS)),)
+C_SRCS += ../Application/Control/BallTargetCapture.c
+C_DEPS += ./Application/Control/BallTargetCapture.d
+OBJS += ./Application/Control/BallTargetCapture.o
+endif
+
+ifeq ($(findstring BallTargetCapture.o,$(ORDERED_OBJS)),)
+ORDERED_OBJS := "./Application/Control/BallTargetCapture.o" $(ORDERED_OBJS)
+endif
