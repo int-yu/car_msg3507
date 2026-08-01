@@ -92,13 +92,13 @@
 
 ### 3.2 100 Hz 主循环与 26H 单圈巡线
 
-完整26H模式加载`Accomplish/26H.c`独立控制器，实现H题要求2。KEY1在READY、完成或错误后按下时清零累计Tick并启动平滑巡线。正常巡线的左右差速由六路红外权重 PID 生成；里程计路程大于 `ACCOMPLISH_26H_FINISH_MARKER_ARM_DISTANCE_MM`（默认 1700 mm）后，若六路灰度中至少 3 路同时检测到黑线并连续维持 `ACCOMPLISH_26H_MARKER_CONFIRM_TICKS`（默认 2）个 100 Hz 节拍，立即进入 `MotionManager_StartBrake()` 主动刹车并在静止确认后冻结计时。**KEY1+KEY2 同时按下**为物理急停。
+完整26H模式加载`Accomplish/26H.c`独立控制器，实现H题要求2。KEY1在READY、完成或错误后按下时清零累计Tick并启动平滑巡线。正常巡线的左右差速由六路红外权重 PID 生成；里程计路程严格大于 `h2arm` 且 `h2arm` 不得小于 5000 mm 时，只有任意连续相邻 3 路同时检测到黑线并连续维持 `ACCOMPLISH_26H_MARKER_CONFIRM_TICKS`（默认 2）个 100 Hz 节拍，才进入 `MotionManager_StartBrake()` 主动刹车并在静止确认后冻结计时。最大里程不再触发停车，接近理论圈长时的减速逻辑仍保留。**KEY1+KEY2 同时按下**为物理急停。
 
 要求 4、5、6 的巡线由 `Application/Control/TimedLineRun` 执行，不进入 `Accomplish/26H` 总任务。要求 4 默认 `500 mm/s`、13 秒；要求 5 和要求 6 默认 `400 mm/s`、30 秒。三者复用六路红外 `MotionLine`，到时请求软停，不读取终点横线、不按圈长停车。实体 `KEY3` 不再启动巡线，只负责取消任务并返回菜单。
 
 要求 6 复用 `BallSequence`、`BallTargetCapture` 与 `TimedLineRun`。菜单中确认要求 6 后停止 O 点闭环并保持当前执行器倾角；再次按 `KEY2` 才开始目标采样。`BallTargetCapture` 只统计序号不同的 K230 钢球帧，默认连续 8 帧落在当前平均值 ±5 mm 内后锁定平均位置并自动开始保持；再按 `KEY2` 无需等待钢球求稳便启动 400 mm/s、30 秒巡线。采样帧数和容差集中在 `Application/Control/BallTargetCapture.h`。
 
-当前 KEY1 测试入口的停车触发点由 `K42`（`h2arm`，单位 mm）控制，初值为 1700 mm；该距离以前即使检测到 3 路以上黑线也不会触发终点。`K30`（`h2off`）仍作为保留的停车偏移参数参与启动快照，但当前终点条件满足后直接主动刹车，不再用它延后巡线软停。
+当前 KEY1 测试入口的停车触发点由 `K42`（`h2arm`，单位 mm）控制，初值和允许下限均为 5000 mm；里程必须严格大于该值，相邻三路横线才可能触发终点。`K30`（`h2off`）仍作为保留的停车偏移参数参与启动快照，但当前终点条件满足后直接主动刹车，不再用它延后巡线软停。
 
 `App_Init()` 继续初始化并校准 MPU6050，`App_Update()` 继续更新 Heading 和里程，并在此后采样一次六路红外状态；保留的航向运动和调试命令仍可使用。OLED不再显示MPU校准、巡线、按键、编码器或钢球页面，只显示上电运行时间。
 
@@ -328,8 +328,8 @@ Heading -> Odometry -> 六路红外 -> Stepper -> Key -> K230Link -> BallSensor
 | 39 | `h2clr` | `Accomplish26H_TuneStartClearDistanceMM` | mm | 0~1000 |
 | 40 | `h2lap` | `Accomplish26H_TuneNominalLapDistanceMM` | mm | 1000~20000 |
 | 41 | `h2app` | `Accomplish26H_TuneFinishApproachDistanceMM` | mm | 0~5000 |
-| 42 | `h2arm` | `Accomplish26H_TuneFinishMarkerArmDistanceMM` | mm | 0~20000 |
-| 43 | `h2max` | `Accomplish26H_TuneMaxLapDistanceMM` | mm | 1000~25000 |
+| 42 | `h2arm` | `Accomplish26H_TuneFinishMarkerArmDistanceMM` | mm | 5000~20000 |
+| 43 | `h2max` | 保留兼容，不再参与停车 | mm | 1000~25000 |
 | 44 | `lacc` | `MotionLine_TuneAccelerationMMps2` | mm/s² | 10~5000 |
 | 45 | `ldec` | `MotionLine_TuneDecelerationMMps2` | mm/s² | 10~5000 |
 | 46 | `lcra` | `MotionLine_TuneKpMMpsPerWeight`（兼容别名） | mm/s 每 权重 | 0~200 |
@@ -352,21 +352,21 @@ Heading -> Odometry -> 六路红外 -> Stepper -> Key -> K230Link -> BallSensor
 | 63 | `k2vm` | 阶段一最大球速 | mm/s | 1~500 |
 | 64 | `k2ad` | 阶段一距目标减速距离 | mm | 0~200 |
 | 65 | `k2tv` | 阶段一末端速度上限 | mm/s | 0~500 |
-| 66 | `k2mt` | 阶段一最大倾角 | 度 | 0.1~30 |
+| 66 | `k2mt` | 阶段一最大倾角 | 度 | 0.1~60 |
 | 67 | `k2il` | 阶段一速度积分限幅 | mm | 1~1000 |
 | 68 | `k2pvm` | 阶段二最大球速 | mm/s | 1~500 |
 | 69 | `k2pad` | 阶段二距目标减速距离 | mm | 0~200 |
 | 70 | `k2ptv` | 阶段二末端速度上限 | mm/s | 0~500 |
-| 71 | `k2pmt` | 阶段二最大倾角 | 度 | 0.1~30 |
+| 71 | `k2pmt` | 阶段二最大倾角 | 度 | 0.1~60 |
 | 72 | `k2pil` | 阶段二速度积分限幅 | mm | 1~1000 |
 
 id 一经发布不得重排，新增参数只能在尾部追加。K1~K5 为旧上位机保留：写入会同时覆盖左右轮，读取返回两侧当前值的平均数；新调参应使用 K17~K26 分别设置左右轮。基础前馈公式为 `PWMbase = speed×ff + sign(speed)×sf`，再叠加该轮 PI 与上层 trim，最终夹到 ±1000。要求2使用独立的 `h2lkp/h2lki/h2lkd/h2lac/h2lde`，顺时针弯道中右轮减速量再乘 `h2rr`；要求4/5/6继续使用公共 `lra/lki/lkd/lacc/ldec`。两套参数都在各自任务启动时快照，运行中写入只影响下一次启动。`gsc` 由 `E1`→原地转 N 圈→`Y<n>` 标定流程自动写入；`cpm` 建议用网页里程标定向导。
 
 K31~K36 是要求 3 摆球的标定量。上电前先手动把摆杆放到平衡位置，固件会自动捕获 `bzo`；如仍有机械水平误差，可在网页读取自动值后小幅微调。其余参数仍需实车标定：先确认 `bgr`，再用钢球放在 0/±25/±50 mm 处校准 `bhl`，然后调 `bkp` 让钢球能回目标，调 `bkd` 压住过冲和往复。固件中的 `bki` 初值为 0.20；实车首次整定建议先通过网页设为 0，只有确认 P/D 已经调顺且仍存在稳定偏差时再小量加入。
 
-K57~K72 是实体 KEY2 扫描独占的两套控制参数。阶段一 O→-50 mm 使用 `k2kp/k2kd/k2ki` 和 `k2vm/k2ad/k2tv/k2mt/k2il`；阶段二 -50→+50 mm 使用 `k2pkp/k2pkd/k2pki` 和 `k2pvm/k2pad/k2ptv/k2pmt/k2pil`。每阶段后五项依次是最大球速、距目标减速距离、末端速度上限、最大倾角和速度积分限幅；末端速度必须小于或等于同阶段最大球速，否则 KEY2 会拒绝启动。阶段一位置控制目标仍为 -50 mm，但任一控制周期检测到球位到达或越过 -45 mm，便立即进入阶段二，不再要求球速、视觉新鲜状态或多帧停留；低于 -65 mm 仍触发异常超程保护。KEY2 启动时会同时快照两套 PID 和运动限制，因此当前扫描中修改只对下一次 KEY2 生效，也不会影响默认 O 点保持、C3、KEY3 或 KEY4。网页“要求3摆球”中可分别进入两个 KEY2 阶段调整。
+K57~K72 是实体 KEY2 扫描独占的两套控制参数。阶段一 O→-50 mm 使用 `k2kp/k2kd/k2ki` 和 `k2vm/k2ad/k2tv/k2mt/k2il`；阶段二 -50→+50 mm 使用 `k2pkp/k2pkd/k2pki` 和 `k2pvm/k2pad/k2ptv/k2pmt/k2pil`。每阶段后五项依次是最大球速、距目标减速距离、末端速度上限、最大倾角和速度积分限幅；末端速度必须小于或等于同阶段最大球速，否则 KEY2 会拒绝启动。阶段一位置控制目标仍为 -50 mm，但任一控制周期检测到球位到达或越过 -40 mm，便立即进入阶段二，不再要求球速、视觉新鲜状态或多帧停留；低于 -65 mm 仍触发异常超程保护。阶段二在 +50 mm 达标后继续闭环保持 5 秒，然后才结束任务并返回菜单。KEY2 启动时会同时快照两套 PID 和运动限制，因此当前扫描中修改只对下一次 KEY2 生效，也不会影响默认 O 点保持、C3、KEY3 或 KEY4。网页“要求3摆球”中可分别进入两个 KEY2 阶段调整。
 
-当前上电默认值：阶段一 `k2kp/k2kd/k2ki=2/0.4/0.1`，`k2vm/k2ad/k2tv/k2mt/k2il=60/14/30/30/300`；阶段二 `k2pkp/k2pkd/k2pki=3/0.4/0.1`，`k2pvm/k2pad/k2ptv/k2pmt/k2pil=90/10/40/30/300`。
+当前上电默认值：阶段一 `k2kp/k2kd/k2ki=2/0.4/0.1`，`k2vm/k2ad/k2tv/k2mt/k2il=60/14/30/50/300`；阶段二 `k2pkp/k2pkd/k2pki=3/0.4/0.1`，`k2pvm/k2pad/k2ptv/k2pmt/k2pil=90/10/40/30/300`。
 
 **遥测 CSV 格式（⚠️ 历史架构，已被 3.3.0 的二进制帧取代）。** 以下 ASCII CSV 描述对应第一次架构；当前固件发二进制 SCHEMA/SAMPLE 帧，通道定义见 3.3.2。保留本段仅为理解演进历史。每次字段掩码改变时输出一行表头 `H,...`，随后每隔 `1000/G` ms 输出一行数据：
 

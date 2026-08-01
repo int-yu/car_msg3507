@@ -11,6 +11,7 @@
 #define BALL_SEQUENCE_DEFAULT_TARGET_MM 0.0f
 #define BALL_SEQUENCE_NEGATIVE_TARGET_MM (-50.0f)
 #define BALL_SEQUENCE_POSITIVE_TARGET_MM 50.0f
+#define BALL_SEQUENCE_POSITIVE_HOLD_MS 5000U
 
 #define BALL_SEQUENCE_POSITION_KP_PER_S          2.0f
 #define BALL_SEQUENCE_VELOCITY_KP_DEG_PER_MMPS   0.4f
@@ -24,7 +25,7 @@
 #define BALL_SEQUENCE_NEGATIVE_MAX_VELOCITY_MMPS       60.0f
 #define BALL_SEQUENCE_NEGATIVE_APPROACH_DISTANCE_MM    14.0f
 #define BALL_SEQUENCE_NEGATIVE_TERMINAL_VELOCITY_MMPS  30.0f
-#define BALL_SEQUENCE_NEGATIVE_MAX_TILT_DEG             30.0f
+#define BALL_SEQUENCE_NEGATIVE_MAX_TILT_DEG             50.0f
 #define BALL_SEQUENCE_NEGATIVE_INTEGRAL_LIMIT_MM       300.0f
 
 #define BALL_SEQUENCE_POSITIVE_MAX_VELOCITY_MMPS       90.0f
@@ -32,6 +33,9 @@
 #define BALL_SEQUENCE_POSITIVE_TERMINAL_VELOCITY_MMPS  40.0f
 #define BALL_SEQUENCE_POSITIVE_MAX_TILT_DEG             30.0f
 #define BALL_SEQUENCE_POSITIVE_INTEGRAL_LIMIT_MM       300.0f
+
+/* Web/K-command range; phase defaults remain independently configurable. */
+#define BALL_SEQUENCE_MAX_CONFIGURABLE_TILT_DEG          60.0f
 
 extern float BallSequence_TunePositionKpPerS;
 extern float BallSequence_TuneVelocityKpDegPerMMps;
@@ -77,7 +81,7 @@ void BallSequence_Init(void);
 /* Start holding targetMM. Returns 0 if vision or target validation fails. */
 uint8_t BallSequence_Start(float targetMM);
 
-/* Move toward -50 mm, switch phase on reaching -45 mm, then hold +50 mm. */
+/* Move toward -50 mm, switch at -40 mm, then hold +50 mm for 5 seconds. */
 uint8_t BallSequence_StartSweep(void);
 
 /* Update the target of an active hold without restarting the task. */

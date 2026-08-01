@@ -11,6 +11,7 @@ const app = read('Application/Core/App.c');
 const telemetry = read('Application/Debug/Telemetry.c');
 const telemetryHeader = read('Application/Debug/Telemetry.h');
 const param = read('Application/Debug/Param.c');
+const ballSequenceHeader = read('Application/Control/BallSequence.h');
 const bluetooth = read('Application/Comms/BluetoothDebug.c');
 const bluetoothHeader = read('Application/Comms/BluetoothDebug.h');
 const readme = read('README.md');
@@ -153,6 +154,23 @@ for (const name of [
 assert.match(param,
     /\{ "k3dur"[^]*?\{ "k2kp"[^]*?\{ "k2kd"[^]*?\{ "k2ki"[^]*?\{ "k2pkp"[^]*?\{ "k2pkd"[^]*?\{ "k2pki"[^]*?\{ "k2vm"[^]*?\{ "k2ad"[^]*?\{ "k2tv"[^]*?\{ "k2mt"[^]*?\{ "k2il"[^]*?\{ "k2pvm"[^]*?\{ "k2pad"[^]*?\{ "k2ptv"[^]*?\{ "k2pmt"[^]*?\{ "k2pil"/,
     'both KEY2 gain and motion-profile sets must remain appended after K56');
+assert.match(ballSequenceHeader,
+    /#define BALL_SEQUENCE_MAX_CONFIGURABLE_TILT_DEG\s+60\.0f/,
+    'requirement-3 configurable maximum tilt must be 60 degrees');
+assert.match(ballSequenceHeader,
+    /#define BALL_SEQUENCE_NEGATIVE_MAX_TILT_DEG\s+50\.0f/,
+    'requirement-3 phase-1 default maximum tilt must be 50 degrees');
+assert.match(ballSequenceHeader,
+    /#define BALL_SEQUENCE_POSITIVE_HOLD_MS\s+5000U/,
+    'requirement-3 must hold +50 mm for 5 seconds before finishing');
+assert.match(main,
+    /MAIN_UI_RUNNING_REQUIREMENT_3[^]*?BALL_SEQUENCE_STATE_FINISHED[^]*?BALL_SEQUENCE_STATE_ERROR/,
+    'requirement-3 must return to the menu only after the hold finishes');
+for (const name of ['k2mt', 'k2pmt']) {
+    assert.match(param,
+        new RegExp(`\\{ "${name}"[^]*?0\\.1f,\\s*BALL_SEQUENCE_MAX_CONFIGURABLE_TILT_DEG \\}`),
+        `${name} must use the shared requirement-3 maximum tilt range`);
+}
 
 for (const required of [
     "if (p.startReply)",

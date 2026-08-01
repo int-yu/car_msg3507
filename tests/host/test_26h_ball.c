@@ -143,7 +143,7 @@ static void test_init_loads_key2_tuning_defaults(void)
                14.0f, 0.001f);
     CHECK_NEAR(BallSequence_TuneNegativeTerminalVelocityMMps,
                30.0f, 0.001f);
-    CHECK_NEAR(BallSequence_TuneNegativeMaxTiltDeg, 30.0f, 0.001f);
+    CHECK_NEAR(BallSequence_TuneNegativeMaxTiltDeg, 50.0f, 0.001f);
     CHECK_NEAR(BallSequence_TuneNegativeIntegralLimitMM,
                300.0f, 0.001f);
     CHECK_NEAR(BallSequence_TunePositiveMaxVelocityMMps, 90.0f, 0.001f);
@@ -267,7 +267,7 @@ static void test_sweep_switches_to_snapshotted_positive_phase_gains(void)
     BallSequence_TunePositiveIntegralLimitMM = 199.0f;
 
     /* High speed and stale vision do not block the first in-band sample. */
-    s_positionMM = -44.9f;
+    s_positionMM = -39.9f;
     s_speedMMps = -80.0f;
     s_sensorFresh = 0U;
     BallSequence_Update(0.01f);
@@ -275,7 +275,7 @@ static void test_sweep_switches_to_snapshotted_positive_phase_gains(void)
     CHECK(BallSequence_GetState() ==
           BALL_SEQUENCE_STATE_SWEEP_TO_NEGATIVE);
 
-    s_positionMM = -45.0f;
+    s_positionMM = -40.0f;
     BallSequence_Update(0.01f);
     CHECK(s_startCount == 2U);
     CHECK(s_setTargetCount == 0U);
@@ -300,6 +300,19 @@ static void test_sweep_switches_to_snapshotted_positive_phase_gains(void)
           BALL_SEQUENCE_STATE_SWEEP_HOLDING_POSITIVE);
     CHECK(BallSequence_IsActive() != 0U);
     CHECK(s_stopCount == 0U);
+    CHECK(TaskTimer_IsRunning() != 0U);
+
+    run_ticks(499U);
+    CHECK(BallSequence_GetState() ==
+          BALL_SEQUENCE_STATE_SWEEP_HOLDING_POSITIVE);
+    CHECK(BallSequence_IsActive() != 0U);
+    CHECK(s_stopCount == 0U);
+    CHECK(TaskTimer_IsRunning() != 0U);
+
+    run_ticks(1U);
+    CHECK(BallSequence_GetState() == BALL_SEQUENCE_STATE_FINISHED);
+    CHECK(BallSequence_IsActive() == 0U);
+    CHECK(s_stopCount == 1U);
     CHECK(TaskTimer_IsRunning() == 0U);
 }
 

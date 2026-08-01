@@ -377,8 +377,7 @@ static void Main_UpdateTaskCompletion(void)
         Main_ReturnToMenu();
     }
     else if ((s_uiState == MAIN_UI_RUNNING_REQUIREMENT_3) &&
-             ((BallSequence_GetState() ==
-               BALL_SEQUENCE_STATE_SWEEP_HOLDING_POSITIVE) ||
+             ((BallSequence_GetState() == BALL_SEQUENCE_STATE_FINISHED) ||
               (BallSequence_GetState() == BALL_SEQUENCE_STATE_ERROR)))
     {
         Main_ReturnToMenu();

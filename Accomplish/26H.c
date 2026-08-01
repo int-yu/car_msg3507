@@ -15,7 +15,6 @@ typedef struct
     float nominalLapDistanceMM;
     float finishApproachDistanceMM;
     float finishMarkerArmDistanceMM;
-    float maxLapDistanceMM;
     float finishRolloutMM;
 } Accomplish26H_RunParameters_t;
 
@@ -59,7 +58,6 @@ static uint8_t Accomplish26H_SnapshotParameters(void)
             Accomplish26H_TuneFinishApproachDistanceMM,
         .finishMarkerArmDistanceMM =
             Accomplish26H_TuneFinishMarkerArmDistanceMM,
-        .maxLapDistanceMM = Accomplish26H_TuneMaxLapDistanceMM,
         .finishRolloutMM = Accomplish26H_TuneFinishRolloutMM,
     };
 
@@ -69,7 +67,6 @@ static uint8_t Accomplish26H_SnapshotParameters(void)
         (!isfinite(parameters.nominalLapDistanceMM)) ||
         (!isfinite(parameters.finishApproachDistanceMM)) ||
         (!isfinite(parameters.finishMarkerArmDistanceMM)) ||
-        (!isfinite(parameters.maxLapDistanceMM)) ||
         (!isfinite(parameters.finishRolloutMM)))
     {
         return 0U;
@@ -85,9 +82,8 @@ static uint8_t Accomplish26H_SnapshotParameters(void)
          parameters.nominalLapDistanceMM) ||
         (parameters.finishMarkerArmDistanceMM <
          parameters.startClearDistanceMM) ||
-        (parameters.maxLapDistanceMM < parameters.nominalLapDistanceMM) ||
-        (parameters.finishMarkerArmDistanceMM >
-         parameters.maxLapDistanceMM) ||
+        (parameters.finishMarkerArmDistanceMM <
+         ACCOMPLISH_26H_FINISH_MARKER_MIN_DISTANCE_MM) ||
         (parameters.finishRolloutMM < 0.0f))
     {
         return 0U;
@@ -119,26 +115,25 @@ static uint16_t Accomplish26H_AddSaturatingTicks(
     return (uint16_t)(current + elapsedTicks);
 }
 
-static uint8_t Accomplish26H_CountActiveChannels(void)
+static uint8_t Accomplish26H_IsStartFinishMarker(void)
 {
     uint8_t state = Graydetect_GetState();
     uint8_t index;
-    uint8_t count = 0U;
+    uint8_t mask;
 
-    for (index = 0U; index < GRAY_CHANNEL_COUNT; index++)
+    for (index = 0U;
+         index <= (GRAY_CHANNEL_COUNT -
+                   ACCOMPLISH_26H_MARKER_ADJACENT_CHANNELS);
+         index++)
     {
-        if ((state & (uint8_t)(1U << index)) != 0U)
+        mask = (uint8_t)(((1U <<
+            ACCOMPLISH_26H_MARKER_ADJACENT_CHANNELS) - 1U) << index);
+        if ((state & mask) == mask)
         {
-            count++;
+            return 1U;
         }
     }
-    return count;
-}
-
-static uint8_t Accomplish26H_IsStartFinishMarker(void)
-{
-    return (Accomplish26H_CountActiveChannels() >=
-            ACCOMPLISH_26H_MARKER_MIN_ACTIVE_CHANNELS) ? 1U : 0U;
+    return 0U;
 }
 
 static float Accomplish26H_GetTravelledDistanceMM(void)
@@ -321,12 +316,6 @@ static void Accomplish26H_UpdateRunning(void)
         }
     }
 
-    /* 未找到 A 标志不能再盲目多跑一圈；同样用软停保护车辆。 */
-    if (travelledDistanceMM >= s_runParameters.maxLapDistanceMM)
-    {
-        Accomplish26H_BeginSoftStop(
-            ACCOMPLISH_26H_ERROR_MARKER_MISSED);
-    }
 }
 
 static void Accomplish26H_UpdateFinishRollout(void)

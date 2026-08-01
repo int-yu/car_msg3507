@@ -14,10 +14,13 @@
 #define ACCOMPLISH_26H_FINISH_CRAWL_SPEED_MMPS       300.0f
 #define ACCOMPLISH_26H_NOMINAL_LAP_DISTANCE_MM      6142.0f
 #define ACCOMPLISH_26H_FINISH_APPROACH_DISTANCE_MM   200.0f
-#define ACCOMPLISH_26H_FINISH_MARKER_ARM_DISTANCE_MM 1700.0f
+#define ACCOMPLISH_26H_FINISH_MARKER_MIN_DISTANCE_MM 5000.0f
+#define ACCOMPLISH_26H_FINISH_MARKER_ARM_DISTANCE_MM \
+    ACCOMPLISH_26H_FINISH_MARKER_MIN_DISTANCE_MM
+/* Retained for K-command compatibility; no longer triggers a stop. */
 #define ACCOMPLISH_26H_MAX_LAP_DISTANCE_MM          6700.0f
 #define ACCOMPLISH_26H_START_CLEAR_DISTANCE_MM         80.0f
-#define ACCOMPLISH_26H_MARKER_MIN_ACTIVE_CHANNELS       3U
+#define ACCOMPLISH_26H_MARKER_ADJACENT_CHANNELS         3U
 #define ACCOMPLISH_26H_MARKER_CLEAR_CONFIRM_TICKS        3U
 #define ACCOMPLISH_26H_MARKER_CONFIRM_TICKS              2U
 #define ACCOMPLISH_26H_FINISH_ROLLOUT_MM                0.0f
@@ -35,6 +38,7 @@ extern float Accomplish26H_TuneStartClearDistanceMM;
 extern float Accomplish26H_TuneNominalLapDistanceMM;
 extern float Accomplish26H_TuneFinishApproachDistanceMM;
 extern float Accomplish26H_TuneFinishMarkerArmDistanceMM;
+/* Legacy h2max storage; retained so published K IDs do not move. */
 extern float Accomplish26H_TuneMaxLapDistanceMM;
 extern float Accomplish26H_TuneFinishRolloutMM;
 

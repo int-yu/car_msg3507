@@ -5,11 +5,13 @@
 #include <math.h>
 
 #define BALL_SEQUENCE_TICK_MS 10U
-#define BALL_SEQUENCE_NEGATIVE_REVERSAL_POSITION_MM (-45.0f)
+#define BALL_SEQUENCE_NEGATIVE_REVERSAL_POSITION_MM (-40.0f)
 #define BALL_SEQUENCE_POSITIVE_CONFIRM_TICKS 4U
 #define BALL_SEQUENCE_NEGATIVE_TIMEOUT_TICKS 2000U
 #define BALL_SEQUENCE_POSITIVE_TIMEOUT_TICKS 2200U
-#define BALL_SEQUENCE_TOTAL_TIMEOUT_TICKS 4500U
+#define BALL_SEQUENCE_POSITIVE_HOLD_TICKS \
+    (BALL_SEQUENCE_POSITIVE_HOLD_MS / BALL_SEQUENCE_TICK_MS)
+#define BALL_SEQUENCE_TOTAL_TIMEOUT_TICKS 5000U
 #define BALL_SEQUENCE_NEGATIVE_OVERSHOOT_POSITION_MM (-65.0f)
 #define BALL_SEQUENCE_PHASE_STALL_TICKS 120U
 #define BALL_SEQUENCE_PHASE_STALL_PROGRESS_MM 1.0f
@@ -349,7 +351,7 @@ void BallSequence_Update(float dt)
         }
 
         /* The controller still aims at -50 mm, but phase 2 starts on the
-         * first sample at or beyond -45 mm. */
+         * first sample at or beyond -40 mm. */
         if (positionMM <= BALL_SEQUENCE_NEGATIVE_REVERSAL_POSITION_MM)
         {
             if (BallSequence_StartPositivePhase(0U) == 0U)
@@ -412,7 +414,6 @@ void BallSequence_Update(float dt)
             (s_context.state == BALL_SEQUENCE_STATE_SWEEP_TO_POSITIVE))
         {
             s_context.state = BALL_SEQUENCE_STATE_SWEEP_HOLDING_POSITIVE;
-            TaskTimer_Stop(TASK_TIMER_OWNER_BALL);
             s_context.phaseElapsedTicks = 0U;
             s_context.confirmTicks = 0U;
             return;
@@ -440,6 +441,18 @@ void BallSequence_Update(float dt)
         {
             BallSequence_Fail(BALL_SEQUENCE_ERROR_STALL);
             return;
+        }
+        return;
+    }
+
+    if (s_context.state == BALL_SEQUENCE_STATE_SWEEP_HOLDING_POSITIVE)
+    {
+        if (s_context.phaseElapsedTicks >= BALL_SEQUENCE_POSITIVE_HOLD_TICKS)
+        {
+            BallBalance_Stop();
+            TaskTimer_Stop(TASK_TIMER_OWNER_BALL);
+            s_context.state = BALL_SEQUENCE_STATE_FINISHED;
+            s_context.phaseElapsedTicks = 0U;
         }
         return;
     }
@@ -517,7 +530,8 @@ uint8_t BallSequence_GetTelemetryPhaseCode(void)
 
 uint8_t BallSequence_GetTelemetryResultCode(void)
 {
-    if (s_context.state == BALL_SEQUENCE_STATE_SWEEP_HOLDING_POSITIVE)
+    if ((s_context.state == BALL_SEQUENCE_STATE_SWEEP_HOLDING_POSITIVE) ||
+        (s_context.state == BALL_SEQUENCE_STATE_FINISHED))
     {
         return 1U;
     }

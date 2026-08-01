@@ -2414,7 +2414,7 @@ const TUNING_FOCUS = {
         stages: {
             start: { label: '① 离开起点', help: '配置巡航速度 h2cru、离开横线距离 h2clr 和要求2独立提速斜率 h2lac；修改后下一次启动生效。', configOnly: true },
             key3: { label: '② KEY3 定时巡线', help: 'KEY3 不识别终点：以 k3acc 提速到 k3cru，持续 k3dur 秒后软停；修改后下一次 KEY3 启动生效。', configOnly: true },
-            position: { label: '③ 终点位置', help: '配置理论圈长 h2lap、横线识别启用距离 h2arm 和漏检保护距离 h2max；修改后下一次 KEY1 启动生效。', configOnly: true },
+            position: { label: '③ 终点位置', help: '配置理论圈长 h2lap 和横线识别启用距离 h2arm；h2arm 最小 5000 mm，且必须超过该里程后相邻三路横线才会停车。h2max 仅保留兼容，修改后下一次 KEY1 启动生效。', configOnly: true },
             finish: { label: '④ 减速停车', help: '配置提前减速距离 h2app、终点慢速 h2fin、横线后前移 h2off 和要求2独立减速度 h2lde。', configOnly: true },
             line: { label: '⑤ 巡线 P/右轮比例', help: 'h2lkp 是要求2独立比例项；h2rr 仅放大顺时针弯道中的右轮减速量，固件默认 2.0，1.0 为对称差速。' },
             integral: { label: '⑥ 巡线 I', help: 'h2lki 默认 0；只有长时间稳定偏向一侧时再少量加入。' },
@@ -2542,7 +2542,7 @@ const PARAM_LABELS = {
     h2cru: '要求2巡航速度（mm/s）', h2fin: '要求2终点慢速（mm/s）',
     h2clr: '离开起点距离（mm）', h2lap: '理论圈长（mm）',
     h2app: '终点提前减速距离（mm）', h2arm: '横线识别启用距离（mm）',
-    h2max: '漏检保护距离（mm）', h2off: '横线后前移距离（mm）',
+    h2max: '保留参数（不参与停车）', h2off: '横线后前移距离（mm）',
     h2lkp: '要求2巡线 Kp（mm/s/权重）',
     h2lki: '要求2巡线 Ki（mm/s/(权重·s)）',
     h2lkd: '要求2巡线 Kd（mm/s/(权重/s)）',
@@ -3812,26 +3812,23 @@ function renderLineRunConfigSummary() {
     const lap = value('h2lap');
     const approach = value('h2app');
     const arm = value('h2arm');
-    const maximum = value('h2max');
     const rollout = value('h2off');
     const acceleration = value('h2lac');
     const deceleration = value('h2lde');
-    if ([cruise, finish, clear, lap, approach, arm, maximum, rollout,
+    if ([cruise, finish, clear, lap, approach, arm, rollout,
          acceleration, deceleration].some((item) => item === null)) {
         summary.textContent = '读取参数后显示下一次 KEY1 的速度与距离配置。';
         summary.classList.remove('warn');
         return;
     }
-    const invalid = finish > cruise || approach > lap || arm < clear ||
-        maximum < lap || arm > maximum;
+    const invalid = finish > cruise || approach > lap || arm < clear;
     const slowStart = lap - approach;
     summary.textContent = invalid ?
-        '配置关系无效：终点慢速不得高于巡航速度，且距离需满足起点清除 ≤ 横线启用 ≤ 最大保护、提前减速 ≤ 圈长 ≤ 最大保护。' :
+        '配置关系无效：终点慢速不得高于巡航速度，且距离需满足起点清除 ≤ 横线启用、提前减速 ≤ 圈长。' :
         `下次 KEY1：以 ${fmtParam(acceleration)} mm/s² 提速至 ${fmtParam(cruise)} mm/s；` +
         `${fmtParam(clear)} mm 后进入正常巡航；${fmtParam(slowStart)} mm 开始按 ` +
         `${fmtParam(deceleration)} mm/s² 降至 ${fmtParam(finish)} mm/s；` +
-        `${fmtParam(arm)} mm 后识别横线，确认后再走 ${fmtParam(rollout)} mm 软停；` +
-        `${fmtParam(maximum)} mm 未识别则保护停车。`;
+        `${fmtParam(arm)} mm 后识别相邻三路横线，确认后再走 ${fmtParam(rollout)} mm 软停。`;
     summary.classList.toggle('warn', invalid);
 }
 

@@ -141,16 +141,18 @@ for (const required of [
     'MotionManager_RequestRequirement2LineStop(',
     'MotionManager_StartBrake(',
     'Graydetect_IsOnline()',
-    'Accomplish26H_CountActiveChannels()',
+    'ACCOMPLISH_26H_MARKER_ADJACENT_CHANNELS',
     'ACCOMPLISH_26H_STATE_SETTLING',
     'ACCOMPLISH_26H_ERROR_TIME_LIMIT',
 ]) {
     assert.ok(task.includes(required), `26H must retain ${required}`);
 }
-assert.match(taskHeader, /ACCOMPLISH_26H_MARKER_MIN_ACTIVE_CHANNELS/,
-    '26H header must expose the six-channel finish-marker criterion');
-assert.match(taskHeader, /ACCOMPLISH_26H_FINISH_MARKER_ARM_DISTANCE_MM\s+1700\.0f/,
-    '26H finish marker must be armed only after 1700 mm');
+assert.match(taskHeader, /ACCOMPLISH_26H_MARKER_ADJACENT_CHANNELS\s+3U/,
+    '26H finish marker must require three adjacent infrared channels');
+assert.doesNotMatch(task, /travelledDistanceMM\s*>=\s*s_runParameters\.maxLapDistanceMM/,
+    '26H must not stop merely because a maximum distance was reached');
+assert.match(taskHeader, /ACCOMPLISH_26H_FINISH_MARKER_MIN_DISTANCE_MM\s+5000\.0f/,
+    '26H finish marker must be armed only after 5000 mm');
 assert.match(taskHeader, /ACCOMPLISH_26H_FINISH_ROLLOUT_MM/,
     '26H header must expose the physical stop-offset calibration');
 assert.match(taskHeader, /ACCOMPLISH_26H_MARKER_CONFIRM_TICKS\s+2U/,
