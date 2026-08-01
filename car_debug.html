@@ -458,6 +458,13 @@ kbd {
             <span class="hint" id="recordStatus">未录制</span>
         </div>
         <div class="row">
+            <button id="btnCurveDiagnostic" class="primary" disabled>开始诊断录制</button>
+            <button id="btnDiagEnterArc" class="mini" disabled>标记进入弧线</button>
+            <button id="btnDiagExitArc" class="mini" disabled>标记出弧线</button>
+            <button id="btnDiagStop" class="danger" disabled>停止并导出 CSV</button>
+        </div>
+        <p class="hint">诊断会自动切换 17 个必要通道并以 100 Hz 录制；结束后在会话中导出“诊断 CSV”，其中包含车速、加速度、差速、球位误差、偏航速率和倾角滞后的派生列。</p>
+        <div class="row">
             <label>标记</label>
             <div id="markButtons" class="mark-row"></div>
         </div>
@@ -577,8 +584,13 @@ kbd {
                 <span class="line-live"><small>实测 LV / RV</small><b id="lineLiveSpeeds">— / —</b></span>
                 <span class="line-live"><small>目标差 TL−TR</small><b id="lineLiveDelta">—</b></span>
                 <span class="line-live"><small>偏航速率 yaw</small><b id="lineLiveYawRate">—</b></span>
-                <span class="line-live"><small>球位置 bpos</small><b id="lineLiveBallPos">—</b></span>
+                <span class="line-live"><small>球位置/目标 bpos/bref</small><b id="lineLiveBallPos">— / —</b></span>
+                <span class="line-live"><small>球速度/目标 bvel/bvref</small><b id="lineLiveBallVelocity">— / —</b></span>
+                <span class="line-live"><small>球控积分 bint</small><b id="lineLiveBallIntegral">—</b></span>
+                <span class="line-live"><small>请求/应用倾角 btcmd/btapp</small><b id="lineLiveTilt">— / —</b></span>
                 <span class="line-live"><small>步进角度 sang</small><b id="lineLiveStepperAngle">—</b></span>
+                <span class="line-live"><small>理论加速度 lacc</small><b id="lineLiveLineAccel">—</b></span>
+                <span class="line-live"><small>实际均速/加速度</small><b id="lineLiveVehicleMotion">— / —</b></span>
             </div>
             <div id="lineSessionParams" class="session-params" style="margin-top: 12px;"></div>
             <div id="lineTrialSpeeds" class="quick-speeds">
@@ -839,7 +851,7 @@ const FRAME_TYPE_SAMPLE = 0x31;
 const FRAME_TYPE_CAP_META = 0x32;
 const FRAME_TYPE_CAP_SAMPLE = 0x33;
 const FRAME_TYPE_CAP_END = 0x34;
-const UNIT_NAMES = ['raw', 'mmps', 'pwm', 'deg', 'mm', 'bits'];
+const UNIT_NAMES = ['raw', 'mmps', 'pwm', 'deg', 'mm', 'bits', 'mmps2'];
 
 /* CRC-8/ATM，与固件 TelemFrame_Crc8Update 完全一致。 */
 function crc8Update(crc, data) {
@@ -885,7 +897,7 @@ class TelemetryParser {
        gray(bits) 与 lerr(raw) 各自独立归一化（组名用列名，互不共享）。 */
     unitOf(column) {
         const unit = this.units[column] || this.captureUnits[column];
-        if (unit === 'mmps' || unit === 'pwm' || unit === 'deg' || unit === 'mm') {
+        if (unit === 'mmps' || unit === 'mmps2' || unit === 'pwm' || unit === 'deg' || unit === 'mm') {
             return unit;
         }
         return column;   /* raw/bits 或未知：各自独立 */
@@ -1134,6 +1146,104 @@ function samplesToCsv(samples) {
     const cols = Object.keys(samples[0]);
     const head = cols.join(',');
     const body = samples.map((s) => cols.map((c) => s[c]).join(',')).join('\n');
+    return head + '\n' + body + '\n';
+}
+
+function diagnosticDerivative(samples, index, valueOf) {
+    let before = null;
+    let after = null;
+    for (let offset = 2; offset <= 8 && before === null; offset += 1) {
+        const sample = samples[index - offset];
+        if (sample && Number.isFinite(sample.ms) && Number.isFinite(valueOf(sample))) {
+            before = sample;
+        }
+    }
+    for (let offset = 2; offset <= 8 && after === null; offset += 1) {
+        const sample = samples[index + offset];
+        if (sample && Number.isFinite(sample.ms) && Number.isFinite(valueOf(sample))) {
+            after = sample;
+        }
+    }
+    if (!before || !after || after.ms <= before.ms) {
+        return null;
+    }
+    const derivative = (valueOf(after) - valueOf(before)) * 1000 /
+        (after.ms - before.ms);
+    return Number.isFinite(derivative) ? derivative : null;
+}
+
+function curveDiagnosticSamples(samples) {
+    if (!Array.isArray(samples)) {
+        return [];
+    }
+    const numberOrBlank = (value, digits = 3) =>
+        Number.isFinite(value) ? Number(value.toFixed(digits)) : '';
+    const mean = (sample, left, right) =>
+        Number.isFinite(sample[left]) && Number.isFinite(sample[right]) ?
+            (sample[left] + sample[right]) / 2 : null;
+
+    return samples.map((sample, index) => {
+        const vref = mean(sample, 'TL', 'TR');
+        const vcar = mean(sample, 'LV', 'RV');
+        const turnCmd = Number.isFinite(sample.TL) && Number.isFinite(sample.TR) ?
+            (sample.TL - sample.TR) / 2 : null;
+        const turnActual = Number.isFinite(sample.LV) && Number.isFinite(sample.RV) ?
+            (sample.LV - sample.RV) / 2 : null;
+        const vehicleAcceleration = diagnosticDerivative(
+            samples, index, (item) => mean(item, 'LV', 'RV'));
+        const yawRate = diagnosticDerivative(samples, index, (item) => item.yaw);
+        const ballError = Number.isFinite(sample.bpos) && Number.isFinite(sample.bref) ?
+            sample.bpos - sample.bref : null;
+        const velocityError = Number.isFinite(sample.bvref) && Number.isFinite(sample.bvel) ?
+            sample.bvref - sample.bvel : null;
+        const tiltLag = Number.isFinite(sample.btcmd) && Number.isFinite(sample.btapp) ?
+            sample.btcmd - sample.btapp : null;
+        const previousMark = index > 0 ? samples[index - 1].mark : 0;
+        const phase = sample.mark === 2 ? 'arc' :
+            (sample.mark === 1 ? 'post_arc' : 'pre_arc');
+        const event = sample.mark === 2 && previousMark !== 2 ? 'enter_arc' :
+            (sample.mark === 1 && previousMark === 2 ? 'exit_arc' : '');
+
+        return {
+            ...sample,
+            phase,
+            event,
+            berr: numberOrBlank(ballError),
+            velErr: numberOrBlank(velocityError),
+            vref: numberOrBlank(vref),
+            vcar: numberOrBlank(vcar),
+            acar: numberOrBlank(vehicleAcceleration, 2),
+            turnCmd: numberOrBlank(turnCmd),
+            turnActual: numberOrBlank(turnActual),
+            yawRate: numberOrBlank(yawRate, 2),
+            tiltLag: numberOrBlank(tiltLag),
+        };
+    });
+}
+
+/*
+ * 诊断 CSV 固定列序。前 18 列是固件原始量，随后是网页派生量；phase/event
+ * 保留两次人工标记，便于脚本直接截取入弧前后窗口，不依赖网页截图。
+ */
+const CURVE_DIAGNOSTIC_COLUMNS = [
+    'ms', 'LD', 'RD', 'lerr', 'TL', 'TR', 'LV', 'RV', 'yaw',
+    'bpos', 'bref', 'bvel', 'bvref', 'bint', 'btcmd', 'btapp', 'sang', 'lacc',
+    'vref', 'vcar', 'acar', 'turnCmd', 'yawRate', 'berr', 'phase', 'event',
+];
+
+function csvCell(value) {
+    const text = value === null || value === undefined ? '' : String(value);
+    return /[",\r\n]/.test(text) ? `"${text.replaceAll('"', '""')}"` : text;
+}
+
+function curveDiagnosticCsv(samples) {
+    const rows = curveDiagnosticSamples(samples);
+    if (rows.length === 0) {
+        return '';
+    }
+    const head = CURVE_DIAGNOSTIC_COLUMNS.join(',');
+    const body = rows.map((sample) => CURVE_DIAGNOSTIC_COLUMNS
+        .map((column) => csvCell(sample[column])).join(',')).join('\n');
     return head + '\n' + body + '\n';
 }
 
@@ -1969,8 +2079,9 @@ const CH = {
     gray: 0x0200, LD: 0x0400, RD: 0x0800,
     vx: 0x1000, vad: 0x2000, bpos: 0x4000, bref: 0x8000,
     sang: 0x10000, bvel: 0x20000, bvref: 0x40000,
+    bint: 0x80000, btcmd: 0x100000, btapp: 0x200000, lacc: 0x400000,
 };
-const CH_ALL = 0x7FFFF;
+const CH_ALL = 0x7FFFFF;
 /* 捕获别名，保留旧引用可读性；与实时流同一套位。 */
 const CAPTURE_CH = CH;
 /* 固件 CAPTURE_MAX_CHANNELS；超出会被固件拒绝，网页先自查给出清晰提示。 */
@@ -1983,7 +2094,14 @@ const CH_LIST = [
     ['gray', 'bits'], ['LD', 'mm'], ['RD', 'mm'],
     ['vx', 'raw'], ['vad', 'mmps'], ['bpos', 'mm'], ['bref', 'mm'],
     ['sang', 'deg'], ['bvel', 'mmps'], ['bvref', 'mmps'],
+    ['bint', 'mm'], ['btcmd', 'deg'], ['btapp', 'deg'], ['lacc', 'mmps2'],
 ];
+
+/* 100 Hz 出弧诊断：17 通道仍保持单帧带宽在 115200 8N1 的安全预算内。 */
+const CURVE_DIAGNOSTIC_MASK =
+    CH.TL | CH.LV | CH.TR | CH.RV | CH.yaw | CH.lerr |
+    CH.LD | CH.RD | CH.bpos | CH.bref | CH.sang |
+    CH.bvel | CH.bvref | CH.bint | CH.btcmd | CH.btapp | CH.lacc;
 
 const SESSIONS = {
     wheel: {
@@ -2858,7 +2976,8 @@ function setConnected(on) {
     document.querySelectorAll(
         'button[data-send], button[data-cmd], button[data-drive], button[data-video-drive], ' +
         '#btnMask, #btnMaxRate, #btnRaw, #btnStop, #btnDriveMode, #btnVideoDriveMode, ' +
-        '#btnVideoCapture, #btnRecord, #btnBallVideoRun, #btnBallVideoStop, ' +
+        '#btnVideoCapture, #btnRecord, #btnCurveDiagnostic, #btnDiagEnterArc, ' +
+        '#btnDiagExitArc, #btnDiagStop, #btnBallVideoRun, #btnBallVideoStop, ' +
         '#btnParamRefresh, #btnParamApplyStored, #btnSessStart, ' +
         '#btnSlaveRate, #btnSlaveStop, #btnSlaveMask, ' +
         '#btnCalFinish, #btnOdomMark, #btnOdomCalc')
@@ -2870,6 +2989,7 @@ function setConnected(on) {
     $('servoD').disabled = !on;
     updateBallSessionButtons();
     updateDriveControls();
+    updateDiagnosticButtons();
     if (!on) {
         /* 断开后键盘不该还在"驾驶"一台连不上的车。 */
         setDriveEnabled(false);
@@ -3456,6 +3576,34 @@ function estimateYawRateDps(samples) {
     return null;
 }
 
+function estimateVehicleAccelerationMMps2(samples) {
+    if (!Array.isArray(samples) || samples.length < 2) {
+        return null;
+    }
+    const latest = samples[samples.length - 1];
+    if (![latest.ms, latest.LV, latest.RV].every(Number.isFinite)) {
+        return null;
+    }
+    const latestSpeed = (latest.LV + latest.RV) / 2;
+    for (let index = samples.length - 2; index >= 0; index -= 1) {
+        const previous = samples[index];
+        if (![previous.ms, previous.LV, previous.RV].every(Number.isFinite)) {
+            continue;
+        }
+        const elapsedMs = latest.ms - previous.ms;
+        if (elapsedMs < 40) {
+            continue;
+        }
+        if (elapsedMs > 250) {
+            break;
+        }
+        const previousSpeed = (previous.LV + previous.RV) / 2;
+        const acceleration = (latestSpeed - previousSpeed) * 1000 / elapsedMs;
+        return Number.isFinite(acceleration) ? acceleration : null;
+    }
+    return null;
+}
+
 function renderLineRunConfigSummary() {
     const summary = $('lineRunConfigSummary');
     if (!summary) return;
@@ -3536,10 +3684,33 @@ function renderLineMonitor() {
     $('lineLiveYawRate').textContent = yawRateDps === null ?
         '—' : yawRateDps.toFixed(1) + ' °/s';
 
-    const ballPos = sample && Number.isFinite(sample.bpos) ? sample.bpos : null;
-    const stepperAngle = sample && Number.isFinite(sample.sang) ? sample.sang : null;
-    $('lineLiveBallPos').textContent = ballPos === null ? '—' : ballPos.toFixed(1) + ' mm';
-    $('lineLiveStepperAngle').textContent = stepperAngle === null ? '—' : stepperAngle.toFixed(1) + '°';
+    const finite = (name) => sample && Number.isFinite(sample[name]) ? sample[name] : null;
+    const ballPos = finite('bpos');
+    const ballRef = finite('bref');
+    const ballVel = finite('bvel');
+    const ballVelRef = finite('bvref');
+    const ballIntegral = finite('bint');
+    const tiltCommand = finite('btcmd');
+    const tiltApplied = finite('btapp');
+    const stepperAngle = finite('sang');
+    const lineAcceleration = finite('lacc');
+    const vehicleSpeed = speedL === null || speedR === null ? null : (speedL + speedR) / 2;
+    const vehicleAcceleration = estimateVehicleAccelerationMMps2(parser.samples);
+    const valuePair = (left, right, digits, unit) =>
+        left === null || right === null ? '— / —' :
+            `${left.toFixed(digits)} / ${right.toFixed(digits)} ${unit}`;
+
+    $('lineLiveBallPos').textContent = valuePair(ballPos, ballRef, 1, 'mm');
+    $('lineLiveBallVelocity').textContent = valuePair(ballVel, ballVelRef, 1, 'mm/s');
+    $('lineLiveBallIntegral').textContent = ballIntegral === null ?
+        '—' : ballIntegral.toFixed(2) + ' mm';
+    $('lineLiveTilt').textContent = valuePair(tiltCommand, tiltApplied, 2, '°');
+    $('lineLiveStepperAngle').textContent = stepperAngle === null ?
+        '—' : stepperAngle.toFixed(2) + '°';
+    $('lineLiveLineAccel').textContent = lineAcceleration === null ?
+        '—' : lineAcceleration.toFixed(1) + ' mm/s²';
+    $('lineLiveVehicleMotion').textContent = valuePair(
+        vehicleSpeed, vehicleAcceleration, 1, 'mm/s · mm/s²');
 
     renderLineSessionParams();
 }
@@ -4938,28 +5109,44 @@ function setMark(value) {
     }
 }
 
-async function startRecording() {
+async function startRecording(options = {}) {
     if (recording || recordingPreparing) return;
+    const diagnostic = options.diagnostic === true;
+    const mask = diagnostic ? CURVE_DIAGNOSTIC_MASK : checkedMask();
+    const desiredRate = diagnostic ? 100 : undefined;
     recordingPreparing = true;
     $('btnRecord').disabled = true;
+    $('btnCurveDiagnostic').disabled = true;
     $('recordStatus').textContent = '正在配置遥测并等待首个样本…';
     try {
-        await prepareTelemetryStream(checkedMask());
+        await prepareTelemetryStream(mask, desiredRate);
     } catch (err) {
         recordingPreparing = false;
         $('btnRecord').disabled = !writer;
+        $('btnCurveDiagnostic').disabled = !writer;
         $('recordStatus').textContent = '未录制';
         log('录制准备失败：' + err.message, 'err');
         return;
     }
     recordingPreparing = false;
     $('btnRecord').disabled = false;
-    recording = { startedAt: Date.now(), samples: [], samplesSlave: [], marks: [] };
-    $('btnRecord').textContent = '停止录制';
-    $('btnRecord').classList.remove('primary');
-    $('btnRecord').classList.add('danger');
-    log('=== 开始录制 ===', 'ok');
+    recording = {
+        startedAt: Date.now(), samples: [], samplesSlave: [], marks: [],
+        kind: diagnostic ? 'curve-diagnostic' : 'normal',
+    };
+    if (diagnostic) {
+        currentMark = 0;
+        renderMarkButtons();
+        log('=== KEY3/KEY4 出弧诊断录制开始：入弧/出弧时点击对应标记 ===', 'ok');
+    }
+    if (!diagnostic) {
+        $('btnRecord').textContent = '停止录制';
+        $('btnRecord').classList.remove('primary');
+        $('btnRecord').classList.add('danger');
+        log('=== 开始录制 ===', 'ok');
+    }
     updateRecordStatus();
+    updateDiagnosticButtons();
 }
 
 function stopRecording() {
@@ -4968,15 +5155,18 @@ function stopRecording() {
     }
     const summary = summarizeSession(recording.samples);
     const summarySlave = summarizeSession(recording.samplesSlave);
+    let completedSession = null;
     if (summary.count > 0 || summarySlave.count > 0) {
-        sessions.unshift({
+        completedSession = {
             id: ++sessionSeq,
             time: new Date(recording.startedAt),
             samples: recording.samples,
             samplesSlave: recording.samplesSlave,
             summary,
             summarySlave,
-        });
+            kind: recording.kind || 'normal',
+        };
+        sessions.unshift(completedSession);
         if (sessions.length > 6) {
             sessions.pop();
         }
@@ -4988,12 +5178,19 @@ function stopRecording() {
         log('录制结束，但没有采到样本（检查主/从遥测频率是否为 0）', 'err');
     }
     recording = null;
+    renderMarkButtons();
     $('btnRecord').textContent = '开始录制';
     $('btnRecord').classList.add('primary');
     $('btnRecord').classList.remove('danger');
     updateRecordStatus();
+    updateDiagnosticButtons();
     persistSessions();
     renderSessions();
+    if (completedSession && completedSession.kind === 'curve-diagnostic') {
+        downloadText(curveDiagnosticCsv(completedSession.samples),
+            `key3_key4_curve_diagnostic_${completedSession.id}.csv`, 'text/csv');
+        log('诊断 CSV 已导出；会话列表中可再次一键导出', 'ok');
+    }
 }
 
 function updateRecordStatus() {
@@ -5011,6 +5208,29 @@ function updateRecordStatus() {
         ` 样本 · ${durS.toFixed(1)}s` +
         (summary.rateHz > 0 ? ` · 主 ${summary.rateHz}Hz` : '') +
         (summarySlave.rateHz > 0 ? ` · 从 ${summarySlave.rateHz}Hz` : '');
+}
+
+function updateDiagnosticButtons() {
+    const diagnostic = recording && recording.kind === 'curve-diagnostic';
+    const normalRecording = recording && recording.kind !== 'curve-diagnostic';
+    const busy = Boolean(recording) || recordingPreparing;
+    const button = $('btnCurveDiagnostic');
+    if (button) {
+        button.disabled = !writer || busy;
+        button.textContent = '开始诊断录制';
+    }
+    const enter = $('btnDiagEnterArc');
+    const exit = $('btnDiagExitArc');
+    if (enter) enter.disabled = !diagnostic;
+    if (exit) exit.disabled = !diagnostic;
+    const stop = $('btnDiagStop');
+    if (stop) stop.disabled = !diagnostic;
+    if ($('btnRecord')) {
+        $('btnRecord').disabled = !writer || recordingPreparing || diagnostic;
+        if (normalRecording) {
+            $('btnRecord').disabled = false;
+        }
+    }
 }
 
 /* 由读取循环调用：录制时把主车样本连同当前标记一起存下来。
@@ -5077,18 +5297,27 @@ function renderSessions() {
         const info = document.createElement('span');
         info.textContent =
             `#${session.id} ${session.time.toTimeString().slice(0, 8)} · ` +
+            (session.kind === 'curve-diagnostic' ? 'KEY3/KEY4 诊断 · ' : '') +
             `主 ${session.summary.count}` +
             (slaveCount > 0 ? ` / 从 ${slaveCount}` : '') + ` 样本 · ` +
             `${(durMs / 1000).toFixed(1)}s · ` +
             `${session.summary.rateHz}Hz` + (marks ? ` · ${marks}` : '');
 
+        const diagnostic = session.kind === 'curve-diagnostic';
         const btnCsv = document.createElement('button');
         btnCsv.className = 'mini';
-        btnCsv.textContent = '整段 CSV';
-        btnCsv.title = slaveCount > 0 ?
-            '主车、从车各导出一个 CSV（共用 t 时间轴，可按 t 对齐两车）' :
-            '导出整段 CSV';
+        btnCsv.textContent = diagnostic ? '诊断 CSV' : '整段 CSV';
+        btnCsv.title = diagnostic ?
+            '导出固定列序、带入弧/出弧事件和派生量的诊断 CSV' :
+            (slaveCount > 0 ?
+                '主车、从车各导出一个 CSV（共用 t 时间轴，可按 t 对齐两车）' :
+                '导出整段 CSV');
         btnCsv.onclick = () => {
+            if (diagnostic) {
+                downloadText(curveDiagnosticCsv(session.samples),
+                    `key3_key4_curve_diagnostic_${session.id}.csv`, 'text/csv');
+                return;
+            }
             if (slaveCount > 0) {
                 downloadText(samplesToCsv(session.samples),
                     `session${session.id}_master.csv`, 'text/csv');
@@ -5599,6 +5828,10 @@ $('btnRecord').onclick = async () => {
         await startRecording();
     }
 };
+$('btnCurveDiagnostic').onclick = () => startRecording({ diagnostic: true });
+$('btnDiagEnterArc').onclick = () => setMark(2);
+$('btnDiagExitArc').onclick = () => setMark(1);
+$('btnDiagStop').onclick = stopRecording;
 document.querySelectorAll('.drive-key[data-drive-car]').forEach((btn) => {
     const dir = btn.dataset.drive;
     const car = btn.dataset.driveCar;

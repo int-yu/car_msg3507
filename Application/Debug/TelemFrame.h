@@ -37,6 +37,7 @@
 #define TELEM_UNIT_DEG  3U
 #define TELEM_UNIT_MM   4U
 #define TELEM_UNIT_BITS 5U
+#define TELEM_UNIT_MMPS2 6U
 
 /* CRC-8/ATM 单字节更新；与 K230Link_Crc8Update 完全一致。 */
 uint8_t TelemFrame_Crc8Update(uint8_t crc, uint8_t data);

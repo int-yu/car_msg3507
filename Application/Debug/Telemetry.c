@@ -1,6 +1,7 @@
 #include "Application/Debug/Telemetry.h"
 #include "Application/Control/BallBalance.h"
 #include "Application/Control/BallSensor.h"
+#include "Application/Control/BeamActuator.h"
 #include "Application/Control/MotionLane.h"
 #include "Application/Control/MotionLine.h"
 #include "Application/Control/MotionManager.h"
@@ -77,6 +78,22 @@ static float Telemetry_ReadBallVelocityReference(void)
 {
     return BallBalance_GetVelocityTargetMMps();
 }
+static float Telemetry_ReadBallIntegral(void)
+{
+    return BallBalance_GetIntegralMMs();
+}
+static float Telemetry_ReadBallTiltCommand(void)
+{
+    return BallBalance_GetTiltCommandDeg();
+}
+static float Telemetry_ReadBeamAppliedTilt(void)
+{
+    return BeamActuator_GetTiltDeg();
+}
+static float Telemetry_ReadLineAcceleration(void)
+{
+    return MotionLine_GetProfileAccelerationMMps2();
+}
 static float Telemetry_ReadStepperAngle(void)
 {
     Stepper_Status_t status;
@@ -111,6 +128,14 @@ static const Telemetry_Channel_t s_channels[] = {
       Telemetry_ReadBallVelocity },
     { TELEMETRY_CH_BVREF, "bvref", TELEM_UNIT_MMPS,
       Telemetry_ReadBallVelocityReference },
+    { TELEMETRY_CH_BINT,  "bint",  TELEM_UNIT_MM,
+      Telemetry_ReadBallIntegral },
+    { TELEMETRY_CH_BTCMD, "btcmd", TELEM_UNIT_DEG,
+      Telemetry_ReadBallTiltCommand },
+    { TELEMETRY_CH_BTAPP, "btapp", TELEM_UNIT_DEG,
+      Telemetry_ReadBeamAppliedTilt },
+    { TELEMETRY_CH_LACC,  "lacc",  TELEM_UNIT_MMPS2,
+      Telemetry_ReadLineAcceleration },
 };
 
 #define TELEMETRY_CHANNEL_COUNT \

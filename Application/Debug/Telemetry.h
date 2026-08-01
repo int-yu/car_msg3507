@@ -14,7 +14,7 @@
 #define TELEMETRY_DEFAULT_RATE_HZ    50U   /* 默认频率；DMA 后可显著高于旧 20Hz。 */
 #define TELEMETRY_RATE_HARD_LIMIT_HZ 100U  /* 上限等于主循环频率。 */
 
-/* 通道位定义（16 位）。位序即 SCHEMA/SAMPLE 的列序，一经发布不得重排。 */
+/* 通道位定义（uint32_t）。位序即 SCHEMA/SAMPLE 的列序，一经发布不得重排。 */
 #define TELEMETRY_CH_TL     0x0001U /* 左轮目标速度 mm/s */
 #define TELEMETRY_CH_LV     0x0002U /* 左轮实测速度 mm/s */
 #define TELEMETRY_CH_PL     0x0004U /* 左轮输出 PWM */
@@ -34,7 +34,11 @@
 #define TELEMETRY_CH_SANG   0x10000UL /* Stepper MT6816 PWM absolute angle deg */
 #define TELEMETRY_CH_BVEL   0x20000UL /* 钢球实测速度 mm/s */
 #define TELEMETRY_CH_BVREF  0x40000UL /* 串级速度环目标 mm/s */
-#define TELEMETRY_CH_ALL    0x7FFFFUL
+#define TELEMETRY_CH_BINT   0x80000UL /* 球速度误差积分 mm */
+#define TELEMETRY_CH_BTCMD  0x100000UL /* 球控制器请求倾角 deg */
+#define TELEMETRY_CH_BTAPP  0x200000UL /* 斜率限制后的应用倾角 deg */
+#define TELEMETRY_CH_LACC   0x400000UL /* 巡线速度规划加速度 mm/s2 */
+#define TELEMETRY_CH_ALL    0x7FFFFFUL
 
 void Telemetry_Init(void);
 void Telemetry_Update(uint8_t elapsedTicks, uint8_t pressedKeys);
