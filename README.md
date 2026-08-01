@@ -213,7 +213,7 @@ Heading -> Odometry -> 六路红外 -> Stepper -> Key -> K230Link -> BallSensor
 | `P<number>` | 请求 K230 连拍并存 TF 卡 | `1~20`，链路未就绪返回 `ERR CAP NOLINK` | `P1` |
 | `W<number>` | 闭环恒速模式：双轮同目标速度、无规划斜坡、无航向修正，是轮速 PI 的标准阶跃激励；运动中重复发 `W` 直接改目标（不复位 PID，可链式阶跃）；`W0` 停止并释放电机 | `-800~800` mm/s；其他模式忙时 `ERR BUSY`，`W0` 只停恒速模式 | `W300` |
 | `N<number>` | 直接启动巡线（不经 Mission 状态图）；`N0` 停止 | `20~800` mm/s；其他模式忙时 `ERR BUSY`，`N0` 只停巡线模式；丢线后自动完成 | `N200` |
-| `K?` / `K<id>?` / `K<id>=<float>` | 运行时读写控制参数（见 3.3.1 参数表）：列表 / 读单个 / 写入（支持小数与负号，写入立即生效） | id `1~33`；越界返回 `ERR K RANGE MIN=<min> MAX=<max>`，格式错误返回 `ERR K FORMAT` | `K28=0.1` |
+| `K?` / `K<id>?` / `K<id>=<float>` | 运行时读写控制参数（见 3.3.1 参数表）：列表 / 读单个 / 写入（支持小数与负号，写入立即生效） | id `1~62`；越界返回 `ERR K RANGE MIN=<min> MAX=<max>`，格式错误返回 `ERR K FORMAT` | `K28=0.1` |
 | `E<number>` | 陀螺仪尺度标定：`E1` 开始（清零标定角），`E0` 取消 | 仅 `0/1`；运动中 `ERR BUSY`，MPU 离线 `ERR CAL OFFLINE` | `E1` |
 | `Y<number>` | 原地转 n 整圈回到起始朝向后结束标定，解算并应用尺度因子 | `1~20` 圈；未在标定中返回 `ERR CAL IDLE`，积分角过小返回 `ERR CAL SMALL`；成功回 `OK Y SCALE=<新因子> RAW=<积分角>` | `Y3` |
 | `Q` | 查询遥测能力；**上位机据此自适应频率，不再各存一份阈值** | 无参数（裸 `Q` 即可）；回 `OK Q MAX=<上限Hz> MASK=<掩码> RATE=<当前Hz>` | `Q` |
@@ -344,12 +344,15 @@ Heading -> Odometry -> 六路红外 -> Stepper -> Key -> K230Link -> BallSensor
 | 57 | `k2kp` | `BallSequence_TunePositionKpPerS` | 1/s | 0~10 |
 | 58 | `k2kd` | `BallSequence_TuneVelocityKpDegPerMMps` | 度/(mm/s) | 0~1 |
 | 59 | `k2ki` | `BallSequence_TuneVelocityKiDegPerMM` | 度/mm | 0~0.2 |
+| 60 | `k2pkp` | `BallSequence_TunePositivePositionKpPerS` | 1/s | 0~10 |
+| 61 | `k2pkd` | `BallSequence_TunePositiveVelocityKpDegPerMMps` | 度/(mm/s) | 0~1 |
+| 62 | `k2pki` | `BallSequence_TunePositiveVelocityKiDegPerMM` | 度/mm | 0~0.2 |
 
 id 一经发布不得重排，新增参数只能在尾部追加。K1~K5 为旧上位机保留：写入会同时覆盖左右轮，读取返回两侧当前值的平均数；新调参应使用 K17~K26 分别设置左右轮。基础前馈公式为 `PWMbase = speed×ff + sign(speed)×sf`，再叠加该轮 PI 与上层 trim，最终夹到 ±1000；这是底层轮速环标定，不属于巡线层额外前馈。要求 2、KEY3 和巡线 PID 参数都在对应任务下次启动时快照，当前运行中写入不会切换本圈参数。巡线层只保留统一 PID，不再有弯道低速上限、压线降速、差速变化率限幅或弯道保持距离。`ldec` 沿用 MotionLine 统一减速度，同时负责终点降速和最终软停，不增加额外状态机配置。`gsc` 由 `E1`→原地转 N 圈→`Y<n>` 标定流程自动写入；`cpm` 建议用网页里程标定向导。
 
 K31~K36 是要求 3 摆球的标定量。上电前先手动把摆杆放到平衡位置，固件会自动捕获 `bzo`；如仍有机械水平误差，可在网页读取自动值后小幅微调。其余参数仍需实车标定：先确认 `bgr`，再用钢球放在 0/±25/±50 mm 处校准 `bhl`，然后调 `bkp` 让钢球能回目标，调 `bkd` 压住过冲和往复。固件中的 `bki` 初值为 0.20；实车首次整定建议先通过网页设为 0，只有确认 P/D 已经调顺且仍存在稳定偏差时再小量加入。
 
-K57~K59 是实体 KEY2 扫描独占的串级控制参数：`k2kp` 为位置外环 P，`k2kd` 为速度内环 P，`k2ki` 为速度内环 I。它们在每次 KEY2 扫描开始时复制到本轮控制器，修改不会影响默认 O 点保持、C3、KEY3 或 KEY4，当前扫描中修改则从下一轮开始生效。网页“要求3摆球 → KEY2 专用 PID”可直接调整这三个参数。
+K57~K62 是实体 KEY2 扫描独占的两套串级控制参数。阶段一 O→-50 mm 使用 `k2kp/k2kd/k2ki`，阶段二 -50→+50 mm 使用 `k2pkp/k2pkd/k2pki`；每套均依次对应位置外环 P、速度内环 P、速度内环 I。KEY2 启动时会同时快照两套参数，因此当前扫描中修改只对下一次 KEY2 生效，也不会影响默认 O 点保持、C3、KEY3 或 KEY4。网页“要求3摆球”中可分别进入两个 KEY2 PID 阶段调整。
 
 **遥测 CSV 格式（⚠️ 历史架构，已被 3.3.0 的二进制帧取代）。** 以下 ASCII CSV 描述对应第一次架构；当前固件发二进制 SCHEMA/SAMPLE 帧，通道定义见 3.3.2。保留本段仅为理解演进历史。每次字段掩码改变时输出一行表头 `H,...`，随后每隔 `1000/G` ms 输出一行数据：
 

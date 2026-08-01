@@ -126,24 +126,29 @@ assert.ok(bluetoothHeader.includes(
 
 for (const name of [
     'bgr', 'bzo', 'bhl', 'bki', 'bkd', 'bkp', 'bvm',
-    'k2kp', 'k2kd', 'k2ki',
+    'k2kp', 'k2kd', 'k2ki', 'k2pkp', 'k2pkd', 'k2pki',
 ]) {
     assert.ok(html.includes(`${name}:`),
         `ball parameter metadata missing ${name}`);
 }
 assert.match(html,
     /ball:\s*\{[^]*key2:[^]*\['k2kp', 'k2kd', 'k2ki'\]/,
-    'ball tuning focus must expose the KEY2-only PID stage');
+    'ball tuning focus must expose the KEY2 phase-1 PID stage');
+assert.match(html,
+    /ball:\s*\{[^]*key2positive:[^]*\['k2pkp', 'k2pkd', 'k2pki'\]/,
+    'ball tuning focus must expose the KEY2 phase-2 PID stage');
 assert.match(param,
     /"bzo"[\s\S]*?STEPPER_MIN_ANGLE_DEG,\s*STEPPER_MAX_ANGLE_DEG/,
     'bzo tuning must use the same absolute range as the stepper');
-for (const name of ['k2kp', 'k2kd', 'k2ki']) {
+for (const name of [
+    'k2kp', 'k2kd', 'k2ki', 'k2pkp', 'k2pkd', 'k2pki',
+]) {
     assert.ok(param.includes(`{ "${name}"`),
         `K parameter table missing KEY2-only gain ${name}`);
 }
 assert.match(param,
-    /\{ "k3dur"[^]*?\{ "k2kp"[^]*?\{ "k2kd"[^]*?\{ "k2ki"/,
-    'KEY2-only gains must be appended after the existing K56 entry');
+    /\{ "k3dur"[^]*?\{ "k2kp"[^]*?\{ "k2kd"[^]*?\{ "k2ki"[^]*?\{ "k2pkp"[^]*?\{ "k2pkd"[^]*?\{ "k2pki"/,
+    'both KEY2 gain sets must remain appended after the existing K56 entry');
 
 for (const required of [
     "if (p.startReply)",

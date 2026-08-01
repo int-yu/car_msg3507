@@ -167,12 +167,15 @@ static void test_active_hold_retargets_without_restart(void)
     CHECK_NEAR(BallSequence_GetTargetMM(), -20.0f, 0.001f);
 }
 
-static void test_sweep_reverses_without_waiting_for_stability(void)
+static void test_sweep_switches_to_snapshotted_positive_phase_gains(void)
 {
     reset_fakes();
     BallSequence_TunePositionKpPerS = 3.0f;
     BallSequence_TuneVelocityKpDegPerMMps = 0.4f;
     BallSequence_TuneVelocityKiDegPerMM = 0.1f;
+    BallSequence_TunePositivePositionKpPerS = 4.0f;
+    BallSequence_TunePositiveVelocityKpDegPerMMps = 0.5f;
+    BallSequence_TunePositiveVelocityKiDegPerMM = 0.15f;
     CHECK(BallSequence_StartSweep() != 0U);
     TaskTimer_Start(TASK_TIMER_OWNER_BALL);
     CHECK(BallSequence_GetState() ==
@@ -182,15 +185,24 @@ static void test_sweep_reverses_without_waiting_for_stability(void)
     CHECK_NEAR(s_velocityKpDegPerMMps, 0.4f, 0.001f);
     CHECK_NEAR(s_velocityKiDegPerMM, 0.1f, 0.001f);
 
-    s_positionMM = -44.0f;
-    BallSequence_Update(0.01f);
-    CHECK(s_setTargetCount == 0U);
+    /* Web writes during phase 1 must not alter this active sweep's phase 2. */
+    BallSequence_TunePositivePositionKpPerS = 9.0f;
+    BallSequence_TunePositiveVelocityKpDegPerMMps = 0.9f;
+    BallSequence_TunePositiveVelocityKiDegPerMM = 0.19f;
 
-    s_positionMM = -45.0f;
+    s_positionMM = BALL_SEQUENCE_REVERSAL_POSITION_MM + 1.0f;
+    BallSequence_Update(0.01f);
+    CHECK(s_startCount == 1U);
+
+    s_positionMM = BALL_SEQUENCE_REVERSAL_POSITION_MM;
     s_stable = 0U;
     BallSequence_Update(0.01f);
-    CHECK(s_setTargetCount == 1U);
+    CHECK(s_startCount == 2U);
+    CHECK(s_setTargetCount == 0U);
     CHECK_NEAR(s_targetMM, 50.0f, 0.001f);
+    CHECK_NEAR(s_positionKpPerS, 4.0f, 0.001f);
+    CHECK_NEAR(s_velocityKpDegPerMMps, 0.5f, 0.001f);
+    CHECK_NEAR(s_velocityKiDegPerMM, 0.15f, 0.001f);
     CHECK(BallSequence_GetState() ==
           BALL_SEQUENCE_STATE_SWEEP_TO_POSITIVE);
 
@@ -281,7 +293,7 @@ int main(void)
     test_holds_closed_loop_until_stopped();
     test_hold_reports_existing_balance_stability();
     test_active_hold_retargets_without_restart();
-    test_sweep_reverses_without_waiting_for_stability();
+    test_sweep_switches_to_snapshotted_positive_phase_gains();
     test_retarget_cancels_active_sweep();
     test_idle_hold_rejects_retarget();
     test_balance_error_aborts();

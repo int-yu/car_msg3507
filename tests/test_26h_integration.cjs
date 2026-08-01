@@ -209,7 +209,7 @@ for (const name of [
     'h2cru', 'h2fin', 'h2clr', 'h2lap', 'h2app', 'h2arm', 'h2max',
     'lacc', 'ldec', 'lra', 'lki', 'lkd',
     'k3acc', 'k3cru', 'k3dur',
-    'k2kp', 'k2kd', 'k2ki',
+    'k2kp', 'k2kd', 'k2ki', 'k2pkp', 'k2pkd', 'k2pki',
 ]) {
     assert.ok(param.includes(`{ "${name}"`),
         `K parameter table must append ${name}`);
@@ -221,8 +221,8 @@ assert.match(param, /"lckd"[\s\S]*?Param_GetLineCurveKd/,
 assert.ok(param.indexOf('{ "bvm"') < param.indexOf('{ "lki"'),
     'bvm must retain its published K50 slot before the appended line Ki');
 assert.match(param,
-    /\{ "k3dur"[^]*?\{ "k2kp"[^]*?\{ "k2kd"[^]*?\{ "k2ki"/,
-    'KEY2-only PID parameters must be appended after the published K56 slot');
+    /\{ "k3dur"[^]*?\{ "k2kp"[^]*?\{ "k2kd"[^]*?\{ "k2ki"[^]*?\{ "k2pkp"[^]*?\{ "k2pkd"[^]*?\{ "k2pki"/,
+    'both KEY2 PID sets must be appended after the published K56 slot');
 assert.doesNotMatch(task + read('Application/Control/MotionManager.h') +
     read('Application/Control/MotionManager.c'), /SetLineDeceleration/,
     'H2 must keep the existing MotionLine control path without a runtime deceleration setter');

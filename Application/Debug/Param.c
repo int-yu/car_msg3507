@@ -166,6 +166,12 @@ PARAM_VAR_ACCESSORS(BallFeedforwardThreshold, BallBalance_TuneFeedforwardSpeedTh
 PARAM_VAR_ACCESSORS(Key2BallKp, BallSequence_TunePositionKpPerS)
 PARAM_VAR_ACCESSORS(Key2BallKd, BallSequence_TuneVelocityKpDegPerMMps)
 PARAM_VAR_ACCESSORS(Key2BallKi, BallSequence_TuneVelocityKiDegPerMM)
+PARAM_VAR_ACCESSORS(Key2PositiveBallKp,
+                    BallSequence_TunePositivePositionKpPerS)
+PARAM_VAR_ACCESSORS(Key2PositiveBallKd,
+                    BallSequence_TunePositiveVelocityKpDegPerMMps)
+PARAM_VAR_ACCESSORS(Key2PositiveBallKi,
+                    BallSequence_TunePositiveVelocityKiDegPerMM)
 PARAM_VAR_ACCESSORS(BallHalfLength, BallSensor_TuneHalfLengthMM)
 PARAM_VAR_ACCESSORS(BeamGearRatio, BeamActuator_TuneGearRatio)
 PARAM_VAR_ACCESSORS(BeamZeroOffset, BeamActuator_TuneZeroOffsetDeg)
@@ -282,12 +288,19 @@ static const Param_Entry_t s_params[] = {
       20.0f, 2000.0f },
     { "k3dur", Param_GetKey3RunDuration, Param_SetKey3RunDuration,
       1.0f, 60.0f },
-    /* KEY2 sweep gains are separate from the shared hold controller. */
+    /* KEY2 phase 1 (O -> -50 mm) gains, kept in their published K57-K59 slots. */
     { "k2kp", Param_GetKey2BallKp, Param_SetKey2BallKp,
       0.0f, 10.0f },
     { "k2kd", Param_GetKey2BallKd, Param_SetKey2BallKd,
       0.0f, 1.0f },
     { "k2ki", Param_GetKey2BallKi, Param_SetKey2BallKi,
+      0.0f, 0.2f },
+    /* KEY2 phase 2 (-50 mm -> +50 mm) gains are appended as K60-K62. */
+    { "k2pkp", Param_GetKey2PositiveBallKp, Param_SetKey2PositiveBallKp,
+      0.0f, 10.0f },
+    { "k2pkd", Param_GetKey2PositiveBallKd, Param_SetKey2PositiveBallKd,
+      0.0f, 1.0f },
+    { "k2pki", Param_GetKey2PositiveBallKi, Param_SetKey2PositiveBallKi,
       0.0f, 0.2f },
 };
 

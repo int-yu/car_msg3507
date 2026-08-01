@@ -2037,7 +2037,7 @@ const SESSIONS = {
         stopCmd: 'C4', startReply: 'OK BALL START',
         stopReply: 'OK BALL STOP',
         params: ['bgr', 'bzo', 'bhl', 'bkp', 'bvm', 'bkd', 'bki',
-                 'k2kp', 'k2kd', 'k2ki'],
+                 'k2kp', 'k2kd', 'k2ki', 'k2pkp', 'k2pkd', 'k2pki'],
         structure: '球位误差 -> 位置外环 P(bkp) -> 目标速度(bvref，限幅bvm) -> 速度内环 PI(bkd,bki) -> 摆杆倾角；球速优先使用K230发送值，否则TI差分计算',
         columnsNote: 'bpos/bref=实测/目标位置mm，bvel/bvref=实测/目标速度mm/s，sang=步进绝对角度deg',
         expectation: '先令 bki=0，调 bkd 使速度跟随 bvref，再调 bkp/bvm 提高位置响应，最后少量增加 bki 克服静摩擦',
@@ -2166,7 +2166,8 @@ const TUNING_FOCUS = {
     ball: {
         label: '要求3摆球', defaultSide: 'main', defaultStage: 'geometry',
         stages: {
-            key2: { label: 'KEY2 专用 PID', help: '只调整 KEY2 的 -50 mm 到 +50 mm 扫描；k2kp 是位置外环 P，k2kd/k2ki 是速度内环 PI。修改后下一次 KEY2 扫描生效。' },
+            key2: { label: 'KEY2 阶段一 O→-50 PID', help: '只调整 KEY2 从 O 点到 -50 mm：k2kp 是位置外环 P，k2kd/k2ki 是速度内环 PI。' },
+            key2positive: { label: 'KEY2 阶段二 -50→+50 PID', help: '只调整 KEY2 从 -50 mm 到 +50 mm：k2pkp 是位置外环 P，k2pkd/k2pki 是速度内环 PI。两套参数都在下一次 KEY2 启动时生效。' },
             geometry: { label: '① 机械标定', help: '先调 bgr / bzo：确认传动比与水平零点，摆杆上电必须水平。' },
             sensor: { label: '② 视觉标定', help: '只调 bhl：把钢球放在已知刻度，校准 K230 千分比到毫米。' },
             position: { label: '③ 比例 P', help: '先调 bkp，让钢球能朝目标方向回收，避免倾角长期顶到限位。' },
@@ -2180,6 +2181,7 @@ const TUNING_FOCUS = {
                 mask: CH.bpos | CH.bref | CH.bvel | CH.bvref | CH.sang,
                 params: {
                     key2: ['k2kp', 'k2kd', 'k2ki'],
+                    key2positive: ['k2pkp', 'k2pkd', 'k2pki'],
                     geometry: ['bgr', 'bzo'], sensor: ['bhl'],
                     position: ['bkp', 'bvm'], damping: ['bkd'],
                     integral: ['bki'], verify: [],
@@ -2232,9 +2234,12 @@ const TUNING_FOCUS = {
 };
 
 const PARAM_LABELS = {
-    k2kp: 'KEY2 位置外环 Kp（1/s）',
-    k2kd: 'KEY2 速度内环 Kp（度/(mm/s)）',
-    k2ki: 'KEY2 速度内环 Ki（度/mm）',
+    k2kp: 'KEY2 阶段一位置外环 Kp（1/s）',
+    k2kd: 'KEY2 阶段一速度内环 Kp（度/(mm/s)）',
+    k2ki: 'KEY2 阶段一速度内环 Ki（度/mm）',
+    k2pkp: 'KEY2 阶段二位置外环 Kp（1/s）',
+    k2pkd: 'KEY2 阶段二速度内环 Kp（度/(mm/s)）',
+    k2pki: 'KEY2 阶段二速度内环 Ki（度/mm）',
     wkp: '双轮批量Kp（兼容）', wki: '双轮批量Ki（兼容）',
     wil: '双轮批量积分限（兼容）', wff: '双轮批量前馈（兼容）',
     wsf: '双轮批量静摩擦（兼容）',
@@ -2265,9 +2270,12 @@ const PARAM_LABELS = {
     k3dur: 'KEY3 运行时间（s）',
 };
 const PARAM_GROUPS = {
-    k2kp: 'KEY2 摆球扫描专用 PID',
-    k2kd: 'KEY2 摆球扫描专用 PID',
-    k2ki: 'KEY2 摆球扫描专用 PID',
+    k2kp: 'KEY2 阶段一 O→-50 PID',
+    k2kd: 'KEY2 阶段一 O→-50 PID',
+    k2ki: 'KEY2 阶段一 O→-50 PID',
+    k2pkp: 'KEY2 阶段二 -50→+50 PID',
+    k2pkd: 'KEY2 阶段二 -50→+50 PID',
+    k2pki: 'KEY2 阶段二 -50→+50 PID',
     lwkp: '左轮速度 PI 与前馈', lwki: '左轮速度 PI 与前馈',
     lwil: '左轮速度 PI 与前馈', lwff: '左轮速度 PI 与前馈',
     lwsf: '左轮速度 PI 与前馈',
@@ -2300,6 +2308,7 @@ const WHEEL_MECHANICAL_BASELINE = {
 };
 const PARAM_NUDGE_STEPS = {
     k2kp: 0.05, k2kd: 0.005, k2ki: 0.001,
+    k2pkp: 0.05, k2pkd: 0.005, k2pki: 0.001,
     lwkp: 0.02, rwkp: 0.02,
     lwki: 0.001, rwki: 0.001,
     lwil: 5, rwil: 5,

@@ -8,6 +8,12 @@ float BallSequence_TuneVelocityKpDegPerMMps =
     BALL_SEQUENCE_VELOCITY_KP_DEG_PER_MMPS;
 float BallSequence_TuneVelocityKiDegPerMM =
     BALL_SEQUENCE_VELOCITY_KI_DEG_PER_MM;
+float BallSequence_TunePositivePositionKpPerS =
+    BALL_SEQUENCE_POSITIVE_POSITION_KP_PER_S;
+float BallSequence_TunePositiveVelocityKpDegPerMMps =
+    BALL_SEQUENCE_POSITIVE_VELOCITY_KP_DEG_PER_MMPS;
+float BallSequence_TunePositiveVelocityKiDegPerMM =
+    BALL_SEQUENCE_POSITIVE_VELOCITY_KI_DEG_PER_MM;
 
 typedef struct
 {
@@ -15,6 +21,9 @@ typedef struct
     BallSequence_Error_t error;
     uint32_t elapsedTicks;
     float targetMM;
+    float positivePositionKpPerS;
+    float positiveVelocityKpDegPerMMps;
+    float positiveVelocityKiDegPerMM;
 } BallSequence_Context_t;
 
 static BallSequence_Context_t s_context;
@@ -39,6 +48,12 @@ void BallSequence_Init(void)
         BALL_SEQUENCE_VELOCITY_KP_DEG_PER_MMPS;
     BallSequence_TuneVelocityKiDegPerMM =
         BALL_SEQUENCE_VELOCITY_KI_DEG_PER_MM;
+    BallSequence_TunePositivePositionKpPerS =
+        BALL_SEQUENCE_POSITIVE_POSITION_KP_PER_S;
+    BallSequence_TunePositiveVelocityKpDegPerMMps =
+        BALL_SEQUENCE_POSITIVE_VELOCITY_KP_DEG_PER_MMPS;
+    BallSequence_TunePositiveVelocityKiDegPerMM =
+        BALL_SEQUENCE_POSITIVE_VELOCITY_KI_DEG_PER_MM;
     BallBalance_Init();
 }
 
@@ -60,6 +75,15 @@ uint8_t BallSequence_Start(float targetMM)
 
 uint8_t BallSequence_StartSweep(void)
 {
+    /* Both phase gain sets are snapshotted together.  Web writes during an
+     * active sweep therefore take effect on the next KEY2 run only. */
+    s_context.positivePositionKpPerS =
+        BallSequence_TunePositivePositionKpPerS;
+    s_context.positiveVelocityKpDegPerMMps =
+        BallSequence_TunePositiveVelocityKpDegPerMMps;
+    s_context.positiveVelocityKiDegPerMM =
+        BallSequence_TunePositiveVelocityKiDegPerMM;
+
     if (BallBalance_StartWithGains(
             BALL_SEQUENCE_NEGATIVE_TARGET_MM,
             BallSequence_TunePositionKpPerS,
@@ -120,7 +144,11 @@ void BallSequence_Update(float dt)
         (BallBalance_GetPositionMM() <=
          BALL_SEQUENCE_REVERSAL_POSITION_MM))
     {
-        if (BallBalance_SetTarget(BALL_SEQUENCE_POSITIVE_TARGET_MM) !=
+        if (BallBalance_StartWithGains(
+                BALL_SEQUENCE_POSITIVE_TARGET_MM,
+                s_context.positivePositionKpPerS,
+                s_context.positiveVelocityKpDegPerMMps,
+                s_context.positiveVelocityKiDegPerMM) !=
             BALL_BALANCE_RESULT_OK)
         {
             BallSequence_Fail(BALL_SEQUENCE_ERROR_BALANCE);

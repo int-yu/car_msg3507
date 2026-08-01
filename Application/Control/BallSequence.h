@@ -17,9 +17,21 @@
 #define BALL_SEQUENCE_VELOCITY_KP_DEG_PER_MMPS   0.35f
 #define BALL_SEQUENCE_VELOCITY_KI_DEG_PER_MM     0.20f
 
+/* KEY2 phase 2 (-50 mm -> +50 mm) starts with the same conservative values
+ * as phase 1, but has an independent runtime tuning set. */
+#define BALL_SEQUENCE_POSITIVE_POSITION_KP_PER_S \
+    BALL_SEQUENCE_POSITION_KP_PER_S
+#define BALL_SEQUENCE_POSITIVE_VELOCITY_KP_DEG_PER_MMPS \
+    BALL_SEQUENCE_VELOCITY_KP_DEG_PER_MMPS
+#define BALL_SEQUENCE_POSITIVE_VELOCITY_KI_DEG_PER_MM \
+    BALL_SEQUENCE_VELOCITY_KI_DEG_PER_MM
+
 extern float BallSequence_TunePositionKpPerS;
 extern float BallSequence_TuneVelocityKpDegPerMMps;
 extern float BallSequence_TuneVelocityKiDegPerMM;
+extern float BallSequence_TunePositivePositionKpPerS;
+extern float BallSequence_TunePositiveVelocityKpDegPerMMps;
+extern float BallSequence_TunePositiveVelocityKiDegPerMM;
 
 typedef enum
 {
