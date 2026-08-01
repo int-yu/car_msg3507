@@ -5,7 +5,9 @@
 static float s_lastTargetDeg;
 static uint8_t s_enableCalls;
 static uint8_t s_setPositionCalls;
+static uint16_t s_trackCalls;
 static Stepper_Result_t s_trackResult;
+static Stepper_Status_t s_stepperStatus;
 
 Stepper_Result_t Stepper_Enable(bool enable)
 {
@@ -27,8 +29,14 @@ Stepper_Result_t Stepper_TrackToAngle(
     float degrees, const Stepper_Profile_t *profile)
 {
     (void)profile;
+    s_trackCalls++;
     s_lastTargetDeg = degrees;
     return s_trackResult;
+}
+
+void Stepper_GetStatus(Stepper_Status_t *status)
+{
+    *status = s_stepperStatus;
 }
 
 static void reset_fakes(void)
@@ -36,22 +44,41 @@ static void reset_fakes(void)
     s_lastTargetDeg = 0.0f;
     s_enableCalls = 0U;
     s_setPositionCalls = 0U;
+    s_trackCalls = 0U;
     s_trackResult = STEPPER_RESULT_OK;
+    s_stepperStatus.enabled = true;
+    s_stepperStatus.ready = true;
+    s_stepperStatus.busy = false;
+    s_stepperStatus.pwmValid = true;
+    s_stepperStatus.absoluteAngleDeg = 173.5f;
     BeamActuator_Init();
 }
 
-static void test_absolute_horizontal_reference_is_preserved(void)
+static void test_power_on_angle_becomes_horizontal_zero(void)
 {
     reset_fakes();
 
     CHECK_NEAR(BeamActuator_TuneGearRatio,
                BEAM_ACTUATOR_GEAR_RATIO, 0.001f);
-    CHECK_NEAR(BeamActuator_TuneZeroOffsetDeg,
-               STEPPER_INITIAL_ANGLE_DEG, 0.001f);
+    CHECK(BeamActuator_IsZeroCalibrated() == 0U);
     CHECK(s_enableCalls == 1U);
     CHECK(s_setPositionCalls == 0U);
     BeamActuator_Update(0.01f);
-    CHECK_NEAR(s_lastTargetDeg, STEPPER_INITIAL_ANGLE_DEG, 0.001f);
+    CHECK(BeamActuator_IsZeroCalibrated() != 0U);
+    CHECK_NEAR(BeamActuator_TuneZeroOffsetDeg, 173.5f, 0.001f);
+    CHECK_NEAR(s_lastTargetDeg, 173.5f, 0.001f);
+}
+
+static void test_waits_for_valid_stepper_reference(void)
+{
+    reset_fakes();
+    s_stepperStatus.ready = false;
+    s_stepperStatus.pwmValid = false;
+
+    BeamActuator_Update(0.01f);
+
+    CHECK(BeamActuator_IsZeroCalibrated() == 0U);
+    CHECK(s_trackCalls == 0U);
 }
 
 static void test_positive_ball_correction_raises_stepper(void)
@@ -62,9 +89,9 @@ static void test_positive_ball_correction_raises_stepper(void)
     BeamActuator_SetTiltDeg(-2.0f);
     BeamActuator_Update(0.01f);
 
-    CHECK(s_lastTargetDeg > STEPPER_INITIAL_ANGLE_DEG);
+    CHECK(s_lastTargetDeg > 173.5f);
     CHECK_NEAR(s_lastTargetDeg,
-               STEPPER_INITIAL_ANGLE_DEG +
+               173.5f +
                    2.0f * BEAM_ACTUATOR_GEAR_RATIO,
                0.001f);
 }
@@ -79,7 +106,7 @@ static void test_large_tilt_is_not_clamped_by_actuator(void)
     CHECK_NEAR(BeamActuator_GetRequestedTiltDeg(), -30.0f, 0.001f);
     CHECK_NEAR(BeamActuator_GetTiltDeg(), -30.0f, 0.001f);
     CHECK_NEAR(s_lastTargetDeg,
-               STEPPER_INITIAL_ANGLE_DEG +
+               173.5f +
                    30.0f * BEAM_ACTUATOR_GEAR_RATIO,
                0.001f);
 }
@@ -98,7 +125,8 @@ static void test_bottom_limit_result_does_not_freeze_applied_tilt(void)
 
 int main(void)
 {
-    test_absolute_horizontal_reference_is_preserved();
+    test_power_on_angle_becomes_horizontal_zero();
+    test_waits_for_valid_stepper_reference();
     test_positive_ball_correction_raises_stepper();
     test_large_tilt_is_not_clamped_by_actuator();
     test_bottom_limit_result_does_not_freeze_applied_tilt();

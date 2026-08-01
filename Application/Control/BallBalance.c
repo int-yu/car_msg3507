@@ -22,6 +22,10 @@ typedef struct
     float targetMM;
     float velocityTargetMMps;
     float velocityIntegralMM;
+    float positionKpPerS;
+    float velocityKpDegPerMMps;
+    float velocityKiDegPerMM;
+    uint8_t useGainOverride;
     float tiltCommandDeg;
     uint16_t settleTicks;
     uint16_t visionLostTicks;
@@ -53,6 +57,10 @@ static void BallBalance_ResetRuntime(void)
     s_context.targetMM = 0.0f;
     s_context.velocityTargetMMps = 0.0f;
     s_context.velocityIntegralMM = 0.0f;
+    s_context.positionKpPerS = 0.0f;
+    s_context.velocityKpDegPerMMps = 0.0f;
+    s_context.velocityKiDegPerMM = 0.0f;
+    s_context.useGainOverride = 0U;
     s_context.tiltCommandDeg = 0.0f;
     s_context.settleTicks = 0U;
     s_context.visionLostTicks = 0U;
@@ -94,6 +102,7 @@ void BallBalance_Init(void)
 BallBalance_Result_t BallBalance_Start(float targetMM)
 {
     if ((BallSensor_IsFresh() == 0U) ||
+        (BeamActuator_IsZeroCalibrated() == 0U) ||
         (BallBalance_TargetIsValid(targetMM) == 0U))
     {
         return BALL_BALANCE_RESULT_INVALID_ARGUMENT;
@@ -103,6 +112,36 @@ BallBalance_Result_t BallBalance_Start(float targetMM)
     s_context.targetMM = targetMM;
     s_context.error = BALL_BALANCE_ERROR_NONE;
     s_context.state = BALL_BALANCE_STATE_RUNNING;
+    return BALL_BALANCE_RESULT_OK;
+}
+
+BallBalance_Result_t BallBalance_StartWithGains(
+    float targetMM,
+    float positionKpPerS,
+    float velocityKpDegPerMMps,
+    float velocityKiDegPerMM)
+{
+    BallBalance_Result_t result;
+
+    if ((!isfinite(positionKpPerS)) || (positionKpPerS < 0.0f) ||
+        (!isfinite(velocityKpDegPerMMps)) ||
+        (velocityKpDegPerMMps < 0.0f) ||
+        (!isfinite(velocityKiDegPerMM)) ||
+        (velocityKiDegPerMM < 0.0f))
+    {
+        return BALL_BALANCE_RESULT_INVALID_ARGUMENT;
+    }
+
+    result = BallBalance_Start(targetMM);
+    if (result != BALL_BALANCE_RESULT_OK)
+    {
+        return result;
+    }
+
+    s_context.positionKpPerS = positionKpPerS;
+    s_context.velocityKpDegPerMMps = velocityKpDegPerMMps;
+    s_context.velocityKiDegPerMM = velocityKiDegPerMM;
+    s_context.useGainOverride = 1U;
     return BALL_BALANCE_RESULT_OK;
 }
 
@@ -133,6 +172,9 @@ void BallBalance_Update(float dt)
     float tiltDeg;
     float chassisAccelMMps2;
     float feedforwardDeg;
+    float positionKpPerS;
+    float velocityKpDegPerMMps;
+    float velocityKiDegPerMM;
 
     if (s_context.state != BALL_BALANCE_STATE_RUNNING)
     {
@@ -168,8 +210,16 @@ void BallBalance_Update(float dt)
     speedMMps = BallSensor_GetSpeedMMps();
     errorMM = s_context.targetMM - positionMM;
 
+    positionKpPerS = (s_context.useGainOverride != 0U) ?
+        s_context.positionKpPerS : BallBalance_TunePositionKpPerS;
+    velocityKpDegPerMMps = (s_context.useGainOverride != 0U) ?
+        s_context.velocityKpDegPerMMps :
+        BallBalance_TuneVelocityKpDegPerMMps;
+    velocityKiDegPerMM = (s_context.useGainOverride != 0U) ?
+        s_context.velocityKiDegPerMM : BallBalance_TuneVelocityKiDegPerMM;
+
     s_context.velocityTargetMMps = BallBalance_Clamp(
-        BallBalance_TunePositionKpPerS * errorMM,
+        positionKpPerS * errorMM,
         BallBalance_TuneMaxVelocityMMps);
     velocityErrorMMps = s_context.velocityTargetMMps - speedMMps;
     s_context.velocityIntegralMM += velocityErrorMMps * dt;
@@ -179,8 +229,8 @@ void BallBalance_Update(float dt)
 
     /* PID control */
     tiltDeg =
-        (BallBalance_TuneVelocityKpDegPerMMps * velocityErrorMMps) +
-        (BallBalance_TuneVelocityKiDegPerMM *
+        (velocityKpDegPerMMps * velocityErrorMMps) +
+        (velocityKiDegPerMM *
          s_context.velocityIntegralMM);
 
     /* Chassis acceleration feedforward compensation.

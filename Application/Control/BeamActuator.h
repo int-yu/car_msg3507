@@ -40,6 +40,9 @@ extern float BeamActuator_TuneZeroOffsetDeg;
 
 void BeamActuator_Init(void);
 
+/* True after the power-on horizontal angle has been captured. */
+uint8_t BeamActuator_IsZeroCalibrated(void);
+
 /* 设置摆杆目标倾角。内部只做斜率限制，再换算成步坐标下发。 */
 void BeamActuator_SetTiltDeg(float tiltDeg);
 

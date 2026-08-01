@@ -11,7 +11,15 @@
 #define BALL_SEQUENCE_DEFAULT_TARGET_MM 0.0f
 #define BALL_SEQUENCE_NEGATIVE_TARGET_MM (-50.0f)
 #define BALL_SEQUENCE_POSITIVE_TARGET_MM 50.0f
-#define BALL_SEQUENCE_REVERSAL_POSITION_MM (-45.0f)
+#define BALL_SEQUENCE_REVERSAL_POSITION_MM (-41.0f)
+
+#define BALL_SEQUENCE_POSITION_KP_PER_S          1.5f
+#define BALL_SEQUENCE_VELOCITY_KP_DEG_PER_MMPS   0.35f
+#define BALL_SEQUENCE_VELOCITY_KI_DEG_PER_MM     0.20f
+
+extern float BallSequence_TunePositionKpPerS;
+extern float BallSequence_TuneVelocityKpDegPerMMps;
+extern float BallSequence_TuneVelocityKiDegPerMM;
 
 typedef enum
 {

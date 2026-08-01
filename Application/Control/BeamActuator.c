@@ -9,6 +9,7 @@ typedef struct
 {
     float requestedTiltDeg;
     float appliedTiltDeg;
+    uint8_t zeroCalibrated;
 } BeamActuator_Context_t;
 
 static BeamActuator_Context_t s_context;
@@ -27,14 +28,21 @@ void BeamActuator_Init(void)
 {
     s_context.requestedTiltDeg = 0.0f;
     s_context.appliedTiltDeg = 0.0f;
+    s_context.zeroCalibrated = 0U;
     BeamActuator_TuneGearRatio = BEAM_ACTUATOR_GEAR_RATIO;
     BeamActuator_TuneZeroOffsetDeg = STEPPER_INITIAL_ANGLE_DEG;
 
     /*
-     * Stepper_Init() acquires the MT6816 absolute reference and moves to the
-     * configured horizontal angle. Do not overwrite that absolute coordinate.
+     * Stepper_Init() starts MT6816 acquisition without moving the mechanism.
+     * The first ready and valid absolute angle is captured in Update(), after
+     * interrupts have started, as this power cycle's horizontal zero offset.
      */
     (void)Stepper_Enable(true);
+}
+
+uint8_t BeamActuator_IsZeroCalibrated(void)
+{
+    return s_context.zeroCalibrated;
 }
 
 void BeamActuator_SetTiltDeg(float tiltDeg)
@@ -53,10 +61,30 @@ void BeamActuator_Update(float dt)
     float nextAppliedTiltDeg;
     float motorAngleDeg;
     Stepper_Result_t result;
+#if STEPPER_FEEDBACK_ENABLED
+    Stepper_Status_t status;
+#endif
 
     if ((!isfinite(dt)) || (dt <= 0.0f))
     {
         return;
+    }
+
+
+    if (s_context.zeroCalibrated == 0U)
+    {
+#if STEPPER_FEEDBACK_ENABLED
+        Stepper_GetStatus(&status);
+        if ((!status.enabled) || (!status.ready) || status.busy ||
+            (!status.pwmValid) || (!isfinite(status.absoluteAngleDeg)))
+        {
+            return;
+        }
+        BeamActuator_TuneZeroOffsetDeg = status.absoluteAngleDeg;
+#else
+        /* Without MT6816 feedback, retain the configured fallback offset. */
+#endif
+        s_context.zeroCalibrated = 1U;
     }
 
     /* 限斜率只为防丢步；设太小会让外环爬不过回差和静摩擦死区。 */

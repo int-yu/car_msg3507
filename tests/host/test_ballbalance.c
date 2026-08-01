@@ -9,10 +9,15 @@ static float s_positionMM;
 static float s_speedMMps;
 static float s_lastTiltDeg;
 static uint16_t s_tiltCommandCount;
+static uint8_t s_zeroCalibrated;
 
 uint8_t BallSensor_IsFresh(void) { return s_fresh; }
 float BallSensor_GetPositionMM(void) { return s_positionMM; }
 float BallSensor_GetSpeedMMps(void) { return s_speedMMps; }
+
+float MotionLine_GetProfileAccelerationMMps2(void) { return 0.0f; }
+float MotionLine_GetProfileSpeedMMps(void) { return 0.0f; }
+uint8_t BeamActuator_IsZeroCalibrated(void) { return s_zeroCalibrated; }
 
 void BeamActuator_SetTiltDeg(float tiltDeg)
 {
@@ -27,6 +32,7 @@ static void reset_fakes(void)
     s_speedMMps = 0.0f;
     s_lastTiltDeg = 0.0f;
     s_tiltCommandCount = 0U;
+    s_zeroCalibrated = 1U;
     BallBalance_Init();
 }
 
@@ -40,6 +46,14 @@ static void test_start_requires_fresh_vision(void)
     s_fresh = 1U;
     CHECK(BallBalance_Start(0.0f) == BALL_BALANCE_RESULT_OK);
     CHECK(BallBalance_GetState() == BALL_BALANCE_STATE_RUNNING);
+}
+
+static void test_start_requires_actuator_zero_calibration(void)
+{
+    reset_fakes();
+    s_zeroCalibrated = 0U;
+    CHECK(BallBalance_Start(0.0f) != BALL_BALANCE_RESULT_OK);
+    CHECK(BallBalance_GetState() == BALL_BALANCE_STATE_IDLE);
 }
 
 static void test_defaults_match_field_tuning(void)
@@ -119,6 +133,39 @@ static void test_velocity_target_is_limited(void)
     BallBalance_Update(0.01f);
     CHECK_NEAR(BallBalance_GetVelocityTargetMMps(),
                BallBalance_TuneMaxVelocityMMps, 0.001f);
+}
+
+static void test_task_specific_gains_do_not_change_shared_tunings(void)
+{
+    reset_fakes();
+    CHECK(BallBalance_StartWithGains(-50.0f, 3.0f, 0.4f, 0.0f) ==
+          BALL_BALANCE_RESULT_OK);
+
+    BallBalance_Update(0.01f);
+    CHECK_NEAR(BallBalance_GetVelocityTargetMMps(), -150.0f, 0.001f);
+    CHECK_NEAR(BallBalance_GetTiltCommandDeg(), -60.0f, 0.001f);
+    CHECK_NEAR(BallBalance_TunePositionKpPerS,
+               BALL_BALANCE_POSITION_KP_PER_S, 0.001f);
+    CHECK_NEAR(BallBalance_TuneVelocityKpDegPerMMps,
+               BALL_BALANCE_VELOCITY_KP_DEG_PER_MMPS, 0.001f);
+
+    CHECK(BallBalance_SetTarget(50.0f) == BALL_BALANCE_RESULT_OK);
+    BallBalance_Update(0.01f);
+    CHECK_NEAR(BallBalance_GetTiltCommandDeg(), 60.0f, 0.001f);
+
+    BallBalance_Stop();
+    CHECK(BallBalance_Start(-50.0f) == BALL_BALANCE_RESULT_OK);
+    BallBalance_Update(0.01f);
+    CHECK(BallBalance_GetTiltCommandDeg() > -30.0f);
+    CHECK(BallBalance_GetTiltCommandDeg() < -20.0f);
+}
+
+static void test_task_specific_gains_reject_invalid_values(void)
+{
+    reset_fakes();
+    CHECK(BallBalance_StartWithGains(0.0f, -1.0f, 0.4f, 0.0f) ==
+          BALL_BALANCE_RESULT_INVALID_ARGUMENT);
+    CHECK(BallBalance_GetState() == BALL_BALANCE_STATE_IDLE);
 }
 
 static void test_integral_is_limited_and_reset_on_retarget(void)
@@ -219,6 +266,7 @@ static void test_set_target_requires_running(void)
 int main(void)
 {
     test_start_requires_fresh_vision();
+    test_start_requires_actuator_zero_calibration();
     test_defaults_match_field_tuning();
     test_start_rejects_invalid_target();
     test_start_sets_requested_hold_position();
@@ -226,6 +274,8 @@ int main(void)
     test_position_loop_generates_velocity_target();
     test_velocity_loop_opposes_measured_speed();
     test_velocity_target_is_limited();
+    test_task_specific_gains_do_not_change_shared_tunings();
+    test_task_specific_gains_reject_invalid_values();
     test_integral_is_limited_and_reset_on_retarget();
     test_stable_requires_sustained_tolerance();
     test_vision_loss_recenters_and_errors();

@@ -37,7 +37,7 @@
  * moves downward.
  */
 #ifndef STEPPER_AUTO_START_ENABLED
-#define STEPPER_AUTO_START_ENABLED             200U
+#define STEPPER_AUTO_START_ENABLED             0U
 #endif
 #ifndef STEPPER_INITIAL_ANGLE_DEG
 #define STEPPER_INITIAL_ANGLE_DEG              201.0f
@@ -111,8 +111,9 @@ typedef struct {
  * Initializes the AB decoder, capture state and ST timer control. SysConfig
  * power, pin mux and timer initialization must be complete before this call.
  * With auto-start enabled, EN is asserted after safe timer setup. Three valid
- * PWM frames establish the absolute reference, then motion starts toward
- * STEPPER_INITIAL_ANGLE_DEG.
+ * PWM frames establish the absolute reference. Automatic startup motion is
+ * disabled in the current configuration so the manually balanced power-on
+ * pose can be captured by BeamActuator as its horizontal zero offset.
  * When feedback is disabled, capture and AB decoding are skipped and ready
  * becomes true immediately.
  */

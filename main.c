@@ -118,6 +118,7 @@ static uint8_t Main_BallHoldCanStart(void)
     Stepper_Status_t status;
 
     if ((BallSensor_IsFresh() == 0U) ||
+        (BeamActuator_IsZeroCalibrated() == 0U) ||
         (MotionManager_IsBusy() != 0U) ||
         (BallSequence_IsActive() != 0U))
     {

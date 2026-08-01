@@ -69,6 +69,13 @@ void BallBalance_Init(void);
 /* Start holding targetMM. Ball vision must already be fresh. */
 BallBalance_Result_t BallBalance_Start(float targetMM);
 
+/* Start with task-specific cascaded-loop gains copied for this run. */
+BallBalance_Result_t BallBalance_StartWithGains(
+    float targetMM,
+    float positionKpPerS,
+    float velocityKpDegPerMMps,
+    float velocityKiDegPerMM);
+
 /* Retarget the running PID controller to another hold position. */
 BallBalance_Result_t BallBalance_SetTarget(float targetMM);
 

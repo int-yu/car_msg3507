@@ -14,6 +14,9 @@ static uint16_t s_stopCount;
 static uint16_t s_updateCount;
 static float s_positionMM;
 static uint8_t s_stable;
+static float s_positionKpPerS;
+static float s_velocityKpDegPerMMps;
+static float s_velocityKiDegPerMM;
 
 void BallBalance_Init(void)
 {
@@ -30,6 +33,18 @@ BallBalance_Result_t BallBalance_Start(float targetMM)
         s_targetMM = targetMM;
     }
     return s_startResult;
+}
+
+BallBalance_Result_t BallBalance_StartWithGains(
+    float targetMM,
+    float positionKpPerS,
+    float velocityKpDegPerMMps,
+    float velocityKiDegPerMM)
+{
+    s_positionKpPerS = positionKpPerS;
+    s_velocityKpDegPerMMps = velocityKpDegPerMMps;
+    s_velocityKiDegPerMM = velocityKiDegPerMM;
+    return BallBalance_Start(targetMM);
 }
 
 BallBalance_Result_t BallBalance_SetTarget(float targetMM)
@@ -155,11 +170,17 @@ static void test_active_hold_retargets_without_restart(void)
 static void test_sweep_reverses_without_waiting_for_stability(void)
 {
     reset_fakes();
+    BallSequence_TunePositionKpPerS = 3.0f;
+    BallSequence_TuneVelocityKpDegPerMMps = 0.4f;
+    BallSequence_TuneVelocityKiDegPerMM = 0.1f;
     CHECK(BallSequence_StartSweep() != 0U);
     TaskTimer_Start(TASK_TIMER_OWNER_BALL);
     CHECK(BallSequence_GetState() ==
           BALL_SEQUENCE_STATE_SWEEP_TO_NEGATIVE);
     CHECK_NEAR(s_targetMM, -50.0f, 0.001f);
+    CHECK_NEAR(s_positionKpPerS, 3.0f, 0.001f);
+    CHECK_NEAR(s_velocityKpDegPerMMps, 0.4f, 0.001f);
+    CHECK_NEAR(s_velocityKiDegPerMM, 0.1f, 0.001f);
 
     s_positionMM = -44.0f;
     BallSequence_Update(0.01f);

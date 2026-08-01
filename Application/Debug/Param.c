@@ -2,6 +2,7 @@
 #include "Accomplish/26H.h"
 #include "Application/Control/BallBalance.h"
 #include "Application/Control/BallSensor.h"
+#include "Application/Control/BallSequence.h"
 #include "Application/Control/BeamActuator.h"
 #include "Application/Control/MotionLane.h"
 #include "Application/Control/MotionLine.h"
@@ -162,6 +163,9 @@ PARAM_VAR_ACCESSORS(BallKd, BallBalance_TuneVelocityKpDegPerMMps)
 PARAM_VAR_ACCESSORS(BallMaxVelocity, BallBalance_TuneMaxVelocityMMps)
 PARAM_VAR_ACCESSORS(BallFeedforward, BallBalance_TuneFeedforwardDegPerMMps2)
 PARAM_VAR_ACCESSORS(BallFeedforwardThreshold, BallBalance_TuneFeedforwardSpeedThresholdMMps)
+PARAM_VAR_ACCESSORS(Key2BallKp, BallSequence_TunePositionKpPerS)
+PARAM_VAR_ACCESSORS(Key2BallKd, BallSequence_TuneVelocityKpDegPerMMps)
+PARAM_VAR_ACCESSORS(Key2BallKi, BallSequence_TuneVelocityKiDegPerMM)
 PARAM_VAR_ACCESSORS(BallHalfLength, BallSensor_TuneHalfLengthMM)
 PARAM_VAR_ACCESSORS(BeamGearRatio, BeamActuator_TuneGearRatio)
 PARAM_VAR_ACCESSORS(BeamZeroOffset, BeamActuator_TuneZeroOffsetDeg)
@@ -278,6 +282,13 @@ static const Param_Entry_t s_params[] = {
       20.0f, 2000.0f },
     { "k3dur", Param_GetKey3RunDuration, Param_SetKey3RunDuration,
       1.0f, 60.0f },
+    /* KEY2 sweep gains are separate from the shared hold controller. */
+    { "k2kp", Param_GetKey2BallKp, Param_SetKey2BallKp,
+      0.0f, 10.0f },
+    { "k2kd", Param_GetKey2BallKd, Param_SetKey2BallKd,
+      0.0f, 1.0f },
+    { "k2ki", Param_GetKey2BallKi, Param_SetKey2BallKi,
+      0.0f, 0.2f },
 };
 
 #define PARAM_COUNT (sizeof(s_params) / sizeof(s_params[0]))

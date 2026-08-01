@@ -2,6 +2,13 @@
 #include "Application/Control/BallBalance.h"
 #include "Application/Control/TaskTimer.h"
 
+float BallSequence_TunePositionKpPerS =
+    BALL_SEQUENCE_POSITION_KP_PER_S;
+float BallSequence_TuneVelocityKpDegPerMMps =
+    BALL_SEQUENCE_VELOCITY_KP_DEG_PER_MMPS;
+float BallSequence_TuneVelocityKiDegPerMM =
+    BALL_SEQUENCE_VELOCITY_KI_DEG_PER_MM;
+
 typedef struct
 {
     BallSequence_State_t state;
@@ -26,6 +33,12 @@ void BallSequence_Init(void)
     s_context.error = BALL_SEQUENCE_ERROR_NONE;
     s_context.elapsedTicks = 0U;
     s_context.targetMM = BALL_SEQUENCE_DEFAULT_TARGET_MM;
+    BallSequence_TunePositionKpPerS =
+        BALL_SEQUENCE_POSITION_KP_PER_S;
+    BallSequence_TuneVelocityKpDegPerMMps =
+        BALL_SEQUENCE_VELOCITY_KP_DEG_PER_MMPS;
+    BallSequence_TuneVelocityKiDegPerMM =
+        BALL_SEQUENCE_VELOCITY_KI_DEG_PER_MM;
     BallBalance_Init();
 }
 
@@ -47,7 +60,11 @@ uint8_t BallSequence_Start(float targetMM)
 
 uint8_t BallSequence_StartSweep(void)
 {
-    if (BallBalance_Start(BALL_SEQUENCE_NEGATIVE_TARGET_MM) !=
+    if (BallBalance_StartWithGains(
+            BALL_SEQUENCE_NEGATIVE_TARGET_MM,
+            BallSequence_TunePositionKpPerS,
+            BallSequence_TuneVelocityKpDegPerMMps,
+            BallSequence_TuneVelocityKiDegPerMM) !=
         BALL_BALANCE_RESULT_OK)
     {
         s_context.error = BALL_SEQUENCE_ERROR_VISION;

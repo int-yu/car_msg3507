@@ -82,7 +82,7 @@
 
 ## 3. 当前程序说明
 
-`main.c` 是当前唯一运行入口，不再通过 `MAIN_STEPPER_TEST_MODE` 或 `Application/Core/Main26H.c` 切换主流程。烧录后进入完整 App 初始化，步进连续取得3帧有效MT6816 PWM后先运动到 `STEPPER_INITIAL_ANGLE_DEG` 水平位置；无按键时，视觉和步进就绪后默认启动要求3的 O 点保持。实体 `KEY2` 第一次解除 O 点闭环并保持当前倾角，第二次启动摆球扫描；网页 `C3` 仍可直接切换到指定目标保持。
+`main.c` 是当前唯一运行入口，不再通过 `MAIN_STEPPER_TEST_MODE` 或 `Application/Core/Main26H.c` 切换主流程。上电前需手动把摆杆调到平衡位置；烧录启动后步进不会自动转到固定角度，连续取得3帧有效 MT6816 PWM 后，`BeamActuator` 自动把此刻实测绝对角保存为本次上电的水平零偏。零偏捕获完成且视觉就绪后，无按键状态才默认启动要求3的 O 点保持。实体 `KEY2` 第一次解除 O 点闭环并保持当前倾角，第二次启动摆球扫描；网页 `C3` 仍可直接切换到指定目标保持。
 
 六路红外资源已经恢复为 `PA25=SDA、PA14=SCL`，但只有完整 26H 入口中的 `App_Init()` 会初始化并采样它们。
 
@@ -143,7 +143,7 @@ int main(void)
 }
 ```
 
-当前入口的`App_Init()`初始化整车、OLED、MPU6050、左右轮编码器、串口、K230Link、六路红外和步进接口。`Stepper_Init()`连续取得3帧有效PWM后建立绝对角基准并自动运动到`238.0°`水平位置；`BeamActuator`保留该绝对坐标，不再把当前位置重写为0°。
+当前入口的`App_Init()`初始化整车、OLED、MPU6050、左右轮编码器、串口、K230Link、六路红外和步进接口。`Stepper_Init()`连续取得3帧有效 PWM 后建立绝对角基准，但不执行启动运动；`BeamActuator`随后把该次上电的实测绝对角写入 `BeamActuator_TuneZeroOffsetDeg`，作为控制器倾角 `0°` 对应的水平位置。
 
 ```text
 Heading -> Odometry -> 六路红外 I2C -> Stepper -> 按键边沿 -> CarLink -> K230Link
@@ -315,12 +315,12 @@ Heading -> Odometry -> 六路红外 -> Stepper -> Key -> K230Link -> BallSensor
 | 28 | `vkd` | `MotionLane_TuneKdYaw` | 比例 | 0~10 |
 | 29 | `vra` | `MotionLane_TuneMaxAdjustRatio` | 比例 | 0.05~1 |
 | 30 | `h2off` | `Accomplish26H_TuneFinishRolloutMM` | mm | 0~300 |
-| 31 | `bkp` | `BallBalance_TuneKp` | 度/mm | 0~2 |
-| 32 | `bkd` | `BallBalance_TuneKd` | 度/(mm/s) | 0~1 |
-| 33 | `bki` | `BallBalance_TuneKi` | 度/(mm·s) | 0~0.2 |
+| 31 | `bkp` | `BallBalance_TunePositionKpPerS` | 1/s | 0~10 |
+| 32 | `bkd` | `BallBalance_TuneVelocityKpDegPerMMps` | 度/(mm/s) | 0~1 |
+| 33 | `bki` | `BallBalance_TuneVelocityKiDegPerMM` | 度/mm | 0~0.2 |
 | 34 | `bhl` | `BallSensor_TuneHalfLengthMM` | mm | 50~200 |
 | 35 | `bgr` | `BeamActuator_TuneGearRatio` | 倍 | 0.1~50 |
-| 36 | `bzo` | `BeamActuator_TuneZeroOffsetDeg` | 度 | 106~309 |
+| 36 | `bzo` | `BeamActuator_TuneZeroOffsetDeg`（上电自动捕获，可继续微调） | 度 | 0~360 |
 | 37 | `h2cru` | `Accomplish26H_TuneCruiseSpeedMMps` | mm/s | 20~2000 |
 | 38 | `h2fin` | `Accomplish26H_TuneFinishCrawlSpeedMMps` | mm/s | 10~2000 |
 | 39 | `h2clr` | `Accomplish26H_TuneStartClearDistanceMM` | mm | 0~1000 |
@@ -330,11 +330,26 @@ Heading -> Odometry -> 六路红外 -> Stepper -> Key -> K230Link -> BallSensor
 | 43 | `h2max` | `Accomplish26H_TuneMaxLapDistanceMM` | mm | 1000~25000 |
 | 44 | `lacc` | `MotionLine_TuneAccelerationMMps2` | mm/s² | 10~5000 |
 | 45 | `ldec` | `MotionLine_TuneDecelerationMMps2` | mm/s² | 10~5000 |
-| 46 | `lki` | `MotionLine_TuneKiMMpsPerWeight` | mm/s 每 权重·s | 0~50 |
+| 46 | `lcra` | `MotionLine_TuneKpMMpsPerWeight`（兼容别名） | mm/s 每 权重 | 0~200 |
+| 47 | `lckd` | `MotionLine_TuneKdMMpsPerWeight`（兼容别名） | mm/s 每 权重/s | 0~200 |
+| 48 | `lcv` | 保留的弯道速度兼容参数 | mm/s | 20~1000 |
+| 49 | `lch` | 保留的弯道保持距离兼容参数 | mm | 100~5000 |
+| 50 | `bvm` | `BallBalance_TuneMaxVelocityMMps` | mm/s | 10~500 |
+| 51 | `bff` | `BallBalance_TuneFeedforwardDegPerMMps2` | 度/(mm/s²) | 0~0.1 |
+| 52 | `bft` | `BallBalance_TuneFeedforwardSpeedThresholdMMps` | mm/s | 0~500 |
+| 53 | `lki` | `MotionLine_TuneKiMMpsPerWeight` | mm/s 每 权重·s | 0~50 |
+| 54 | `k3acc` | `TimedLineRun_TuneAccelerationMMps2` | mm/s² | 10~5000 |
+| 55 | `k3cru` | `TimedLineRun_TuneCruiseSpeedMMps` | mm/s | 20~2000 |
+| 56 | `k3dur` | `TimedLineRun_TuneDurationSeconds` | s | 1~60 |
+| 57 | `k2kp` | `BallSequence_TunePositionKpPerS` | 1/s | 0~10 |
+| 58 | `k2kd` | `BallSequence_TuneVelocityKpDegPerMMps` | 度/(mm/s) | 0~1 |
+| 59 | `k2ki` | `BallSequence_TuneVelocityKiDegPerMM` | 度/mm | 0~0.2 |
 
-id 一经发布不得重排，新增参数只能在尾部追加。K1~K5 为旧上位机保留：写入会同时覆盖左右轮，读取返回两侧当前值的平均数；新调参应使用 K17~K26 分别设置左右轮。基础前馈公式为 `PWMbase = speed×ff + sign(speed)×sf`，再叠加该轮 PI 与上层 trim，最终夹到 ±1000；这是底层轮速环标定，不属于巡线层额外前馈。K37~K46 与 `h2off`、`lra`、`lki`、`lkd` 都在下一次 KEY1/N 启动时快照，当前运行中写入不会切换本圈参数。巡线层只保留统一 PID，不再有弯道低速上限、压线降速、差速变化率限幅或弯道保持距离。`ldec` 沿用 MotionLine 统一减速度，同时负责终点降速和最终软停，不增加额外状态机配置。`gsc` 由 `E1`→原地转 N 圈→`Y<n>` 标定流程自动写入；`cpm` 建议用网页里程标定向导。
+id 一经发布不得重排，新增参数只能在尾部追加。K1~K5 为旧上位机保留：写入会同时覆盖左右轮，读取返回两侧当前值的平均数；新调参应使用 K17~K26 分别设置左右轮。基础前馈公式为 `PWMbase = speed×ff + sign(speed)×sf`，再叠加该轮 PI 与上层 trim，最终夹到 ±1000；这是底层轮速环标定，不属于巡线层额外前馈。要求 2、KEY3 和巡线 PID 参数都在对应任务下次启动时快照，当前运行中写入不会切换本圈参数。巡线层只保留统一 PID，不再有弯道低速上限、压线降速、差速变化率限幅或弯道保持距离。`ldec` 沿用 MotionLine 统一减速度，同时负责终点降速和最终软停，不增加额外状态机配置。`gsc` 由 `E1`→原地转 N 圈→`Y<n>` 标定流程自动写入；`cpm` 建议用网页里程标定向导。
 
-K31~K36 是要求 3 摆球的标定量，**全部为未实测的初值**，必须按下面顺序在实车上标定，每轮只改一个：先 `bgr`（实测齿轮比）和 `bzo`（摆杆水平零点），再 `bhl`（钢球放 0/±25/±50 mm 处读数反推半杆长），然后调 `bkp` 让钢球能回目标，调 `bkd` 压住过冲和往复。`bki` 默认 0，只有确认 P/D 已经调顺且仍存在稳定偏差时才小量加入；第一轮测试建议继续保持 0。
+K31~K36 是要求 3 摆球的标定量。上电前先手动把摆杆放到平衡位置，固件会自动捕获 `bzo`；如仍有机械水平误差，可在网页读取自动值后小幅微调。其余参数仍需实车标定：先确认 `bgr`，再用钢球放在 0/±25/±50 mm 处校准 `bhl`，然后调 `bkp` 让钢球能回目标，调 `bkd` 压住过冲和往复。固件中的 `bki` 初值为 0.20；实车首次整定建议先通过网页设为 0，只有确认 P/D 已经调顺且仍存在稳定偏差时再小量加入。
+
+K57~K59 是实体 KEY2 扫描独占的串级控制参数：`k2kp` 为位置外环 P，`k2kd` 为速度内环 P，`k2ki` 为速度内环 I。它们在每次 KEY2 扫描开始时复制到本轮控制器，修改不会影响默认 O 点保持、C3、KEY3 或 KEY4，当前扫描中修改则从下一轮开始生效。网页“要求3摆球 → KEY2 专用 PID”可直接调整这三个参数。
 
 **遥测 CSV 格式（⚠️ 历史架构，已被 3.3.0 的二进制帧取代）。** 以下 ASCII CSV 描述对应第一次架构；当前固件发二进制 SCHEMA/SAMPLE 帧，通道定义见 3.3.2。保留本段仅为理解演进历史。每次字段掩码改变时输出一行表头 `H,...`，随后每隔 `1000/G` ms 输出一行数据：
 
@@ -1036,7 +1051,7 @@ bool Stepper_IsBusy(void);
 void Stepper_GetStatus(Stepper_Status_t *status);
 ```
 
-`Stepper_Init()`在当前`App_Init()`中调用。资源固定为ST=PB8、DIR=PB9、EN=PB12、AB=PA13/PA29、绝对PWM=PB13；PWM连续3帧有效后建立绝对角基准，上电自动运动到238.0°。
+`Stepper_Init()`在当前`App_Init()`中调用。资源固定为 ST=PB8、DIR=PB9、EN=PB12、AB=PA13/PA29、绝对 PWM=PB13；PWM 连续3帧有效后建立绝对角基准。当前 `STEPPER_AUTO_START_ENABLED=0`，上电不自动运动，实测角由 `BeamActuator` 捕获为水平零偏。
 
 转换数组从前到后就是优先级。动作运行时只检查打断转换，动作完成后只检查正常转换；每个系统节拍最多转换一次。`C0` 不受 `interruptible` 限制，始终停止并复位任务。
 

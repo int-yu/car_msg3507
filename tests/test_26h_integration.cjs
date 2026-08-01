@@ -86,7 +86,7 @@ assert.match(main, /DebugDisplay_Update\(\);/,
     'main.c must keep the minimal OLED time display refresh');
 assert.match(main, /Main_StartOrRetargetBallTask\([\s\S]*?BALL_SEQUENCE_DEFAULT_TARGET_MM/,
     'KEY1 must start or retarget ball hold to 0 mm');
-assert.match(main, /Main_StartBallSweep\(\);/,
+assert.match(main, /Main_StartBallSweep\(\)/,
     'KEY2 must start the -50 mm to +50 mm ball sweep');
 assert.match(main, /BallTargetCapture_Start\(\)/,
     'the first KEY4 press must start multi-frame target capture');
@@ -209,6 +209,7 @@ for (const name of [
     'h2cru', 'h2fin', 'h2clr', 'h2lap', 'h2app', 'h2arm', 'h2max',
     'lacc', 'ldec', 'lra', 'lki', 'lkd',
     'k3acc', 'k3cru', 'k3dur',
+    'k2kp', 'k2kd', 'k2ki',
 ]) {
     assert.ok(param.includes(`{ "${name}"`),
         `K parameter table must append ${name}`);
@@ -219,6 +220,9 @@ assert.match(param, /"lckd"[\s\S]*?Param_GetLineCurveKd/,
     'K47 must remain a compatible alias of the unified line Kd');
 assert.ok(param.indexOf('{ "bvm"') < param.indexOf('{ "lki"'),
     'bvm must retain its published K50 slot before the appended line Ki');
+assert.match(param,
+    /\{ "k3dur"[^]*?\{ "k2kp"[^]*?\{ "k2kd"[^]*?\{ "k2ki"/,
+    'KEY2-only PID parameters must be appended after the published K56 slot');
 assert.doesNotMatch(task + read('Application/Control/MotionManager.h') +
     read('Application/Control/MotionManager.c'), /SetLineDeceleration/,
     'H2 must keep the existing MotionLine control path without a runtime deceleration setter');
@@ -234,8 +238,12 @@ assert.doesNotMatch(display, /OLED_Update\(\)|IR:|KEY:|encoderCounts|BALL:/,
 assert.doesNotMatch(displayHeader, /ShowHeadingCalibration/,
     'OLED must not expose the removed MPU calibration page');
 
-assert.match(stepperHeader, /STEPPER_INITIAL_ANGLE_DEG\s+166\.0f/,
-    'stepper horizontal angle must be 166 degrees');
+assert.match(stepperHeader, /STEPPER_INITIAL_ANGLE_DEG\s+201\.0f/,
+    'stepper horizontal angle must be 201 degrees');
+assert.match(stepperHeader, /STEPPER_AUTO_START_ENABLED\s+0U/,
+    'stepper must not move before the manual power-on pose is captured');
+assert.ok(main.includes('BeamActuator_IsZeroCalibrated()'),
+    'default ball hold must wait for automatic horizontal-zero capture');
 assert.match(stepperHeader, /STEPPER_MIN_ANGLE_DEG\s+0\.0f/,
     'stepper minimum limit must be 0 degrees');
 assert.match(stepperHeader, /STEPPER_MAX_ANGLE_DEG\s+360\.0f/,
