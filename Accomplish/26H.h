@@ -10,7 +10,7 @@
 /* H 题要求 2：A 点起跑，沿黑线顺时针一圈后回 A 点软停。
  * 赛道理论周长为 2*1500 + 2*pi*500 约 6142 mm。下面仅是首轮软件值，
  * 传感器到题目判定点的偏移和轮速/里程必须按实车标定。 */
-#define ACCOMPLISH_26H_CRUISE_SPEED_MMPS             500.0f
+#define ACCOMPLISH_26H_CRUISE_SPEED_MMPS             550.0f
 #define ACCOMPLISH_26H_FINISH_CRAWL_SPEED_MMPS       300.0f
 #define ACCOMPLISH_26H_NOMINAL_LAP_DISTANCE_MM      6142.0f
 #define ACCOMPLISH_26H_FINISH_APPROACH_DISTANCE_MM   200.0f
