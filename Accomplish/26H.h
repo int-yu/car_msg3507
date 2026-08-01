@@ -63,6 +63,7 @@ typedef enum
 } Accomplish26H_Error_t;
 
 void Accomplish26H_Init(void);
+void Accomplish26H_Cancel(void);
 void Accomplish26H_Update(const App_UpdateContext_t *context);
 uint8_t Accomplish26H_IsTiming(void);
 uint32_t Accomplish26H_GetElapsedTicks(void);

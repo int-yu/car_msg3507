@@ -408,6 +408,20 @@ void Accomplish26H_Init(void)
     s_settleElapsedTicks = 0U;
 }
 
+void Accomplish26H_Cancel(void)
+{
+    MotionManager_Stop();
+    TaskTimer_Stop(TASK_TIMER_OWNER_LINE);
+    s_elapsedTicks = 0U;
+    s_timing = 0U;
+    s_state = ACCOMPLISH_26H_STATE_READY;
+    s_error = ACCOMPLISH_26H_ERROR_NONE;
+    s_startClearTicks = 0U;
+    s_markerConfirmTicks = 0U;
+    s_settleTicks = 0U;
+    s_settleElapsedTicks = 0U;
+}
+
 void Accomplish26H_Update(const App_UpdateContext_t *context)
 {
     uint8_t keyPressed;

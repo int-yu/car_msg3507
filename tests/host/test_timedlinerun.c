@@ -187,6 +187,20 @@ static void test_emergency_chord_stops_active_run(void)
     CHECK(s_stopCount == 1U);
 }
 
+static void test_cancel_returns_to_ready_and_stops(void)
+{
+    reset_fakes();
+    CHECK(TimedLineRun_Start() != 0U);
+
+    TimedLineRun_Cancel();
+
+    CHECK(s_stopCount == 1U);
+    CHECK(TaskTimer_IsRunning() == 0U);
+    CHECK(TimedLineRun_GetState() == TIMED_LINE_RUN_STATE_READY);
+    CHECK(TimedLineRun_GetError() == TIMED_LINE_RUN_ERROR_NONE);
+    CHECK(TimedLineRun_GetElapsedTicks() == 0U);
+}
+
 int main(void)
 {
     test_start_uses_independent_tunable_profile();
@@ -194,6 +208,7 @@ int main(void)
     test_run_duration_is_snapshotted_at_start();
     test_soft_stop_finishes_after_wheel_settles();
     test_emergency_chord_stops_active_run();
+    test_cancel_returns_to_ready_and_stops();
 
     if (s_failures == 0)
     {

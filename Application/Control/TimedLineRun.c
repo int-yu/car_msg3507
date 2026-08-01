@@ -94,6 +94,18 @@ void TimedLineRun_Init(void)
     s_settleElapsedTicks = 0U;
 }
 
+void TimedLineRun_Cancel(void)
+{
+    MotionManager_Stop();
+    TaskTimer_Stop(TASK_TIMER_OWNER_LINE);
+    s_state = TIMED_LINE_RUN_STATE_READY;
+    s_error = TIMED_LINE_RUN_ERROR_NONE;
+    s_elapsedTicks = 0U;
+    s_runDurationTicks = 0U;
+    s_settleTicks = 0U;
+    s_settleElapsedTicks = 0U;
+}
+
 uint8_t TimedLineRun_Start(void)
 {
     float durationTicks =

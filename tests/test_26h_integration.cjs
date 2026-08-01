@@ -24,14 +24,14 @@ const stepperHeader = read('Hardware/Motor/Stepper.h');
 const grayHeader = read('Hardware/Sensors/Graydetect.h');
 const readme = read('README.md');
 
-assert.match(readme, /H 题要求 2/,
-    'README 必须标明当前 26H 是要求2单圈巡线');
-assert.match(readme, /KEY1.*启动.*单圈/,
-    'README 必须说明 KEY1 启动单圈');
+assert.match(readme, /要求 2～6/,
+    'README must document the requirement selection menu');
+assert.match(readme, /KEY1.*循环选择/,
+    'README must document that KEY1 cycles requirements');
 assert.match(readme, /KEY1\+KEY2 同时按下/,
     'README 必须记录物理组合急停');
-assert.match(readme, /OLED[^\n]*时间/,
-    'README must document that OLED only displays time');
+assert.match(readme, /计时精度为 0\.1 秒/,
+    'README must document OLED timer precision');
 
 assert.doesNotMatch(main, /MAIN_STEPPER_TEST_MODE|Main26H_Run\(\)/,
     'main.c must not keep the old switchable wrapper entry');
@@ -39,35 +39,41 @@ assert.match(main, /#include "Accomplish\/26H\.h"/,
     'main.c must select the 26H controller directly');
 assert.match(main, /Accomplish26H_Init\(\);/,
     'main.c must initialize the 26H controller');
-assert.match(main, /Accomplish26H_Update\(&updateContext\);/,
+assert.match(main, /Accomplish26H_Update\(&lineContext\);/,
     'main.c must update 26H after a valid App update');
 assert.doesNotMatch(main, /Accomplish\/25H\.h|Mission_Init\(|Mission_Update\(/,
     'the active entry must not launch the legacy 25H Mission');
-assert.match(main, /MAIN_BALL_START_KEY_MASK\s+0x02U/,
-    'KEY2 must remain the physical ball-sweep start key');
-assert.match(main, /MAIN_LINE_START_KEY_MASK\s+0x01U/,
-    'KEY1 must remain the line-run start key');
-assert.match(main, /MAIN_TIMED_LINE_START_KEY_MASK\s+0x04U/,
-    'KEY3 must start the timed line run');
-assert.match(main, /MAIN_KEY4_START_KEY_MASK\s+0x08U/,
-    'KEY4 must use physical key bit3');
+assert.match(main, /MAIN_SELECT_KEY_MASK\s+0x01U/,
+    'KEY1 must select requirements in the idle menu');
+assert.match(main, /MAIN_CONFIRM_KEY_MASK\s+0x02U/,
+    'KEY2 must confirm the selected requirement');
+assert.match(main, /MAIN_RETURN_KEY_MASK\s+0x04U/,
+    'KEY3 must return every task to the idle menu');
+assert.match(main, /Main_ReturnToMenu\([\s\S]*?Accomplish26H_Cancel\(\)[\s\S]*?TimedLineRun_Cancel\(\)[\s\S]*?BALL_SEQUENCE_DEFAULT_TARGET_MM/,
+    'KEY3 return must cancel line tasks and restore O-point control');
 assert.match(main, /TimedLineRun_Init\(\);/,
     'main must initialize the KEY3 timed line controller');
-assert.match(main, /TimedLineRun_Start\(\)/,
-    'main must dispatch the KEY3 edge to the timed line controller');
+assert.match(main, /MAIN_REQUIREMENT_4_SPEED_MMPS\s+500\.0f/,
+    'requirement 4 must default to 500 mm/s');
+assert.match(main, /MAIN_REQUIREMENT_4_TIME_S\s+13\.0f/,
+    'requirement 4 must default to 13 seconds');
+assert.match(main, /MAIN_REQUIREMENT_5_SPEED_MMPS\s+400\.0f/,
+    'requirements 5 and 6 must default to 400 mm/s');
+assert.match(main, /MAIN_REQUIREMENT_5_TIME_S\s+30\.0f/,
+    'requirements 5 and 6 must default to 30 seconds');
 assert.match(main, /TimedLineRun_Update\(&updateContext\);/,
     'main must update the KEY3 timed line controller every valid tick');
-assert.match(main, /MAIN_EMERGENCY_CHORD_MASK \(0x01U \| 0x02U\)/,
+assert.match(main, /MAIN_EMERGENCY_CHORD_MASK\s+\(0x01U \| 0x02U\)/,
     'main.c must protect KEY1+KEY2 as the emergency chord');
 assert.match(main, /BallSequence_Init\(\);/,
     'main.c must initialize the ball task library');
 assert.match(main, /BallSequence_Update\(updateContext\.dt\);/,
     'main.c must update the ball task after 26H');
 assert.match(main,
-    /Main_HasSignal\(&updateContext, MAIN_BALL_START_SIGNAL\)/,
+    /Main_HasSignal\(&updateContext,\s*MAIN_BALL_START_SIGNAL\)/,
     'C3 must still start the selected-position ball hold');
 assert.match(main,
-    /Main_HasSignal\(&updateContext, MAIN_BALL_STOP_SIGNAL\)/,
+    /Main_HasSignal\(&updateContext,\s*MAIN_BALL_STOP_SIGNAL\)/,
     'C4 must still stop the ball task');
 assert.doesNotMatch(main, /#include[^\n]*BallHold|BallHold_|MAIN_HOLD/,
     'active main flow must not restore the old KEY3 BallHold flow');
@@ -95,8 +101,8 @@ assert.match(main, /BallTargetCapture_GetTargetMM\(\)/,
 assert.doesNotMatch(main, /ERR KEY4 BALL NOT STABLE|BallSequence_IsStable\(\)/,
     'KEY4 line start must not wait for the captured ball to settle');
 assert.match(main,
-    /Main_StartTimedLineAtBallTarget\([\s\S]*?BallTargetCapture_GetTargetMM\(\)/,
-    'the second KEY4 press must reuse the KEY3 timed-line controller');
+    /Main_StartTimedLine\(BallTargetCapture_GetTargetMM\(\)/,
+    'requirement 6 must run at its captured target');
 assert.match(ballTargetCaptureHeader,
     /BALL_TARGET_CAPTURE_CONFIRM_FRAMES\s+8U/,
     'KEY4 target confirmation frame count must be easy to adjust');
@@ -231,12 +237,18 @@ assert.doesNotMatch(task + read('Application/Control/MotionManager.h') +
 
 assert.doesNotMatch(display, /BallSensor_/,
     'OLED must not read the ball sensor');
-assert.ok(display.includes('s_elapsedSeconds'),
-    'OLED must display elapsed time');
+assert.ok(display.includes('s_elapsedTenths'),
+    'OLED must display elapsed time to tenths of a second');
 assert.ok(display.includes('OLED_UpdateArea('),
     'OLED refresh must be limited to the time-value area');
-assert.doesNotMatch(display, /OLED_Update\(\)|IR:|KEY:|encoderCounts|BALL:/,
-    'OLED must not perform full-screen or unrelated status refreshes');
+assert.match(display, /DEBUG_DISPLAY_TICKS_PER_TENTH\s+10U/,
+    'OLED running timer must update at 0.1-second precision');
+assert.match(display, /DebugDisplay_ShowMenu\([\s\S]*?REQUIRE /,
+    'OLED must expose the requirement selection menu');
+assert.match(display, /OLED_8X16/,
+    'OLED running time must use the larger built-in font');
+assert.doesNotMatch(display, /IR:|KEY:|encoderCounts|BALL:/,
+    'OLED must not display unrelated diagnostics');
 assert.doesNotMatch(displayHeader, /ShowHeadingCalibration/,
     'OLED must not expose the removed MPU calibration page');
 

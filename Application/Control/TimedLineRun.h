@@ -38,6 +38,7 @@ typedef enum
 } TimedLineRun_Error_t;
 
 void TimedLineRun_Init(void);
+void TimedLineRun_Cancel(void);
 uint8_t TimedLineRun_Start(void);
 void TimedLineRun_Update(const App_UpdateContext_t *context);
 uint8_t TimedLineRun_IsActive(void);

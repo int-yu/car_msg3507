@@ -17,20 +17,40 @@
 #include <math.h>
 #include <stdint.h>
 
-#define MAIN_LINE_START_KEY_MASK  0x01U
-#define MAIN_BALL_START_KEY_MASK  0x02U
-#define MAIN_TIMED_LINE_START_KEY_MASK 0x04U
-#define MAIN_KEY4_START_KEY_MASK  0x08U
-#define MAIN_EMERGENCY_CHORD_MASK (0x01U | 0x02U)
+#define MAIN_SELECT_KEY_MASK          0x01U
+#define MAIN_CONFIRM_KEY_MASK         0x02U
+#define MAIN_RETURN_KEY_MASK          0x04U
+#define MAIN_EMERGENCY_CHORD_MASK     (0x01U | 0x02U)
 #define MAIN_BALL_SWEEP_SIGNAL 2U
 #define MAIN_BALL_START_SIGNAL 3U
 #define MAIN_BALL_STOP_SIGNAL  4U
+#define MAIN_REQUIREMENT_FIRST        2U
+#define MAIN_REQUIREMENT_LAST         6U
+#define MAIN_REQUIREMENT_4_SPEED_MMPS 500.0f
+#define MAIN_REQUIREMENT_4_TIME_S      13.0f
+#define MAIN_REQUIREMENT_5_SPEED_MMPS 400.0f
+#define MAIN_REQUIREMENT_5_TIME_S      30.0f
+
+typedef enum
+{
+    MAIN_UI_MENU = 0,
+    MAIN_UI_REQUIREMENT_3_ARMED,
+    MAIN_UI_REQUIREMENT_4_ARMED,
+    MAIN_UI_REQUIREMENT_6_CAPTURE_ARMED,
+    MAIN_UI_REQUIREMENT_6_CAPTURING,
+    MAIN_UI_REQUIREMENT_6_READY,
+    MAIN_UI_RUNNING_REQUIREMENT_2,
+    MAIN_UI_RUNNING_REQUIREMENT_3,
+    MAIN_UI_RUNNING_REQUIREMENT_4,
+    MAIN_UI_RUNNING_REQUIREMENT_5,
+    MAIN_UI_RUNNING_REQUIREMENT_6
+} Main_UiState_t;
+
 static float s_ballTargetMM = BALL_SEQUENCE_DEFAULT_TARGET_MM;
 static uint8_t s_defaultBallHoldPending;
-static uint8_t s_key2SweepArmed;
-static uint8_t s_key4CaptureArmed;
-static uint8_t s_key4HoldReady;
-static uint8_t s_key4RunActive;
+static uint8_t s_selectedRequirement;
+static uint8_t s_requirement6HoldReady;
+static Main_UiState_t s_uiState;
 
 static uint8_t Main_HasSignal(const App_UpdateContext_t *context,
                               uint8_t signal)
@@ -135,38 +155,41 @@ static uint8_t Main_BallHoldCanStart(void)
     return 1U;
 }
 
-static void Main_CancelKey4Preparation(void)
+static void Main_ReturnToMenu(void)
 {
-    if (s_key4RunActive == 0U)
-    {
-        BallTargetCapture_Cancel();
-        s_key4CaptureArmed = 0U;
-        s_key4HoldReady = 0U;
-    }
-}
-
-static void Main_CancelKey2Preparation(void)
-{
-    s_key2SweepArmed = 0U;
-}
-
-static void Main_ResetKey4Task(void)
-{
+    Accomplish26H_Cancel();
+    TimedLineRun_Cancel();
     BallTargetCapture_Cancel();
-    s_key4CaptureArmed = 0U;
-    s_key4HoldReady = 0U;
-    s_key4RunActive = 0U;
+    BallSequence_Stop();
+    TaskTimer_Stop(TASK_TIMER_OWNER_BALL);
+    s_ballTargetMM = BALL_SEQUENCE_DEFAULT_TARGET_MM;
+    s_defaultBallHoldPending = 1U;
+    s_requirement6HoldReady = 0U;
+    s_uiState = MAIN_UI_MENU;
+    DebugDisplay_ShowMenu(s_selectedRequirement);
+    Serial1_SendString("OK MENU\r\n");
 }
 
-static uint8_t Main_StartTimedLineAtBallTarget(
-    float targetMM, const char *errorMessage)
+static uint8_t Main_StartTimedLine(float targetMM, float speedMMps,
+                                   float durationSeconds,
+                                   const char *errorMessage)
 {
+    float savedSpeed = TimedLineRun_TuneCruiseSpeedMMps;
+    float savedDuration = TimedLineRun_TuneDurationSeconds;
+    uint8_t result;
+
     s_ballTargetMM = targetMM;
     if (Main_StartOrRetargetBallTask(targetMM) == 0U)
     {
         return 0U;
     }
-    if (TimedLineRun_Start() == 0U)
+
+    TimedLineRun_TuneCruiseSpeedMMps = speedMMps;
+    TimedLineRun_TuneDurationSeconds = durationSeconds;
+    result = TimedLineRun_Start();
+    TimedLineRun_TuneCruiseSpeedMMps = savedSpeed;
+    TimedLineRun_TuneDurationSeconds = savedDuration;
+    if (result == 0U)
     {
         BallSequence_Stop();
         Serial1_SendString(errorMessage);
@@ -175,127 +198,197 @@ static uint8_t Main_StartTimedLineAtBallTarget(
     return 1U;
 }
 
-static void Main_HandleKey2Press(uint8_t startAllowed,
-                                 uint8_t ballStopRequested)
+static uint8_t Main_StartRequirement2(
+    const App_UpdateContext_t *context)
 {
-    float inheritedTiltDeg;
-
-    if ((startAllowed == 0U) || (ballStopRequested != 0U))
-    {
-        return;
-    }
-
-    if ((s_key2SweepArmed == 0U) &&
-        (MotionManager_IsBusy() != 0U))
-    {
-        Serial1_SendString("ERR KEY2 CAR BUSY\r\n");
-        return;
-    }
-
-    Main_CancelKey4Preparation();
-    s_defaultBallHoldPending = 0U;
-
-    if (s_key2SweepArmed != 0U)
-    {
-        if (Main_StartBallSweep() != 0U)
-        {
-            s_key2SweepArmed = 0U;
-        }
-        return;
-    }
-
-    inheritedTiltDeg = BeamActuator_GetTiltDeg();
-    BallSequence_Stop();
-    BeamActuator_SetTiltDeg(inheritedTiltDeg);
-    s_key2SweepArmed = 1U;
-    Serial1_SendString("OK KEY2 ARMED\r\n");
-}
-
-static void Main_HandleKey4Press(uint8_t startAllowed,
-                                 uint8_t ballStopRequested)
-{
-    float inheritedTiltDeg;
-
-    if ((startAllowed == 0U) || (ballStopRequested != 0U))
-    {
-        return;
-    }
-
-    if (BallTargetCapture_IsCaptured() != 0U)
-    {
-        if ((s_key4HoldReady == 0U) ||
-            (BallSequence_IsActive() == 0U))
-        {
-            Serial1_SendString("ERR KEY4 BALL WAIT\r\n");
-        }
-        else if (Main_LineCanStart() == 0U)
-        {
-            Serial1_SendString("ERR KEY4 LINE BUSY\r\n");
-        }
-        else if (Main_StartTimedLineAtBallTarget(
-                     BallTargetCapture_GetTargetMM(),
-                     "ERR KEY4 LINE START\r\n") != 0U)
-        {
-            s_key4RunActive = 1U;
-            Serial1_SendString("OK KEY4 RUN\r\n");
-        }
-        return;
-    }
-
-    if (BallTargetCapture_IsCapturing() != 0U)
-    {
-        Serial1_SendString("ERR KEY4 TARGET WAIT\r\n");
-        return;
-    }
-
-    if (s_key4CaptureArmed != 0U)
-    {
-        s_key4CaptureArmed = 0U;
-        BallTargetCapture_Start();
-        Serial1_SendString("OK KEY4 CAPTURE\r\n");
-        return;
-    }
+    App_UpdateContext_t lineContext = *context;
 
     if ((Main_LineCanStart() == 0U) ||
-        (MotionManager_IsBusy() != 0U))
+        (Main_StartOrRetargetBallTask(
+             BALL_SEQUENCE_DEFAULT_TARGET_MM) == 0U))
     {
-        Serial1_SendString("ERR KEY4 BUSY\r\n");
-        return;
+        Serial1_SendString("ERR REQ2 START\r\n");
+        return 0U;
+    }
+
+    lineContext.pressedEdges = MAIN_SELECT_KEY_MASK;
+    lineContext.pressedKeys &= (uint8_t)~MAIN_CONFIRM_KEY_MASK;
+    Accomplish26H_Update(&lineContext);
+    if (Accomplish26H_IsTiming() == 0U)
+    {
+        Serial1_SendString("ERR REQ2 LINE START\r\n");
+        return 0U;
     }
 
     s_defaultBallHoldPending = 0U;
-    inheritedTiltDeg = BeamActuator_GetTiltDeg();
+    s_uiState = MAIN_UI_RUNNING_REQUIREMENT_2;
+    DebugDisplay_ShowRunning(2U);
+    Serial1_SendString("OK REQ2 RUN\r\n");
+    return 1U;
+}
+
+static void Main_ArmRequirement3(void)
+{
+    float inheritedTiltDeg = BeamActuator_GetTiltDeg();
+
+    s_defaultBallHoldPending = 0U;
+    BallSequence_Stop();
+    BeamActuator_SetTiltDeg(inheritedTiltDeg);
+    s_uiState = MAIN_UI_REQUIREMENT_3_ARMED;
+    DebugDisplay_ShowPrompt(3U, "KEY2 START");
+    Serial1_SendString("OK REQ3 ARMED\r\n");
+}
+
+static void Main_ArmRequirement6(void)
+{
+    float inheritedTiltDeg = BeamActuator_GetTiltDeg();
+
+    s_defaultBallHoldPending = 0U;
     BallSequence_Stop();
     BeamActuator_SetTiltDeg(inheritedTiltDeg);
     BallTargetCapture_Cancel();
-    s_key4CaptureArmed = 1U;
-    s_key4HoldReady = 0U;
-    s_key4RunActive = 0U;
-    Serial1_SendString("OK KEY4 ARMED\r\n");
+    s_requirement6HoldReady = 0U;
+    s_uiState = MAIN_UI_REQUIREMENT_6_CAPTURE_ARMED;
+    DebugDisplay_ShowPrompt(6U, "KEY2 SCAN");
+    Serial1_SendString("OK REQ6 ARMED\r\n");
 }
 
-static void Main_UpdateKey4Target(void)
+static void Main_HandleMenuConfirm(const App_UpdateContext_t *context)
 {
-    BallTargetCapture_Update();
-
-    if ((s_key4RunActive == 0U) &&
-        (BallTargetCapture_IsCaptured() != 0U) &&
-        (s_key4HoldReady != 0U) &&
-        (BallSequence_IsActive() == 0U))
+    switch (s_selectedRequirement)
     {
-        s_key4HoldReady = 0U;
+        case 2U:
+            (void)Main_StartRequirement2(context);
+            break;
+
+        case 3U:
+            Main_ArmRequirement3();
+            break;
+
+        case 4U:
+            s_uiState = MAIN_UI_REQUIREMENT_4_ARMED;
+            DebugDisplay_ShowPrompt(4U, "KEY2 START");
+            Serial1_SendString("OK REQ4 ARMED\r\n");
+            break;
+
+        case 5U:
+            if ((Main_LineCanStart() != 0U) &&
+                (Main_StartTimedLine(BALL_SEQUENCE_DEFAULT_TARGET_MM,
+                    MAIN_REQUIREMENT_5_SPEED_MMPS,
+                    MAIN_REQUIREMENT_5_TIME_S,
+                    "ERR REQ5 START\r\n") != 0U))
+            {
+                s_defaultBallHoldPending = 0U;
+                s_uiState = MAIN_UI_RUNNING_REQUIREMENT_5;
+                DebugDisplay_ShowRunning(5U);
+                Serial1_SendString("OK REQ5 RUN\r\n");
+            }
+            break;
+
+        case 6U:
+            Main_ArmRequirement6();
+            break;
+
+        default:
+            break;
+    }
+}
+
+static void Main_HandleConfirm(const App_UpdateContext_t *context)
+{
+    if (s_uiState == MAIN_UI_MENU)
+    {
+        Main_HandleMenuConfirm(context);
+    }
+    else if (s_uiState == MAIN_UI_REQUIREMENT_3_ARMED)
+    {
+        if (Main_StartBallSweep() != 0U)
+        {
+            s_uiState = MAIN_UI_RUNNING_REQUIREMENT_3;
+            DebugDisplay_ShowRunning(3U);
+        }
+    }
+    else if (s_uiState == MAIN_UI_REQUIREMENT_4_ARMED)
+    {
+        if ((Main_LineCanStart() != 0U) &&
+            (Main_StartTimedLine(BALL_SEQUENCE_DEFAULT_TARGET_MM,
+                MAIN_REQUIREMENT_4_SPEED_MMPS,
+                MAIN_REQUIREMENT_4_TIME_S,
+                "ERR REQ4 START\r\n") != 0U))
+        {
+            s_defaultBallHoldPending = 0U;
+            s_uiState = MAIN_UI_RUNNING_REQUIREMENT_4;
+            DebugDisplay_ShowRunning(4U);
+            Serial1_SendString("OK REQ4 RUN\r\n");
+        }
+    }
+    else if (s_uiState == MAIN_UI_REQUIREMENT_6_CAPTURE_ARMED)
+    {
+        BallTargetCapture_Start();
+        s_uiState = MAIN_UI_REQUIREMENT_6_CAPTURING;
+        DebugDisplay_ShowPrompt(6U, "SCANNING");
+        Serial1_SendString("OK REQ6 CAPTURE\r\n");
+    }
+    else if (s_uiState == MAIN_UI_REQUIREMENT_6_READY)
+    {
+        if ((Main_LineCanStart() != 0U) &&
+            (Main_StartTimedLine(BallTargetCapture_GetTargetMM(),
+                MAIN_REQUIREMENT_5_SPEED_MMPS,
+                MAIN_REQUIREMENT_5_TIME_S,
+                "ERR REQ6 START\r\n") != 0U))
+        {
+            s_uiState = MAIN_UI_RUNNING_REQUIREMENT_6;
+            DebugDisplay_ShowRunning(6U);
+            Serial1_SendString("OK REQ6 RUN\r\n");
+        }
+    }
+}
+
+static void Main_UpdateRequirement6Capture(void)
+{
+    if ((s_uiState != MAIN_UI_REQUIREMENT_6_CAPTURING) &&
+        (s_uiState != MAIN_UI_REQUIREMENT_6_READY))
+    {
+        return;
     }
 
+    BallTargetCapture_Update();
     if ((BallTargetCapture_IsCaptured() != 0U) &&
-        (s_key4HoldReady == 0U) &&
+        (s_requirement6HoldReady == 0U) &&
         (Main_BallHoldCanStart() != 0U))
     {
         s_ballTargetMM = BallTargetCapture_GetTargetMM();
         if (Main_StartOrRetargetBallTask(s_ballTargetMM) != 0U)
         {
-            s_key4HoldReady = 1U;
-            Serial1_SendString("OK KEY4 TARGET LOCKED\r\n");
+            s_requirement6HoldReady = 1U;
+            s_uiState = MAIN_UI_REQUIREMENT_6_READY;
+            DebugDisplay_ShowPrompt(6U, "KEY2 RUN");
+            Serial1_SendString("OK REQ6 TARGET LOCKED\r\n");
         }
+    }
+}
+
+static void Main_UpdateTaskCompletion(void)
+{
+    if ((s_uiState == MAIN_UI_RUNNING_REQUIREMENT_2) &&
+        ((Accomplish26H_GetState() == ACCOMPLISH_26H_STATE_FINISHED) ||
+         (Accomplish26H_GetState() == ACCOMPLISH_26H_STATE_ERROR)))
+    {
+        Main_ReturnToMenu();
+    }
+    else if ((s_uiState == MAIN_UI_RUNNING_REQUIREMENT_3) &&
+             ((BallSequence_GetState() ==
+               BALL_SEQUENCE_STATE_SWEEP_HOLDING_POSITIVE) ||
+              (BallSequence_GetState() == BALL_SEQUENCE_STATE_ERROR)))
+    {
+        Main_ReturnToMenu();
+    }
+    else if (((s_uiState == MAIN_UI_RUNNING_REQUIREMENT_4) ||
+              (s_uiState == MAIN_UI_RUNNING_REQUIREMENT_5) ||
+              (s_uiState == MAIN_UI_RUNNING_REQUIREMENT_6)) &&
+             (TimedLineRun_IsActive() == 0U))
+    {
+        Main_ReturnToMenu();
     }
 }
 
@@ -310,48 +403,68 @@ int main(void)
     BallTargetCapture_Init();
     s_ballTargetMM = BALL_SEQUENCE_DEFAULT_TARGET_MM;
     s_defaultBallHoldPending = 1U;
-    s_key2SweepArmed = 0U;
-    s_key4CaptureArmed = 0U;
-    s_key4HoldReady = 0U;
-    s_key4RunActive = 0U;
+    s_selectedRequirement = MAIN_REQUIREMENT_FIRST;
+    s_requirement6HoldReady = 0U;
+    s_uiState = MAIN_UI_MENU;
+    DebugDisplay_ShowMenu(s_selectedRequirement);
     Interrupt_Enable();
 
     for (;;)
     {
         if (App_Update(&updateContext) != 0U)
         {
+            App_UpdateContext_t lineContext = updateContext;
             uint8_t emergencyStopRequested =
                 Main_HasSignal(&updateContext, 0U);
             uint8_t ballStopRequested =
                 Main_HasSignal(&updateContext, MAIN_BALL_STOP_SIGNAL);
-            uint8_t ballSweepRequested =
-                Main_HasSignal(&updateContext, MAIN_BALL_SWEEP_SIGNAL);
-            uint8_t ballStartRequested =
-                Main_HasSignal(&updateContext, MAIN_BALL_START_SIGNAL);
-            uint8_t lineStartKeyPressed =
-                ((updateContext.pressedEdges &
-                  MAIN_LINE_START_KEY_MASK) != 0U) ? 1U : 0U;
-            uint8_t timedLineStartKeyPressed =
-                ((updateContext.pressedEdges &
-                  MAIN_TIMED_LINE_START_KEY_MASK) != 0U) ? 1U : 0U;
-            uint8_t ballStartKeyPressed =
-                ((updateContext.pressedEdges &
-                  MAIN_BALL_START_KEY_MASK) != 0U) ? 1U : 0U;
-            uint8_t key4StartKeyPressed =
-                ((updateContext.pressedEdges &
-                  MAIN_KEY4_START_KEY_MASK) != 0U) ? 1U : 0U;
+            uint8_t selectPressed =
+                ((updateContext.pressedEdges & MAIN_SELECT_KEY_MASK) != 0U);
+            uint8_t confirmPressed =
+                ((updateContext.pressedEdges & MAIN_CONFIRM_KEY_MASK) != 0U);
+            uint8_t returnPressed =
+                ((updateContext.pressedEdges & MAIN_RETURN_KEY_MASK) != 0U);
             uint8_t startAllowed =
                 ((emergencyStopRequested == 0U) &&
-                 ((updateContext.pressedKeys &
-                   MAIN_EMERGENCY_CHORD_MASK) !=
+                 ((updateContext.pressedKeys & MAIN_EMERGENCY_CHORD_MASK) !=
                   MAIN_EMERGENCY_CHORD_MASK)) ? 1U : 0U;
             float requestedBallTargetMM;
+
+            /* Menu KEY1 must never leak into the requirement-2 controller. */
+            lineContext.pressedEdges &= (uint8_t)~MAIN_SELECT_KEY_MASK;
+            Accomplish26H_Update(&lineContext);
+            TimedLineRun_Update(&updateContext);
+
+            if (returnPressed != 0U)
+            {
+                Main_ReturnToMenu();
+            }
+            else if (emergencyStopRequested != 0U)
+            {
+                s_defaultBallHoldPending = 0U;
+                BallTargetCapture_Cancel();
+                s_uiState = MAIN_UI_MENU;
+                DebugDisplay_ShowMenu(s_selectedRequirement);
+            }
+            else if ((s_uiState == MAIN_UI_MENU) &&
+                     (selectPressed != 0U) && (startAllowed != 0U))
+            {
+                s_selectedRequirement++;
+                if (s_selectedRequirement > MAIN_REQUIREMENT_LAST)
+                {
+                    s_selectedRequirement = MAIN_REQUIREMENT_FIRST;
+                }
+                DebugDisplay_ShowMenu(s_selectedRequirement);
+            }
+            else if ((confirmPressed != 0U) && (startAllowed != 0U) &&
+                     (ballStopRequested == 0U))
+            {
+                Main_HandleConfirm(&updateContext);
+            }
 
             if (BluetoothDebug_TakeBallTargetMM(
                     &requestedBallTargetMM) != 0U)
             {
-                Main_CancelKey2Preparation();
-                Main_CancelKey4Preparation();
                 s_ballTargetMM = requestedBallTargetMM;
                 if (BallSequence_IsActive() != 0U)
                 {
@@ -359,127 +472,40 @@ int main(void)
                 }
             }
 
-            if ((lineStartKeyPressed != 0U) &&
-                (Main_LineCanStart() != 0U))
-            {
-                Main_CancelKey2Preparation();
-                Main_CancelKey4Preparation();
-                s_ballTargetMM = BALL_SEQUENCE_DEFAULT_TARGET_MM;
-                if ((startAllowed == 0U) ||
-                    (ballStopRequested != 0U) ||
-                    (Main_StartOrRetargetBallTask(
-                         BALL_SEQUENCE_DEFAULT_TARGET_MM) == 0U))
-                {
-                    updateContext.pressedEdges &=
-                        (uint8_t)~MAIN_LINE_START_KEY_MASK;
-                }
-            }
-
-            Accomplish26H_Update(&updateContext);
-
-            if ((timedLineStartKeyPressed != 0U) &&
-                (Main_LineCanStart() != 0U))
-            {
-                Main_CancelKey2Preparation();
-                Main_CancelKey4Preparation();
-                s_ballTargetMM = BALL_SEQUENCE_DEFAULT_TARGET_MM;
-                if ((startAllowed != 0U) &&
-                    (ballStopRequested == 0U))
-                {
-                    (void)Main_StartTimedLineAtBallTarget(
-                        BALL_SEQUENCE_DEFAULT_TARGET_MM,
-                        "ERR KEY3 LINE START\r\n");
-                }
-            }
-
-            if ((key4StartKeyPressed != 0U) &&
-                (lineStartKeyPressed == 0U) &&
-                (timedLineStartKeyPressed == 0U) &&
-                (ballStartKeyPressed == 0U) &&
-                (ballStartRequested == 0U) &&
-                (ballStopRequested == 0U))
-            {
-                Main_CancelKey2Preparation();
-                Main_HandleKey4Press(startAllowed, ballStopRequested);
-            }
-
-            TimedLineRun_Update(&updateContext);
-
-            if ((s_key4RunActive != 0U) &&
-                (TimedLineRun_IsActive() == 0U))
-            {
-                if (TimedLineRun_GetState() ==
-                    TIMED_LINE_RUN_STATE_FINISHED)
-                {
-                    Serial1_SendString("OK KEY4 LINE DONE\r\n");
-                }
-                else
-                {
-                    Serial1_SendString("ERR KEY4 LINE STOP\r\n");
-                }
-                Main_ResetKey4Task();
-            }
-
             if (ballStopRequested != 0U)
             {
                 s_defaultBallHoldPending = 0U;
-                Main_CancelKey2Preparation();
-                Main_CancelKey4Preparation();
                 BallSequence_Stop();
                 Serial1_SendString("OK BALL STOP\r\n");
             }
             else if ((startAllowed != 0U) &&
-                     (ballSweepRequested != 0U))
+                     (Main_HasSignal(&updateContext,
+                                     MAIN_BALL_SWEEP_SIGNAL) != 0U))
             {
                 s_defaultBallHoldPending = 0U;
-                Main_CancelKey2Preparation();
-                Main_CancelKey4Preparation();
                 (void)Main_StartBallSweep();
             }
             else if ((startAllowed != 0U) &&
-                     (ballStartKeyPressed != 0U))
-            {
-                Main_HandleKey2Press(startAllowed, ballStopRequested);
-            }
-            else if ((startAllowed != 0U) &&
-                     (ballStartRequested != 0U))
+                     (Main_HasSignal(&updateContext,
+                                     MAIN_BALL_START_SIGNAL) != 0U))
             {
                 s_defaultBallHoldPending = 0U;
-                Main_CancelKey2Preparation();
-                Main_CancelKey4Preparation();
                 (void)Main_StartBallTask(s_ballTargetMM);
             }
 
-            if ((emergencyStopRequested == 0U) &&
-                (ballStopRequested == 0U) &&
-                (startAllowed != 0U))
-            {
-                Main_UpdateKey4Target();
-            }
-
-            if (emergencyStopRequested != 0U)
-            {
-                s_defaultBallHoldPending = 0U;
-                Main_CancelKey2Preparation();
-                Main_ResetKey4Task();
-            }
-            else if ((BallSequence_IsActive() != 0U) &&
-                     ((lineStartKeyPressed != 0U) ||
-                      (timedLineStartKeyPressed != 0U) ||
-                      (key4StartKeyPressed != 0U)))
-            {
-                s_defaultBallHoldPending = 0U;
-            }
-            else if ((s_defaultBallHoldPending != 0U) &&
-                     (startAllowed != 0U) &&
-                     (Main_BallHoldCanStart() != 0U) &&
-                     (Main_StartOrRetargetBallTask(
-                          BALL_SEQUENCE_DEFAULT_TARGET_MM) != 0U))
-            {
-                s_defaultBallHoldPending = 0U;
-            }
-
+            Main_UpdateRequirement6Capture();
             BallSequence_Update(updateContext.dt);
+            Main_UpdateTaskCompletion();
+
+            if ((s_defaultBallHoldPending != 0U) &&
+                (startAllowed != 0U) &&
+                (Main_BallHoldCanStart() != 0U) &&
+                (Main_StartOrRetargetBallTask(
+                     BALL_SEQUENCE_DEFAULT_TARGET_MM) != 0U))
+            {
+                s_defaultBallHoldPending = 0U;
+            }
+
             Telemetry_Update(updateContext.elapsedTicks, updateContext.pressedKeys);
             BeamActuator_Update(updateContext.dt);
             DebugDisplay_Update();

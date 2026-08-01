@@ -44,7 +44,7 @@
 | PA27 | TIMG7 CCP1 | 纵向舵机 PWM | 50 Hz；`O<number>` 更新角度 |
 | PA28 | I2C0 SDA | OLED | 400 kHz |
 | PA29 | GPIO 输入、上拉 | MS42CG AB-B | 步进反馈 B，双边沿中断 |
-| PA30 | GPIO 输入、上拉 | KEY1 | 低电平按下，按键位图 bit0；在 26H 等待/完成/错误页按下时启动或重试单圈 |
+| PA30 | GPIO 输入、上拉 | KEY1 | 低电平按下，按键位图 bit0；空闲菜单中循环选择要求 2～6 |
 | PA31 | I2C0 SCL | OLED | 400 kHz |
 | PB0 | GPIO 输出 | 左电机 BIN1 | TB6612 B 通道方向；由 MotionManager 当前模式经 MotionWheel 输出 |
 | PB1 | GPIO 输出 | 左电机 BIN2 | TB6612 B 通道方向；由 MotionManager 当前模式经 MotionWheel 输出 |
@@ -55,11 +55,11 @@
 | PB7 | 未分配 | - | 预留；不再是步进 EN |
 | PB8 | TIMA0 CCP0 输出 | MS42CG ST | 步进脉冲输出，3200 ST/rev |
 | PB9 | GPIO 输出 | MS42CG DIR | 角度增大为上升，角度减小为下降 |
-| PB10 | GPIO 输入、上拉 | KEY4 | 低电平按下，按键位图 bit3；第一次停止 O 点闭环并保持步进位置，第二次采样并锁定任意钢球目标位置，第三次启动 30 秒巡线 |
-| PB11 | GPIO 输入、上拉 | KEY2 | 低电平按下，按键位图 bit1；第一次停止 O 点闭环并保持步进倾角，第二次启动要求3摆球扫描及计时；与KEY1同时按下为物理急停 |
+| PB10 | GPIO 输入、上拉 | KEY4 | 低电平按下，按键位图 bit3；当前任务选择流程不使用该键 |
+| PB11 | GPIO 输入、上拉 | KEY2 | 低电平按下，按键位图 bit1；确认当前要求，并在要求 3、4、6 中推进下一阶段；与 KEY1 同时按下为物理急停 |
 | PB12 | GPIO 输出 | MS42CG EN | 高电平使能 |
 | PB13 | TIMG12 CCP0 捕获 | MS42CG 绝对角 PWM | MT6816 单圈绝对角 |
-| PB14 | GPIO 输入、上拉 | KEY3 | 低电平按下，按键位图 bit2；启动 30 秒定时巡线，不执行 KEY1 的终点减速和终点停车逻辑 |
+| PB14 | GPIO 输入、上拉 | KEY3 | 低电平按下，按键位图 bit2；取消当前任务，返回要求选择界面并恢复 O 点保持 |
 | PB15 | TIMG8 CCP0 | 右电机 PWM | TB6612 A 通道，20 kHz；由 MotionManager 当前模式经 MotionWheel 输出 |
 | PB16 | TIMG8 CCP1 | 左电机 PWM | TB6612 B 通道，20 kHz；由 MotionManager 当前模式经 MotionWheel 输出 |
 | PB17 | GPIO 输出 | 蜂鸣器 | 低电平有效 |
@@ -86,15 +86,17 @@
 
 六路红外资源已经恢复为 `PA25=SDA、PA14=SCL`，但只有完整 26H 入口中的 `App_Init()` 会初始化并采样它们。
 
-当前 `main.c` 入口启用 PC/网页链路、K230Link、六路红外、MPU6050、舵机、底盘和步进摆杆。不按按键时，程序等待 K230 钢球位置有效，且步进已使能、就绪、PWM 反馈有效并结束当前运动后，默认启动 O 点 `0.0 mm` 保持；启动不再要求实测绝对角落在水平设定角的固定容差内。`KEY1` 保留为 H 题要求 2 的单圈巡线启动键，`KEY2` 通过两次按键依次解除 O 点闭环和启动要求3摆球扫描，`KEY3` 启动不识别终点的 30 秒定时巡线，`KEY4` 通过三次按键依次完成解除 O 点闭环、任意位置锁定和同款定时巡线，`KEY1+KEY2` 同时按下保持原有物理急停逻辑。
+当前 `main.c` 入口启用 PC/网页链路、K230Link、六路红外、MPU6050、舵机、底盘和步进摆杆。空闲时 OLED 显示要求 2～6，`KEY1` 循环选择，`KEY2` 确认；空闲状态在视觉和步进就绪后保持钢球在 O 点 `0.0 mm`。`KEY3` 在选择、准备、采样和运行状态下都用于取消当前任务、停止任务计时并返回菜单，随后在硬件就绪时自动恢复 O 点闭环。`KEY1+KEY2` 同时按下仍保留为物理急停。
+
+运行页面使用 8×16 字体显示要求号和计时，计时精度为 0.1 秒。高频刷新只更新计时区域；菜单切换和状态提示变化时才刷新整屏。
 
 ### 3.2 100 Hz 主循环与 26H 单圈巡线
 
 完整26H模式加载`Accomplish/26H.c`独立控制器，实现H题要求2。KEY1在READY、完成或错误后按下时清零累计Tick并启动平滑巡线。正常巡线的左右差速由六路红外权重 PID 生成；里程计路程大于 `ACCOMPLISH_26H_FINISH_MARKER_ARM_DISTANCE_MM`（默认 1700 mm）后，若六路灰度中至少 3 路同时检测到黑线并连续维持 `ACCOMPLISH_26H_MARKER_CONFIRM_TICKS`（默认 2）个 100 Hz 节拍，立即进入 `MotionManager_StartBrake()` 主动刹车并在静止确认后冻结计时。**KEY1+KEY2 同时按下**为物理急停。
 
-KEY3 由 `main.c` 直接分发给 `Application/Control/TimedLineRun`，不进入 `Accomplish/26H` 总任务。它复用同一套六路红外 `MotionLine` 巡线与 O 点摆球保持，默认以 `100 mm/s²` 加速到 `400 mm/s`，运行 30 秒后请求软停。KEY3 控制器不读取终点横线、不切换终点慢速，也不按圈长或最大里程停车。`k3acc`、`k3cru` 和 `k3dur` 可通过 K 参数或网页“KEY3 定时巡线”阶段调整，并在下一次 KEY3 启动时快照。
+要求 4、5、6 的巡线由 `Application/Control/TimedLineRun` 执行，不进入 `Accomplish/26H` 总任务。要求 4 默认 `500 mm/s`、13 秒；要求 5 和要求 6 默认 `400 mm/s`、30 秒。三者复用六路红外 `MotionLine`，到时请求软停，不读取终点横线、不按圈长停车。实体 `KEY3` 不再启动巡线，只负责取消任务并返回菜单。
 
-KEY4 同样由 `main.c` 分发并复用 `BallSequence` 与 `TimedLineRun`。第一次按 KEY4 只停止默认 O 点保持，不会重新初始化步进或额外回中：停止前保存当前已下发倾角，解除旧闭环后继续保持该执行器状态。第二次按 KEY4 才开始目标采样；`BallTargetCapture` 只统计此后序号不同的 K230 钢球帧，默认连续 8 帧落在当前平均值 ±5 mm 内后，把平均位置锁定为指定目标并自动开始保持。指定目标保持任务启动后，第三次按 KEY4 无需等待 `BallBalance` 求稳便立即启动巡线。KEY3 与 KEY4 共用同一个 30 秒定时巡线控制器，均保持设定巡航速度，不再按转弯里程窗口减速。采样帧数和容差集中在 `Application/Control/BallTargetCapture.h`。
+要求 6 复用 `BallSequence`、`BallTargetCapture` 与 `TimedLineRun`。菜单中确认要求 6 后停止 O 点闭环并保持当前执行器倾角；再次按 `KEY2` 才开始目标采样。`BallTargetCapture` 只统计序号不同的 K230 钢球帧，默认连续 8 帧落在当前平均值 ±5 mm 内后锁定平均位置并自动开始保持；再按 `KEY2` 无需等待钢球求稳便启动 400 mm/s、30 秒巡线。采样帧数和容差集中在 `Application/Control/BallTargetCapture.h`。
 
 当前 KEY1 测试入口的停车触发点由 `K42`（`h2arm`，单位 mm）控制，初值为 1700 mm；该距离以前即使检测到 3 路以上黑线也不会触发终点。`K30`（`h2off`）仍作为保留的停车偏移参数参与启动快照，但当前终点条件满足后直接主动刹车，不再用它延后巡线软停。
 
@@ -149,8 +151,8 @@ int main(void)
 Heading -> Odometry -> 六路红外 I2C -> Stepper -> 按键边沿 -> CarLink -> K230Link
         -> BallSensor（须在 K230Link 之后）-> BluetoothDebug
         -> C0 全局停车（同时停摆杆闭环）-> MotionManager -> K230 ACK -> Beep
-        -> Accomplish26H_Update -> KEY2两阶段扫描/C3目标保持 -> BallSequence_Update
-        -> BeamActuator_Update -> OLED时间局部刷新
+        -> 要求选择/Accomplish26H/TimedLineRun -> BallSequence_Update
+        -> BeamActuator_Update -> OLED菜单或0.1秒计时局部刷新
 ```
 
 `BallSensor_Update()` 必须排在 `K230Link_Update()` 之后，钢球位置来自本拍刚解析的 `BALL_POSITION(0x14)` 帧；`BeamActuator_Update()` 必须排在任务层之后，让本拍算出的倾角当拍下发给步进。
@@ -159,11 +161,11 @@ Heading -> Odometry -> 六路红外 I2C -> Stepper -> 按键边沿 -> CarLink ->
 
 `Accomplish/25H.c` 静态状态图继续保留，但当前不加载。它的 KEY1 巡线、150 mm 直行和连续绝对左转行为没有改动。
 
-OLED每100个系统节拍刷新一次，即1 Hz，只局部更新第0行时间数值区域：
+OLED 运行计时每10个系统节拍更新一次，即 0.1 秒精度，只局部更新 8×16 字体的计时区域；菜单或任务阶段变化时才刷新整屏：
 
 | 显示 | 含义 |
 |---|---|
-| `T:00000s` | 上电后运行秒数，只用于确认主循环仍在跑 |
+| `REQ n RUN`、`000.0s` | 当前运行要求及任务计时 |
 
 固定标签和空白区域不会在每拍重新发送；刷新使用`OLED_UpdateArea()`，不再调用全屏`OLED_Update()`。
 
@@ -470,7 +472,7 @@ OLED默认只显示上电运行时间；K230钢球物理位置和步进 PWM 绝�
 | `Application/Control/MotionWheel.c/.h` | 公共轮速控制 | 双轮 PI、前馈、差速修正和 PWM 限幅 |
 | `Application/Control/Nav.c/.h` | 转向控制 | 双轮反向旋转到连续绝对角或相对角 |
 | `Application/Control/PID.c/.h` | 通用控制器 | 位置式 PID 计算、复位和调参 |
-| `Application/Debug/DebugDisplay.c/.h` | 显示编排 | OLED运行秒数的单行局部刷新 |
+| `Application/Debug/DebugDisplay.c/.h` | 显示编排 | 要求选择、阶段提示及 0.1 秒任务计时局部刷新 |
 | `Application/Gimbal/Gimbal.c/.h` | 云台应用层 | 管理 X/Y 地址、T 型多圈位置目标、反馈和到位状态 |
 | `Application/Servo/Servo.c/.h` | 舵机控制 | TIMG7 双路 50 Hz PWM、角度限位与脉宽换算 |
 | `Application/State/Heading.c/.h` | 航向状态 | MPU6050 零漂、连续偏航积分和尺度标定 |
@@ -502,7 +504,7 @@ OLED默认只显示上电运行时间；K230钢球物理位置和步进 PWM 绝�
 | `Application/Mission/Mission.c/.h` | 通用任务执行层 | 校验并执行静态状态图、回调和有序转换 |
 | `Accomplish/25E.c/.h` | 题目状态图 | 25E 参数、状态、回调和转换表 |
 | `Accomplish/26H.c/.h` | 当前题目控制器 | KEY1 启动单圈巡线、A 点终点软停、100 Hz 整数计时和组合急停冻结 |
-| `Application/Control/TimedLineRun.c/.h` | KEY3/KEY4 定时巡线控制器 | 独立快照加速度、巡航速度与运行时长；30 秒后软停，不含终点逻辑 |
+| `Application/Control/TimedLineRun.c/.h` | 要求4/5/6定时巡线控制器 | 独立快照加速度、巡航速度与运行时长；到时软停，不含终点逻辑，并支持 KEY3 取消 |
 | `Application/Control/BallTargetCapture.c/.h` | KEY4 指定位置采样 | 按独立 K230 帧进行稳定性确认并输出平均目标位置，不重复实现摆球闭环 |
 | `Application/Control/BallSequence.c/.h` | 要求 3 摆球任务 | KEY2 第二次按下启动扫描，C3直接启动目标位置保持，C4停止与视觉失效保护 |
 | `Accomplish/25H.c/.h` | 保留题目状态图 | KEY1 启动的巡线、150 mm 直行和连续绝对左转循环 |
@@ -513,7 +515,7 @@ OLED默认只显示上电运行时间；K230钢球物理位置和步进 PWM 绝�
 
 | 文件 | 类型 | 职责 |
 |---|---|---|
-| `main.c` | C 源文件 | 当前唯一运行入口；无按键时默认保持钢球在 O 点，KEY1启动26H总任务、KEY2两阶段启动摆球扫描、C3直接启动目标保持、KEY3启动定时巡线、KEY4三阶段启动任意位置巡线、KEY1+KEY2/C0急停 |
+| `main.c` | C 源文件 | 当前唯一运行入口；空闲保持 O 点，KEY1选择要求2～6，KEY2确认/推进阶段，KEY3取消并返回菜单，KEY1+KEY2/C0急停 |
 | `Application/Core/Main26H.c/.h` | C 源文件 / 头文件 | 旧完整26H包装入口，保留在工程中但当前不由 `main.c` 调用 |
 | `main.syscfg` | TI SysConfig | 时钟、PinMux、GPIO、UART、I2C、PWM 和 SysTick 配置 |
 | `.project`、`.cproject`、`.settings/` | CCS 元数据 | 工程、编译器、SDK 和 IDE 配置 |
@@ -541,7 +543,7 @@ uint8_t TestApp_Update(App_UpdateContext_t *context); /* 更新测试通道并�
 
 | 文件或目录 | 类型 | 职责 |
 |---|---|---|
-| `main.c` | C 源文件 | 当前唯一入口；无按键时默认保持钢球在 O 点，并直接分发 KEY1、KEY2、KEY3 与 C0/C3/C4 |
+| `main.c` | C 源文件 | 当前唯一入口；空闲保持 O 点，并分发 KEY1选择、KEY2确认、KEY3返回与 C0/C2/C3/C4 |
 | `main.syscfg` | TI SysConfig | 时钟树、GPIO、UART、I2C、PWM、SysTick 和 PinMux 的唯一配置源 |
 | `car_debug.html` | 单文件调试网页 | 浏览器端上位机：Web Serial 连接无线串口，发送第 3.3 节命令、解析遥测 CSV、实时画曲线并导出。无外部依赖，不参与固件编译 |
 | `tests/*.mjs` | Node 测试脚本 | 无依赖，`node tests/<文件>` 直接跑。覆盖遥测解析、页面启动、固件-网页协议契约与教程源码一致性；清单见 4.2 节末 |
@@ -586,7 +588,7 @@ uint8_t TestApp_Update(App_UpdateContext_t *context); /* 更新测试通道并�
 | `Application/Control/MotionLine.c/.h` | 头文件顶部保存巡线参数；源文件实现六路红外离散权重差速、连续丢线确认、丢线正常完成和状态管理；巡线层不使用 PID |
 | `Application/Control/MotionManager.c/.h` | 统一包装直线、巡线、转向和短暂刹车；自动停止旧模式并只更新当前模式 |
 | `Application/Control/Nav.c/.h` | 头文件顶部保存转向参数；源文件实现连续航向目标、双轮等速反向转向和到角稳定判定 |
-| `Application/Debug/DebugDisplay.c/.h` | 组织运行秒数的OLED单行局部刷新 |
+| `Application/Debug/DebugDisplay.c/.h` | 组织要求菜单、阶段提示及 OLED 任务计时局部刷新 |
 | `Application/Debug/Telemetry.c/.h` | 表驱动组装二进制 SCHEMA/SAMPLE 帧，按频率和 32 位通道掩码经 `Serial1`/UART2（DMA）输出；`bpos/sang` 用于当前摆球网页观察 |
 | `Application/Debug/TelemFrame.c/.h` | 二进制帧编码：CRC-8/ATM、帧构建、float32 小端打包；与 K230Link 同 CRC |
 | `Application/Debug/Param.c/.h` | 运行时调参注册表：K 命令后端，33 个参数的读写、范围校验、左右轮独立参数与要求 3 摆球标定量 |
@@ -701,7 +703,7 @@ uint8_t K230Link_PopCaptureAck(uint8_t *ok, uint16_t *index);
 | `K230Link.h` | `K230_LINK_READY_RETRY_TICKS` | `10U` | READY 重发周期，100 ms |
 | `K230Link.h` | `K230_LINK_RX_BUDGET_BYTES` | `128U` | 每个 10 ms 控制拍最多解析的 K230 RX 字节数 |
 | `K230Link.h` | `K230_LINK_MESSAGE_READY`、`K230_LINK_MESSAGE_READY_ACK`、`K230_LINK_MESSAGE_TARGET` | `0x01/0x02/0x10` | 消息类型 |
-| `DebugDisplay.h` | `DEBUG_DISPLAY_REFRESH_TICKS` | `100U` | OLED 刷新周期，1 s |
+| `DebugDisplay.c` | `DEBUG_DISPLAY_TICKS_PER_TENTH` | `10U` | 任务计时刷新步长，0.1 s |
 
 ### 5.2 MotionManager
 
@@ -1091,7 +1093,7 @@ const Mission_GraphDefinition_t *BrushlessMotorTest_GetMissionGraph(void); /* �
 | `K230Link.h` | `K230_LINK_RX_BUDGET_BYTES` | `128U` | 每拍 K230 接收解析预算，防止异常输入独占主循环 |
 | `K230Link.h` | `K230_LINK_MESSAGE_READY/READY_ACK/TARGET/LANE/BALL_POSITION` | `0x01U` / `0x02U` / `0x10U` / `0x13U` / `0x14U` | 消息类型编号 |
 | `K230Link.h` | `K230_LINK_BALL_POSITION_MIN/MAX/INVALID` | `-5000` / `+5000` / `-32768` | 水管全长 250 mm 映射到 `-50.00~+50.00` 后的 100 倍定点范围和丢球哨兵 |
-| `DebugDisplay.h` | `DEBUG_DISPLAY_REFRESH_TICKS` | `100U` | OLED 1 Hz 刷新间隔 |
+| `DebugDisplay.c` | `DEBUG_DISPLAY_TICKS_PER_TENTH` | `10U` | OLED 任务计时刷新步长，0.1 s |
 | `MotionStraight.h` | `MOTION_STRAIGHT_*` | 见 6.2 | 航向 PD、直线速度规划、减速起点比例和距离允许误差 |
 | `MotionManager.h` | `MOTION_MANAGER_BRAKE_*` / `MOTION_MANAGER_SPEED_MAX_MMPS` | 见 6.2.1 | 定距软停后的 PWM 释放与短暂主动刹车时间；W 恒速调试模式速度上限 |
 | `MotionWheel.h` | `MOTION_WHEEL_*` | 见 6.1 | MotionStraight、MotionLine 与 Nav 共用的速度 PI、前馈和 PWM 限幅 |

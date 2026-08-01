@@ -29,10 +29,10 @@ for (const required of [
 }
 
 assert.match(main,
-    /Main_HasSignal\(&updateContext, MAIN_BALL_START_SIGNAL\)/,
+    /Main_HasSignal\(&updateContext,\s*MAIN_BALL_START_SIGNAL\)/,
     'C3 must start the selected-position ball hold');
 assert.match(main,
-    /Main_HasSignal\(&updateContext, MAIN_BALL_STOP_SIGNAL\)/,
+    /Main_HasSignal\(&updateContext,\s*MAIN_BALL_STOP_SIGNAL\)/,
     'C4 must stop and recenter the ball task');
 assert.ok(main.includes('BluetoothDebug_TakeBallTargetMM('),
     'targeted X command must pass its requested position to the ball task');

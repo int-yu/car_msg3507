@@ -422,6 +422,22 @@ static void test_key_chord_stops_and_freezes(void)
     CHECK(Accomplish26H_GetElapsedTicks() == 0U);
 }
 
+static void test_cancel_returns_to_ready_and_stops(void)
+{
+    reset_fakes();
+    Accomplish26H_Init();
+    start_one_lap();
+
+    Accomplish26H_Cancel();
+
+    CHECK(s_stopCount == 1U);
+    CHECK(TaskTimer_IsRunning() == 0U);
+    CHECK(Accomplish26H_GetState() == ACCOMPLISH_26H_STATE_READY);
+    CHECK(Accomplish26H_GetError() == ACCOMPLISH_26H_ERROR_NONE);
+    CHECK(Accomplish26H_IsTiming() == 0U);
+    CHECK(Accomplish26H_GetElapsedTicks() == 0U);
+}
+
 int main(void)
 {
     test_init_is_ready_at_zero();
@@ -437,6 +453,7 @@ int main(void)
     test_time_limit_freezes_timer_and_soft_stops();
     test_sensor_offline_stops_without_blind_run();
     test_key_chord_stops_and_freezes();
+    test_cancel_returns_to_ready_and_stops();
 
     if (s_failures == 0)
     {
