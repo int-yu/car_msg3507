@@ -1,9 +1,31 @@
 #include "Application/Control/BallSequence.h"
 #include "Application/Control/BallBalance.h"
+#include "Application/Control/BallSensor.h"
 #include "Application/Control/TaskTimer.h"
+#include <math.h>
 
-float BallSequence_TunePositionKpPerS =
-    BALL_SEQUENCE_POSITION_KP_PER_S;
+#define BALL_SEQUENCE_TICK_MS 10U
+#define BALL_SEQUENCE_NEGATIVE_CONFIRM_TICKS 3U
+#define BALL_SEQUENCE_POSITIVE_CONFIRM_TICKS 4U
+#define BALL_SEQUENCE_NEGATIVE_TIMEOUT_TICKS 2000U
+#define BALL_SEQUENCE_POSITIVE_TIMEOUT_TICKS 2200U
+#define BALL_SEQUENCE_TOTAL_TIMEOUT_TICKS 4500U
+#define BALL_SEQUENCE_NEGATIVE_OVERSHOOT_LIMIT_MM 2.5f
+#define BALL_SEQUENCE_PHASE_STALL_TICKS 120U
+#define BALL_SEQUENCE_PHASE_STALL_PROGRESS_MM 1.0f
+#define BALL_SEQUENCE_PHASE_STALL_SPEED_MMPS 1.5f
+
+static const BallBalance_MotionProfile_t s_negativeProfile = {
+    16.0f, 24.0f, 5.0f, 4.0f, 6.0f, 8.0f, 140.0f, 2.5f
+};
+static const BallBalance_MotionProfile_t s_positiveProfile = {
+    20.0f, 28.0f, 6.0f, 8.0f, 8.0f, 10.0f, 160.0f, 3.5f
+};
+static const BallBalance_MotionProfile_t s_positiveRecoveryProfile = {
+    28.0f, 30.0f, 8.0f, 12.0f, 5.0f, 14.0f, 220.0f, 4.0f
+};
+
+float BallSequence_TunePositionKpPerS = BALL_SEQUENCE_POSITION_KP_PER_S;
 float BallSequence_TuneVelocityKpDegPerMMps =
     BALL_SEQUENCE_VELOCITY_KP_DEG_PER_MMPS;
 float BallSequence_TuneVelocityKiDegPerMM =
@@ -20,13 +42,47 @@ typedef struct
     BallSequence_State_t state;
     BallSequence_Error_t error;
     uint32_t elapsedTicks;
+    uint32_t phaseElapsedTicks;
+    uint8_t stableFreshFrames;
+    uint8_t recoveryCount;
     float targetMM;
     float positivePositionKpPerS;
     float positiveVelocityKpDegPerMMps;
     float positiveVelocityKiDegPerMM;
+    float phaseStartPositionMM;
 } BallSequence_Context_t;
 
 static BallSequence_Context_t s_context;
+
+static float BallSequence_TicksToMs(uint32_t ticks)
+{
+    return (float)ticks * (float)BALL_SEQUENCE_TICK_MS;
+}
+
+static uint8_t BallSequence_ApplyMotionProfile(
+    const BallBalance_MotionProfile_t *profile)
+{
+    return (BallBalance_SetMotionProfile(profile) ==
+            BALL_BALANCE_RESULT_OK) ? 1U : 0U;
+}
+
+static void BallSequence_ResetPhaseTracking(void)
+{
+    s_context.phaseElapsedTicks = 0U;
+    s_context.stableFreshFrames = 0U;
+    s_context.phaseStartPositionMM = BallBalance_GetPositionMM();
+}
+
+static uint8_t BallSequence_IsFreshStable(float positionMM,
+                                          float speedMMps,
+                                          float targetMM,
+                                          float toleranceMM,
+                                          float speedLimitMMps)
+{
+    return ((BallSensor_IsFresh() != 0U) &&
+            (fabsf(positionMM - targetMM) <= toleranceMM) &&
+            (fabsf(speedMMps) <= speedLimitMMps)) ? 1U : 0U;
+}
 
 static void BallSequence_Fail(BallSequence_Error_t error)
 {
@@ -34,6 +90,37 @@ static void BallSequence_Fail(BallSequence_Error_t error)
     TaskTimer_Stop(TASK_TIMER_OWNER_BALL);
     s_context.error = error;
     s_context.state = BALL_SEQUENCE_STATE_ERROR;
+    s_context.phaseElapsedTicks = 0U;
+    s_context.stableFreshFrames = 0U;
+}
+
+static uint8_t BallSequence_StartPositivePhase(uint8_t recovery)
+{
+    BallBalance_Result_t result;
+    const BallBalance_MotionProfile_t *profile;
+
+    result = BallBalance_StartWithGains(
+        BALL_SEQUENCE_POSITIVE_TARGET_MM,
+        s_context.positivePositionKpPerS,
+        s_context.positiveVelocityKpDegPerMMps,
+        s_context.positiveVelocityKiDegPerMM);
+    if (result != BALL_BALANCE_RESULT_OK)
+    {
+        return 0U;
+    }
+
+    profile = (recovery != 0U) ? &s_positiveRecoveryProfile :
+        &s_positiveProfile;
+    if (BallSequence_ApplyMotionProfile(profile) == 0U)
+    {
+        return 0U;
+    }
+
+    s_context.targetMM = BALL_SEQUENCE_POSITIVE_TARGET_MM;
+    s_context.state = BALL_SEQUENCE_STATE_SWEEP_TO_POSITIVE;
+    s_context.recoveryCount = recovery;
+    BallSequence_ResetPhaseTracking();
+    return 1U;
 }
 
 void BallSequence_Init(void)
@@ -41,7 +128,17 @@ void BallSequence_Init(void)
     s_context.state = BALL_SEQUENCE_STATE_READY;
     s_context.error = BALL_SEQUENCE_ERROR_NONE;
     s_context.elapsedTicks = 0U;
+    s_context.phaseElapsedTicks = 0U;
+    s_context.stableFreshFrames = 0U;
+    s_context.recoveryCount = 0U;
     s_context.targetMM = BALL_SEQUENCE_DEFAULT_TARGET_MM;
+    s_context.positivePositionKpPerS =
+        BALL_SEQUENCE_POSITIVE_POSITION_KP_PER_S;
+    s_context.positiveVelocityKpDegPerMMps =
+        BALL_SEQUENCE_POSITIVE_VELOCITY_KP_DEG_PER_MMPS;
+    s_context.positiveVelocityKiDegPerMM =
+        BALL_SEQUENCE_POSITIVE_VELOCITY_KI_DEG_PER_MM;
+    s_context.phaseStartPositionMM = 0.0f;
     BallSequence_TunePositionKpPerS =
         BALL_SEQUENCE_POSITION_KP_PER_S;
     BallSequence_TuneVelocityKpDegPerMMps =
@@ -67,6 +164,9 @@ uint8_t BallSequence_Start(float targetMM)
     }
 
     s_context.elapsedTicks = 0U;
+    s_context.phaseElapsedTicks = 0U;
+    s_context.stableFreshFrames = 0U;
+    s_context.recoveryCount = 0U;
     s_context.targetMM = targetMM;
     s_context.error = BALL_SEQUENCE_ERROR_NONE;
     s_context.state = BALL_SEQUENCE_STATE_HOLDING;
@@ -75,8 +175,8 @@ uint8_t BallSequence_Start(float targetMM)
 
 uint8_t BallSequence_StartSweep(void)
 {
-    /* Both phase gain sets are snapshotted together.  Web writes during an
-     * active sweep therefore take effect on the next KEY2 run only. */
+    BallBalance_Result_t result;
+
     s_context.positivePositionKpPerS =
         BallSequence_TunePositivePositionKpPerS;
     s_context.positiveVelocityKpDegPerMMps =
@@ -84,22 +184,33 @@ uint8_t BallSequence_StartSweep(void)
     s_context.positiveVelocityKiDegPerMM =
         BallSequence_TunePositiveVelocityKiDegPerMM;
 
-    if (BallBalance_StartWithGains(
-            BALL_SEQUENCE_NEGATIVE_TARGET_MM,
-            BallSequence_TunePositionKpPerS,
-            BallSequence_TuneVelocityKpDegPerMMps,
-            BallSequence_TuneVelocityKiDegPerMM) !=
-        BALL_BALANCE_RESULT_OK)
+    result = BallBalance_StartWithGains(
+        BALL_SEQUENCE_NEGATIVE_TARGET_MM,
+        BallSequence_TunePositionKpPerS,
+        BallSequence_TuneVelocityKpDegPerMMps,
+        BallSequence_TuneVelocityKiDegPerMM);
+    if (result != BALL_BALANCE_RESULT_OK)
     {
         s_context.error = BALL_SEQUENCE_ERROR_VISION;
         s_context.state = BALL_SEQUENCE_STATE_ERROR;
         return 0U;
     }
+    if (BallSequence_ApplyMotionProfile(&s_negativeProfile) == 0U)
+    {
+        BallBalance_Stop();
+        s_context.error = BALL_SEQUENCE_ERROR_BALANCE;
+        s_context.state = BALL_SEQUENCE_STATE_ERROR;
+        return 0U;
+    }
 
     s_context.elapsedTicks = 0U;
+    s_context.phaseElapsedTicks = 0U;
+    s_context.stableFreshFrames = 0U;
+    s_context.recoveryCount = 0U;
     s_context.targetMM = BALL_SEQUENCE_NEGATIVE_TARGET_MM;
     s_context.error = BALL_SEQUENCE_ERROR_NONE;
     s_context.state = BALL_SEQUENCE_STATE_SWEEP_TO_NEGATIVE;
+    s_context.phaseStartPositionMM = BallBalance_GetPositionMM();
     return 1U;
 }
 
@@ -115,6 +226,8 @@ uint8_t BallSequence_SetTarget(float targetMM)
 
     s_context.targetMM = targetMM;
     s_context.state = BALL_SEQUENCE_STATE_HOLDING;
+    s_context.stableFreshFrames = 0U;
+    s_context.phaseElapsedTicks = 0U;
     if (previousState != BALL_SEQUENCE_STATE_HOLDING)
     {
         TaskTimer_Stop(TASK_TIMER_OWNER_BALL);
@@ -124,13 +237,15 @@ uint8_t BallSequence_SetTarget(float targetMM)
 
 void BallSequence_Update(float dt)
 {
+    float positionMM;
+    float speedMMps;
+
     if (BallSequence_IsActive() == 0U)
     {
         return;
     }
 
     BallBalance_Update(dt);
-
     if (BallBalance_GetState() == BALL_BALANCE_STATE_ERROR)
     {
         BallSequence_Fail(
@@ -140,33 +255,153 @@ void BallSequence_Update(float dt)
         return;
     }
 
-    if ((s_context.state == BALL_SEQUENCE_STATE_SWEEP_TO_NEGATIVE) &&
-        (BallBalance_GetPositionMM() <=
-         BALL_SEQUENCE_REVERSAL_POSITION_MM))
-    {
-        if (BallBalance_StartWithGains(
-                BALL_SEQUENCE_POSITIVE_TARGET_MM,
-                s_context.positivePositionKpPerS,
-                s_context.positiveVelocityKpDegPerMMps,
-                s_context.positiveVelocityKiDegPerMM) !=
-            BALL_BALANCE_RESULT_OK)
-        {
-            BallSequence_Fail(BALL_SEQUENCE_ERROR_BALANCE);
-            return;
-        }
-        s_context.targetMM = BALL_SEQUENCE_POSITIVE_TARGET_MM;
-        s_context.state = BALL_SEQUENCE_STATE_SWEEP_TO_POSITIVE;
-    }
-    else if ((s_context.state == BALL_SEQUENCE_STATE_SWEEP_TO_POSITIVE) &&
-             (BallBalance_IsStable() != 0U))
-    {
-        s_context.state = BALL_SEQUENCE_STATE_SWEEP_HOLDING_POSITIVE;
-        TaskTimer_Stop(TASK_TIMER_OWNER_BALL);
-    }
+    positionMM = BallBalance_GetPositionMM();
+    speedMMps = BallSensor_GetSpeedMMps();
 
     if (s_context.elapsedTicks < UINT32_MAX)
     {
         s_context.elapsedTicks++;
+    }
+    if (s_context.phaseElapsedTicks < UINT32_MAX)
+    {
+        s_context.phaseElapsedTicks++;
+    }
+
+    if (s_context.elapsedTicks >= BALL_SEQUENCE_TOTAL_TIMEOUT_TICKS)
+    {
+        BallSequence_Fail(
+            (s_context.state == BALL_SEQUENCE_STATE_SWEEP_TO_NEGATIVE) ?
+                BALL_SEQUENCE_ERROR_TIMEOUT_NEGATIVE :
+                BALL_SEQUENCE_ERROR_TIMEOUT_POSITIVE);
+        return;
+    }
+
+    if (s_context.state == BALL_SEQUENCE_STATE_HOLDING)
+    {
+        return;
+    }
+
+    if (s_context.state == BALL_SEQUENCE_STATE_SWEEP_TO_NEGATIVE)
+    {
+        if (positionMM <=
+            (BALL_SEQUENCE_NEGATIVE_TARGET_MM -
+             BALL_SEQUENCE_NEGATIVE_OVERSHOOT_LIMIT_MM))
+        {
+            BallSequence_Fail(BALL_SEQUENCE_ERROR_OVERSHOOT);
+            return;
+        }
+        if (s_context.phaseElapsedTicks >= BALL_SEQUENCE_NEGATIVE_TIMEOUT_TICKS)
+        {
+            BallSequence_Fail(BALL_SEQUENCE_ERROR_TIMEOUT_NEGATIVE);
+            return;
+        }
+
+        if (BallSequence_IsFreshStable(
+                positionMM, speedMMps, BALL_SEQUENCE_NEGATIVE_TARGET_MM,
+                2.0f, 2.5f) != 0U)
+        {
+            if (s_context.stableFreshFrames < UINT8_MAX)
+            {
+                s_context.stableFreshFrames++;
+            }
+        }
+        else
+        {
+            s_context.stableFreshFrames = 0U;
+        }
+
+        if (s_context.stableFreshFrames >= BALL_SEQUENCE_NEGATIVE_CONFIRM_TICKS)
+        {
+            if (BallSequence_StartPositivePhase(0U) == 0U)
+            {
+                BallSequence_Fail(BALL_SEQUENCE_ERROR_BALANCE);
+            }
+            return;
+        }
+
+        if ((s_context.recoveryCount == 0U) &&
+            (s_context.phaseElapsedTicks >= BALL_SEQUENCE_PHASE_STALL_TICKS) &&
+            (fabsf(positionMM - s_context.phaseStartPositionMM) <=
+             BALL_SEQUENCE_PHASE_STALL_PROGRESS_MM) &&
+            (fabsf(BallBalance_GetVelocityTargetMMps()) >= 4.0f) &&
+            (fabsf(speedMMps) <= BALL_SEQUENCE_PHASE_STALL_SPEED_MMPS))
+        {
+            if (BallSequence_ApplyMotionProfile(&s_positiveRecoveryProfile) == 0U)
+            {
+                s_context.recoveryCount = 1U;
+                BallSequence_ResetPhaseTracking();
+            }
+        }
+        else if ((s_context.recoveryCount != 0U) &&
+                 (s_context.phaseElapsedTicks >= BALL_SEQUENCE_PHASE_STALL_TICKS) &&
+                 (fabsf(positionMM - s_context.phaseStartPositionMM) <=
+                  BALL_SEQUENCE_PHASE_STALL_PROGRESS_MM) &&
+                 (fabsf(BallBalance_GetVelocityTargetMMps()) >= 4.0f) &&
+                 (fabsf(speedMMps) <= BALL_SEQUENCE_PHASE_STALL_SPEED_MMPS))
+        {
+            BallSequence_Fail(BALL_SEQUENCE_ERROR_STALL);
+            return;
+        }
+        return;
+    }
+
+    if (s_context.state == BALL_SEQUENCE_STATE_SWEEP_TO_POSITIVE)
+    {
+        if (s_context.phaseElapsedTicks >= BALL_SEQUENCE_POSITIVE_TIMEOUT_TICKS)
+        {
+            BallSequence_Fail(BALL_SEQUENCE_ERROR_TIMEOUT_POSITIVE);
+            return;
+        }
+
+        if (BallSequence_IsFreshStable(
+                positionMM, speedMMps, BALL_SEQUENCE_POSITIVE_TARGET_MM,
+                3.0f, 3.5f) != 0U)
+        {
+            if (s_context.stableFreshFrames < UINT8_MAX)
+            {
+                s_context.stableFreshFrames++;
+            }
+        }
+        else
+        {
+            s_context.stableFreshFrames = 0U;
+        }
+
+        if ((s_context.stableFreshFrames >=
+             BALL_SEQUENCE_POSITIVE_CONFIRM_TICKS) &&
+            (s_context.state == BALL_SEQUENCE_STATE_SWEEP_TO_POSITIVE))
+        {
+            s_context.state = BALL_SEQUENCE_STATE_SWEEP_HOLDING_POSITIVE;
+            TaskTimer_Stop(TASK_TIMER_OWNER_BALL);
+            s_context.phaseElapsedTicks = 0U;
+            s_context.stableFreshFrames = 0U;
+            return;
+        }
+
+        if ((s_context.recoveryCount == 0U) &&
+            (s_context.phaseElapsedTicks >= BALL_SEQUENCE_PHASE_STALL_TICKS) &&
+            (fabsf(positionMM - s_context.phaseStartPositionMM) <=
+             BALL_SEQUENCE_PHASE_STALL_PROGRESS_MM) &&
+            (fabsf(BallBalance_GetVelocityTargetMMps()) >= 4.0f) &&
+            (fabsf(speedMMps) <= BALL_SEQUENCE_PHASE_STALL_SPEED_MMPS))
+        {
+            if (BallSequence_ApplyMotionProfile(&s_positiveRecoveryProfile) == 0U)
+            {
+                s_context.recoveryCount = 1U;
+                BallSequence_ResetPhaseTracking();
+            }
+        }
+        else if ((s_context.recoveryCount != 0U) &&
+                 (s_context.phaseElapsedTicks >= BALL_SEQUENCE_PHASE_STALL_TICKS) &&
+                 (fabsf(positionMM - s_context.phaseStartPositionMM) <=
+                  BALL_SEQUENCE_PHASE_STALL_PROGRESS_MM) &&
+                 (fabsf(BallBalance_GetVelocityTargetMMps()) >= 4.0f) &&
+                 (fabsf(speedMMps) <= BALL_SEQUENCE_PHASE_STALL_SPEED_MMPS))
+        {
+            BallSequence_Fail(BALL_SEQUENCE_ERROR_STALL);
+            return;
+        }
+        return;
     }
 }
 
@@ -175,6 +410,8 @@ void BallSequence_Stop(void)
     BallBalance_Stop();
     TaskTimer_Stop(TASK_TIMER_OWNER_BALL);
     s_context.state = BALL_SEQUENCE_STATE_FINISHED;
+    s_context.phaseElapsedTicks = 0U;
+    s_context.stableFreshFrames = 0U;
 }
 
 BallSequence_State_t BallSequence_GetState(void)
@@ -190,6 +427,11 @@ BallSequence_Error_t BallSequence_GetError(void)
 uint32_t BallSequence_GetElapsedTicks(void)
 {
     return s_context.elapsedTicks;
+}
+
+uint32_t BallSequence_GetElapsedMilliseconds(void)
+{
+    return (uint32_t)BallSequence_TicksToMs(s_context.elapsedTicks);
 }
 
 float BallSequence_GetTargetMM(void)
@@ -210,4 +452,55 @@ uint8_t BallSequence_IsStable(void)
 {
     return ((s_context.state == BALL_SEQUENCE_STATE_HOLDING) &&
             (BallBalance_IsStable() != 0U)) ? 1U : 0U;
+}
+
+uint8_t BallSequence_GetTelemetryPhaseCode(void)
+{
+    if (s_context.state == BALL_SEQUENCE_STATE_SWEEP_TO_NEGATIVE)
+    {
+        return 1U;
+    }
+    if (s_context.state == BALL_SEQUENCE_STATE_SWEEP_TO_POSITIVE)
+    {
+        return 2U;
+    }
+    if (s_context.state == BALL_SEQUENCE_STATE_SWEEP_HOLDING_POSITIVE)
+    {
+        return 3U;
+    }
+    if (s_context.state == BALL_SEQUENCE_STATE_ERROR)
+    {
+        return 4U;
+    }
+    return 0U;
+}
+
+uint8_t BallSequence_GetTelemetryResultCode(void)
+{
+    if (s_context.state == BALL_SEQUENCE_STATE_SWEEP_HOLDING_POSITIVE)
+    {
+        return 1U;
+    }
+    if (s_context.state != BALL_SEQUENCE_STATE_ERROR)
+    {
+        return 0U;
+    }
+
+    switch (s_context.error)
+    {
+        case BALL_SEQUENCE_ERROR_VISION:
+            return 2U;
+        case BALL_SEQUENCE_ERROR_BALANCE:
+            return 3U;
+        case BALL_SEQUENCE_ERROR_TIMEOUT_NEGATIVE:
+            return 4U;
+        case BALL_SEQUENCE_ERROR_TIMEOUT_POSITIVE:
+            return 5U;
+        case BALL_SEQUENCE_ERROR_STALL:
+            return 6U;
+        case BALL_SEQUENCE_ERROR_OVERSHOOT:
+            return 7U;
+        default:
+            return 0U;
+    }
 }

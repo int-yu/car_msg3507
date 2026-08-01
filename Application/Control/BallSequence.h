@@ -13,18 +13,14 @@
 #define BALL_SEQUENCE_POSITIVE_TARGET_MM 50.0f
 #define BALL_SEQUENCE_REVERSAL_POSITION_MM (-41.0f)
 
-#define BALL_SEQUENCE_POSITION_KP_PER_S          1.5f
-#define BALL_SEQUENCE_VELOCITY_KP_DEG_PER_MMPS   0.35f
-#define BALL_SEQUENCE_VELOCITY_KI_DEG_PER_MM     0.20f
+#define BALL_SEQUENCE_POSITION_KP_PER_S          0.45f
+#define BALL_SEQUENCE_VELOCITY_KP_DEG_PER_MMPS   0.28f
+#define BALL_SEQUENCE_VELOCITY_KI_DEG_PER_MM     0.03f
 
-/* KEY2 phase 2 (-50 mm -> +50 mm) starts with the same conservative values
- * as phase 1, but has an independent runtime tuning set. */
-#define BALL_SEQUENCE_POSITIVE_POSITION_KP_PER_S \
-    BALL_SEQUENCE_POSITION_KP_PER_S
-#define BALL_SEQUENCE_POSITIVE_VELOCITY_KP_DEG_PER_MMPS \
-    BALL_SEQUENCE_VELOCITY_KP_DEG_PER_MMPS
-#define BALL_SEQUENCE_POSITIVE_VELOCITY_KI_DEG_PER_MM \
-    BALL_SEQUENCE_VELOCITY_KI_DEG_PER_MM
+/* KEY2 phase 2 (-50 mm -> +50 mm) uses a slightly more assertive set. */
+#define BALL_SEQUENCE_POSITIVE_POSITION_KP_PER_S    0.55f
+#define BALL_SEQUENCE_POSITIVE_VELOCITY_KP_DEG_PER_MMPS 0.30f
+#define BALL_SEQUENCE_POSITIVE_VELOCITY_KI_DEG_PER_MM   0.04f
 
 extern float BallSequence_TunePositionKpPerS;
 extern float BallSequence_TuneVelocityKpDegPerMMps;
@@ -48,7 +44,11 @@ typedef enum
 {
     BALL_SEQUENCE_ERROR_NONE = 0,
     BALL_SEQUENCE_ERROR_VISION,
-    BALL_SEQUENCE_ERROR_BALANCE
+    BALL_SEQUENCE_ERROR_BALANCE,
+    BALL_SEQUENCE_ERROR_TIMEOUT_NEGATIVE,
+    BALL_SEQUENCE_ERROR_TIMEOUT_POSITIVE,
+    BALL_SEQUENCE_ERROR_STALL,
+    BALL_SEQUENCE_ERROR_OVERSHOOT
 } BallSequence_Error_t;
 
 void BallSequence_Init(void);
@@ -68,9 +68,11 @@ void BallSequence_Stop(void);
 BallSequence_State_t BallSequence_GetState(void);
 BallSequence_Error_t BallSequence_GetError(void);
 uint32_t BallSequence_GetElapsedTicks(void);
+uint32_t BallSequence_GetElapsedMilliseconds(void);
 float BallSequence_GetTargetMM(void);
 uint8_t BallSequence_IsActive(void);
-/* 仅目标保持模式达到 BallBalance 的稳定判据时返回 1。 */
 uint8_t BallSequence_IsStable(void);
+uint8_t BallSequence_GetTelemetryPhaseCode(void);
+uint8_t BallSequence_GetTelemetryResultCode(void);
 
 #endif

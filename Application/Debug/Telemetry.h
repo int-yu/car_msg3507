@@ -38,7 +38,12 @@
 #define TELEMETRY_CH_BTCMD  0x100000UL /* 球控制器请求倾角 deg */
 #define TELEMETRY_CH_BTAPP  0x200000UL /* 斜率限制后的应用倾角 deg */
 #define TELEMETRY_CH_LACC   0x400000UL /* 巡线速度规划加速度 mm/s2 */
-#define TELEMETRY_CH_ALL    0x7FFFFFUL
+#define TELEMETRY_CH_K2PH   0x800000UL /* KEY2 阶段码 */
+#define TELEMETRY_CH_K2RS   0x1000000UL /* KEY2 结果码 */
+#define TELEMETRY_CH_K2TM   0x2000000UL /* KEY2 已用时间 ms */
+#define TELEMETRY_CH_BFRM   0x4000000UL /* 钢球视觉帧序号 */
+#define TELEMETRY_CH_BFSH   0x8000000UL /* 钢球视觉新帧标记 */
+#define TELEMETRY_CH_ALL    0xFFFFFFFUL
 
 void Telemetry_Init(void);
 void Telemetry_Update(uint8_t elapsedTicks, uint8_t pressedKeys);

@@ -42,7 +42,7 @@ h1::before {
 h2 { font-size: 13.5px; margin: 0 0 10px; color: var(--accent); letter-spacing: .5px; }
 h2 small, summary small { color: var(--dim); font-weight: normal; font-size: 12px; }
 .grid {
-    display: grid; grid-template-columns: 370px 1fr; gap: 14px;
+    display: grid; grid-template-columns: 430px 1fr; gap: 14px;
     align-items: stretch; min-height: 0;
 }
 .scroll-column {
@@ -257,10 +257,10 @@ kbd {
 .focus-nav button { padding: 4px 10px; font-size: 12px; }
 .focus-nav button.active { color: #08131f; background: var(--accent); border-color: var(--accent); font-weight: bold; }
 .focus-nav button.secondary.active { color: var(--accent); background: var(--accent-dim); border-color: var(--accent); }
-.focus-param-grid { display: grid !important; grid-template-columns: repeat(2, minmax(220px, 1fr)); gap: 8px !important; margin: 9px 0 !important; }
-.qp { display: grid; grid-template-columns: 1fr auto auto auto auto; gap: 5px; align-items: center; border: 1px solid var(--line); border-radius: 7px; padding: 8px; background: #0b111a; }
+.focus-param-grid { display: grid !important; grid-template-columns: minmax(0, 1fr); gap: 8px !important; margin: 9px 0 !important; }
+.qp { display: grid; grid-template-columns: minmax(150px, 1fr) auto auto auto auto; gap: 5px; align-items: center; border: 1px solid var(--line); border-radius: 7px; padding: 8px; background: #0b111a; }
 .qp label { font-family: Consolas, monospace; font-size: 13px; font-weight: bold; color: var(--accent); }
-.qp input { width: 86px; padding: 5px 7px; font-size: 13px; }
+.qp input { width: 104px; padding: 5px 7px; font-size: 13px; }
 .qp button { padding: 4px 7px; font-size: 12px; border-radius: 5px; }
 .qp .param-meta { grid-column: 1 / -1; color: var(--dim); font-size: 11px; font-family: Consolas, monospace; }
 .focus-history-head { display: flex; align-items: center; justify-content: space-between; gap: 8px; margin-top: 9px; border-top: 1px solid var(--line); padding-top: 8px; }
@@ -1720,6 +1720,151 @@ function computeBallMetrics(samples) {
     };
 }
 
+function computeKey2Metrics(samples) {
+    const values = samples.filter((s) =>
+        Number.isFinite(s.ms) && Number.isFinite(s.bpos));
+    if (values.length < 3) {
+        return null;
+    }
+
+    const NEG_TARGET = -50;
+    const POS_TARGET = 50;
+    const NEG_TOL_MM = 2.0;
+    const POS_TOL_MM = 3.0;
+    const NEG_SPEED_TOL = 2.5;
+    const POS_SPEED_TOL = 3.5;
+    const STABLE_MS = 300;
+    const targetOf = (phase) => phase === 1 ? NEG_TARGET :
+        ((phase === 2 || phase === 3) ? POS_TARGET : 0);
+    const speedOf = (sample) => Number.isFinite(sample.bvel) ? sample.bvel :
+        (Number.isFinite(sample.bvref) ? sample.bvref : null);
+
+    let negStartMs = null;
+    let posStartMs = null;
+    let doneMs = null;
+    let negStableStartMs = null;
+    let posStableStartMs = null;
+    let negConvergeMs = null;
+    let posConvergeMs = null;
+    let maxAbsErrorMM = 0;
+    let maxNegOvershootMM = 0;
+    let maxPosOvershootMM = 0;
+    let maxIntegralMM = 0;
+    let maxTiltDeg = 0;
+    let maxVelocityTargetMMps = 0;
+    let stall40Count = 0;
+    let freshCount = 0;
+    let frameChanges = 0;
+    let lastFrame = null;
+    let resultCode = null;
+
+    for (const sample of values) {
+        const phase = Number.isFinite(sample.k2ph) ? sample.k2ph : 0;
+        const result = Number.isFinite(sample.k2rs) ? sample.k2rs : null;
+        const target = targetOf(phase);
+        const speed = speedOf(sample);
+        const error = sample.bpos - target;
+        const absError = Math.abs(error);
+
+        if (phase === 1 && negStartMs === null) negStartMs = sample.ms;
+        if (phase === 2 && posStartMs === null) posStartMs = sample.ms;
+        if (phase === 3 && doneMs === null) doneMs = sample.ms;
+        if (result !== null) resultCode = result;
+
+        if (absError > maxAbsErrorMM) maxAbsErrorMM = absError;
+        if (sample.bpos < NEG_TARGET) {
+            maxNegOvershootMM = Math.max(maxNegOvershootMM,
+                NEG_TARGET - sample.bpos);
+        }
+        if (sample.bpos > POS_TARGET) {
+            maxPosOvershootMM = Math.max(maxPosOvershootMM,
+                sample.bpos - POS_TARGET);
+        }
+        if (Number.isFinite(sample.bint)) {
+            maxIntegralMM = Math.max(maxIntegralMM, Math.abs(sample.bint));
+        }
+        if (Number.isFinite(sample.btcmd)) {
+            maxTiltDeg = Math.max(maxTiltDeg, Math.abs(sample.btcmd));
+        }
+        if (Number.isFinite(sample.bvref)) {
+            maxVelocityTargetMMps = Math.max(maxVelocityTargetMMps,
+                Math.abs(sample.bvref));
+        }
+        if (Number.isFinite(sample.bfsh) && sample.bfsh > 0.5) {
+            freshCount += 1;
+        }
+        if (Number.isFinite(sample.bfrm)) {
+            if (lastFrame !== null && sample.bfrm !== lastFrame) {
+                frameChanges += 1;
+            }
+            lastFrame = sample.bfrm;
+        }
+
+        if (phase === 1) {
+            if ((Math.abs(sample.bpos - NEG_TARGET) <= NEG_TOL_MM) &&
+                (speed === null || Math.abs(speed) <= NEG_SPEED_TOL)) {
+                if (negStableStartMs === null) {
+                    negStableStartMs = sample.ms;
+                } else if (negConvergeMs === null &&
+                           sample.ms - negStableStartMs >= STABLE_MS) {
+                    negConvergeMs = negStableStartMs - negStartMs;
+                }
+            } else {
+                negStableStartMs = null;
+            }
+        }
+        if (phase === 2 || phase === 3) {
+            if ((Math.abs(sample.bpos - POS_TARGET) <= POS_TOL_MM) &&
+                (speed === null || Math.abs(speed) <= POS_SPEED_TOL)) {
+                if (posStableStartMs === null) {
+                    posStableStartMs = sample.ms;
+                } else if (posConvergeMs === null &&
+                           sample.ms - posStableStartMs >= STABLE_MS) {
+                    posConvergeMs = posStableStartMs - posStartMs;
+                }
+            } else {
+                posStableStartMs = null;
+            }
+        }
+
+        if ((phase === 2) && Number.isFinite(sample.bpos) &&
+            (sample.bpos >= 38) && (sample.bpos <= 42) &&
+            Number.isFinite(sample.bvref) && Math.abs(sample.bvref) > 2 &&
+            (speed === null || Math.abs(speed) < 1.5)) {
+            stall40Count += 1;
+        }
+    }
+
+    const totalMs = values[values.length - 1].ms - values[0].ms;
+    const freshPct = (freshCount / values.length) * 100;
+    const pass = resultCode === 1 &&
+        negConvergeMs !== null &&
+        posConvergeMs !== null &&
+        maxNegOvershootMM <= 2.5 &&
+        maxPosOvershootMM <= 5.0 &&
+        stall40Count < 5;
+
+    return {
+        negStartMs,
+        posStartMs,
+        doneMs,
+        negConvergeMs,
+        posConvergeMs,
+        totalMs,
+        maxAbsErrorMM,
+        maxNegOvershootMM,
+        maxPosOvershootMM,
+        maxIntegralMM,
+        maxTiltDeg,
+        maxVelocityTargetMMps,
+        stall40Count,
+        freshPct,
+        frameChanges,
+        resultCode,
+        pass,
+    };
+}
+
 /*
  * 要求 4 指标：钢球从任意位置放下后收敛到 O 并长期保持。
  * 和要求 3 的口径完全不同——那里查两个 ±50 mm 点，这里查「多久回到 O、
@@ -2080,8 +2225,10 @@ const CH = {
     vx: 0x1000, vad: 0x2000, bpos: 0x4000, bref: 0x8000,
     sang: 0x10000, bvel: 0x20000, bvref: 0x40000,
     bint: 0x80000, btcmd: 0x100000, btapp: 0x200000, lacc: 0x400000,
+    k2ph: 0x800000, k2rs: 0x1000000, k2tm: 0x2000000,
+    bfrm: 0x4000000, bfsh: 0x8000000,
 };
-const CH_ALL = 0x7FFFFF;
+const CH_ALL = 0xFFFFFFF;
 /* 捕获别名，保留旧引用可读性；与实时流同一套位。 */
 const CAPTURE_CH = CH;
 /* 固件 CAPTURE_MAX_CHANNELS；超出会被固件拒绝，网页先自查给出清晰提示。 */
@@ -2095,6 +2242,8 @@ const CH_LIST = [
     ['vx', 'raw'], ['vad', 'mmps'], ['bpos', 'mm'], ['bref', 'mm'],
     ['sang', 'deg'], ['bvel', 'mmps'], ['bvref', 'mmps'],
     ['bint', 'mm'], ['btcmd', 'deg'], ['btapp', 'deg'], ['lacc', 'mmps2'],
+    ['k2ph', 'raw'], ['k2rs', 'raw'], ['k2tm', 'ms'],
+    ['bfrm', 'raw'], ['bfsh', 'bits'],
 ];
 
 /* 100 Hz 出弧诊断：17 通道仍保持单帧带宽在 115200 8N1 的安全预算内。 */
@@ -2144,6 +2293,21 @@ const SESSIONS = {
         structure: 'KEY1 启动时快照现有 26H 阶段参数：以 h2cru 离开起点并巡航，距 h2lap 还剩 h2app 时按 ldec 降到 h2fin，h2arm 后任意三路黑线连续 3 拍判为终点横线，确认后再走 h2off 并按同一 ldec 软停，h2max 是未识别横线的保护距离；六路红外误差统一进入 PID(lra,lki,lkd) 生成左右轮目标差速，弯道和直线不再区分',
         columnsNote: 'gray=CH1~CH6 位图，yaw=航向角（网页据相邻样本显示偏航速率），lerr=滤波后巡线权重，(TL+TR)/2=当前基准速度，TL/TR=左右目标轮速，LV/RV=左右实测轮速',
         expectation: '正常压线时 gray 不应长时间全 0；lerr 过零时 TL/TR 差速方向应同步翻转，基准速度只跟随 h2cru/h2fin 与 lacc/ldec，不因压线或弯道额外降速',
+    },
+    key2: {
+        loop: 'key2',
+        label: 'KEY2 两阶段扫球',
+        mask: CH.bpos | CH.bref | CH.bvel | CH.bvref | CH.bint |
+            CH.btcmd | CH.btapp | CH.sang | CH.k2ph | CH.k2rs |
+            CH.k2tm | CH.bfrm | CH.bfsh,
+        ampVisible: false, timed: false, rate: 100,
+        excite: () => 'C2', startReply: 'OK BALL SWEEP',
+        stopCmd: 'C4', stopReply: 'OK BALL STOP',
+        params: ['bgr', 'bzo', 'bhl', 'bkp', 'bvm', 'bkd', 'bki',
+                 'k2kp', 'k2kd', 'k2ki', 'k2pkp', 'k2pkd', 'k2pki'],
+        structure: 'KEY2 扫描覆盖 O->-50->+50 两套不同 PID；第一段 k2kp/k2kd/k2ki 盯住 -50 mm，第二段 k2pkp/k2pkd/k2pki 负责 +50 mm 回稳；数据同时看超调、次数、卡滞和回中时间。',
+        columnsNote: 'bpos/bref=实测/目标位置mm，bvel/bvref=实测/目标速度mm/s，sang=步进绝对角deg；另看 k2ph/k2rs/k2tm/bfrm/bfsh',
+        expectation: '第一段不许低过 -50 mm 太多；第二段可以略过 +50 mm，但应很快回到终点并稳定住。',
     },
     ball: {
         label: '要求3摆球',
@@ -3879,7 +4043,10 @@ function odomCalc() {
  * rate 不再硬编码——由 Q 命令拿固件真实上限后填入，见 resolveSessionRate()。
  */
 function sessionPreset() {
-    const base = SESSIONS[focusState.loop];
+    const base = (focusState.loop === 'ball' &&
+        (focusState.stage === 'key2' ||
+            focusState.stage === 'key2positive')) ?
+        SESSIONS.key2 : SESSIONS[focusState.loop];
     const side = focusSideConfig();
     /* 二进制后实时流与捕获同掩码：capture 通道 = 遥测通道，不再分两套。 */
     const mask = (side && side.mask) ? side.mask : base.mask;
@@ -4296,7 +4463,8 @@ async function startSession() {
         paramValueEntries.map((entry) => [entry.name, entry.value]));
 
     session = {
-        loop: focusState.loop, focusSide: focusState.side, focusStage: focusState.stage,
+        loop: p.loop || focusState.loop, focusSide: focusState.side,
+        focusStage: focusState.stage,
         focusPath, preset: p, excitation, snapshot, paramValues, amp,
         rateHz: preparedRate,
         captureArmed: false,
@@ -4437,6 +4605,12 @@ function sessionSampleCompletionState(activeSession, sample, toleranceDeg = 2) {
     if (!activeSession || !sample) {
         return false;
     }
+    if (activeSession.loop === 'key2') {
+        return Number.isFinite(sample.k2ph) &&
+            Number.isFinite(sample.k2rs) &&
+            sample.k2ph === 3 &&
+            sample.k2rs === 1;
+    }
     if (activeSession.loop === 'ball' || activeSession.loop === 'hold') {
         /* 要求 4 的 bref 保持期间本来就在 0 附近，光看 bref 无法区分
          * 「还在保持」和「已回中」，所以必须先等 C6 被确认。 */
@@ -4559,6 +4733,10 @@ function watchSession() {
         return;
     }
     const s = latestSample();
+    if (session.loop === 'key2' && s && Number.isFinite(s.k2rs) && s.k2rs > 1) {
+        stopSession('KEY2 扫描失败', true);
+        return;
+    }
     if (session.loop === 'ball' && !session.stopRequested) {
         return;
     }
@@ -4814,7 +4992,8 @@ function abortSession() {
     if (!session) {
         return;
     }
-    if (session.loop === 'ball' || session.loop === 'hold') {
+    if (session.loop === 'ball' || session.loop === 'hold' ||
+        session.loop === 'key2') {
         /* 摆杆任务的「结束」就是回中，不该走 emergencyStop 那条底盘急停路径。 */
         requestSessionStop('手动回中').catch((err) => {
             log('手动回中失败：' + err.message, 'err');

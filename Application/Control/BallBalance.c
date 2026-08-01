@@ -2,7 +2,19 @@
 #include "Application/Control/BallSensor.h"
 #include "Application/Control/BeamActuator.h"
 #include "Application/Control/MotionLine.h"
+#include <stddef.h>
 #include <math.h>
+
+static const BallBalance_MotionProfile_t s_defaultMotionProfile = {
+    BALL_BALANCE_MAX_VELOCITY_MMPS,
+    0.0f,
+    BALL_BALANCE_MAX_VELOCITY_MMPS,
+    0.0f,
+    0.0f,
+    0.0f,
+    BALL_BALANCE_VELOCITY_INTEGRAL_LIMIT_MM,
+    6.0f
+};
 
 float BallBalance_TunePositionKpPerS = BALL_BALANCE_POSITION_KP_PER_S;
 float BallBalance_TuneVelocityKpDegPerMMps =
@@ -25,8 +37,10 @@ typedef struct
     float positionKpPerS;
     float velocityKpDegPerMMps;
     float velocityKiDegPerMM;
+    BallBalance_MotionProfile_t motionProfile;
     uint8_t useGainOverride;
     float tiltCommandDeg;
+    float velocityLimitMMps;
     uint16_t settleTicks;
     uint16_t visionLostTicks;
 } BallBalance_Context_t;
@@ -46,6 +60,11 @@ static float BallBalance_Clamp(float value, float limit)
     return value;
 }
 
+static BallBalance_MotionProfile_t BallBalance_DefaultMotionProfile(void)
+{
+    return s_defaultMotionProfile;
+}
+
 static uint8_t BallBalance_TargetIsValid(float targetMM)
 {
     return (isfinite(targetMM) &&
@@ -60,16 +79,20 @@ static void BallBalance_ResetRuntime(void)
     s_context.positionKpPerS = 0.0f;
     s_context.velocityKpDegPerMMps = 0.0f;
     s_context.velocityKiDegPerMM = 0.0f;
+    s_context.motionProfile = BallBalance_DefaultMotionProfile();
     s_context.useGainOverride = 0U;
     s_context.tiltCommandDeg = 0.0f;
+    s_context.velocityLimitMMps =
+        s_context.motionProfile.maxVelocityMMps;
     s_context.settleTicks = 0U;
     s_context.visionLostTicks = 0U;
 }
 
-static void BallBalance_UpdateSettle(float positionMM)
+static void BallBalance_UpdateSettle(float positionMM, float speedMMps)
 {
     if (fabsf(positionMM - s_context.targetMM) <=
-        BALL_BALANCE_SETTLE_TOLERANCE_MM)
+        BALL_BALANCE_SETTLE_TOLERANCE_MM &&
+        fabsf(speedMMps) <= s_context.motionProfile.settleSpeedMMps)
     {
         if (s_context.settleTicks < UINT16_MAX)
         {
@@ -145,6 +168,35 @@ BallBalance_Result_t BallBalance_StartWithGains(
     return BALL_BALANCE_RESULT_OK;
 }
 
+BallBalance_Result_t BallBalance_SetMotionProfile(
+    const BallBalance_MotionProfile_t *profile)
+{
+    if ((profile == NULL) || (!isfinite(profile->maxVelocityMMps)) ||
+        (profile->maxVelocityMMps <= 0.0f) ||
+        (!isfinite(profile->approachDistanceMM)) ||
+        (profile->approachDistanceMM < 0.0f) ||
+        (!isfinite(profile->terminalVelocityMMps)) ||
+        (profile->terminalVelocityMMps < 0.0f) ||
+        (profile->terminalVelocityMMps > profile->maxVelocityMMps) ||
+        (!isfinite(profile->minimumVelocityMMps)) ||
+        (profile->minimumVelocityMMps < 0.0f) ||
+        (!isfinite(profile->minimumVelocityErrorMM)) ||
+        (profile->minimumVelocityErrorMM < 0.0f) ||
+        (!isfinite(profile->maxTiltDeg)) ||
+        (profile->maxTiltDeg < 0.0f) ||
+        (!isfinite(profile->integralLimitMM)) ||
+        (profile->integralLimitMM <= 0.0f) ||
+        (!isfinite(profile->settleSpeedMMps)) ||
+        (profile->settleSpeedMMps < 0.0f))
+    {
+        return BALL_BALANCE_RESULT_INVALID_ARGUMENT;
+    }
+
+    s_context.motionProfile = *profile;
+    s_context.velocityLimitMMps = profile->maxVelocityMMps;
+    return BALL_BALANCE_RESULT_OK;
+}
+
 BallBalance_Result_t BallBalance_SetTarget(float targetMM)
 {
     if (BallBalance_TargetIsValid(targetMM) == 0U)
@@ -175,6 +227,11 @@ void BallBalance_Update(float dt)
     float positionKpPerS;
     float velocityKpDegPerMMps;
     float velocityKiDegPerMM;
+    float speedCapMMps;
+    float candidateIntegralMM;
+    float rawTiltDeg;
+    uint8_t saturated;
+    BallBalance_MotionProfile_t profile;
 
     if (s_context.state != BALL_BALANCE_STATE_RUNNING)
     {
@@ -217,21 +274,45 @@ void BallBalance_Update(float dt)
         BallBalance_TuneVelocityKpDegPerMMps;
     velocityKiDegPerMM = (s_context.useGainOverride != 0U) ?
         s_context.velocityKiDegPerMM : BallBalance_TuneVelocityKiDegPerMM;
+    profile = s_context.motionProfile;
 
+    speedCapMMps = profile.maxVelocityMMps;
+    if ((profile.approachDistanceMM > 0.0f) &&
+        (profile.terminalVelocityMMps < profile.maxVelocityMMps))
+    {
+        float approachRatio = fabsf(errorMM) / profile.approachDistanceMM;
+
+        if (approachRatio < 1.0f)
+        {
+            speedCapMMps = profile.terminalVelocityMMps +
+                ((profile.maxVelocityMMps - profile.terminalVelocityMMps) *
+                 approachRatio);
+        }
+        if (speedCapMMps < profile.terminalVelocityMMps)
+        {
+            speedCapMMps = profile.terminalVelocityMMps;
+        }
+    }
+    s_context.velocityLimitMMps = speedCapMMps;
     s_context.velocityTargetMMps = BallBalance_Clamp(
-        positionKpPerS * errorMM,
-        BallBalance_TuneMaxVelocityMMps);
+        positionKpPerS * errorMM, speedCapMMps);
+    if ((fabsf(errorMM) > profile.minimumVelocityErrorMM) &&
+        (profile.minimumVelocityMMps > 0.0f) &&
+        (fabsf(s_context.velocityTargetMMps) < profile.minimumVelocityMMps))
+    {
+        s_context.velocityTargetMMps =
+            (errorMM >= 0.0f ? 1.0f : -1.0f) * profile.minimumVelocityMMps;
+    }
     velocityErrorMMps = s_context.velocityTargetMMps - speedMMps;
-    s_context.velocityIntegralMM += velocityErrorMMps * dt;
-    s_context.velocityIntegralMM = BallBalance_Clamp(
-        s_context.velocityIntegralMM,
-        BALL_BALANCE_VELOCITY_INTEGRAL_LIMIT_MM);
+    candidateIntegralMM = s_context.velocityIntegralMM +
+        velocityErrorMMps * dt;
+    candidateIntegralMM = BallBalance_Clamp(
+        candidateIntegralMM, profile.integralLimitMM);
 
     /* PID control */
-    tiltDeg =
+    rawTiltDeg =
         (velocityKpDegPerMMps * velocityErrorMMps) +
-        (velocityKiDegPerMM *
-         s_context.velocityIntegralMM);
+        (velocityKiDegPerMM * candidateIntegralMM);
 
     /* Chassis acceleration feedforward compensation.
      * Only apply when vehicle has significant velocity to avoid forcing
@@ -240,12 +321,26 @@ void BallBalance_Update(float dt)
     if (MotionLine_GetProfileSpeedMMps() > BallBalance_TuneFeedforwardSpeedThresholdMMps)
     {
         feedforwardDeg = chassisAccelMMps2 * BallBalance_TuneFeedforwardDegPerMMps2;
-        tiltDeg += feedforwardDeg;
+        rawTiltDeg += feedforwardDeg;
+    }
+
+    saturated = 0U;
+    tiltDeg = rawTiltDeg;
+    if ((profile.maxTiltDeg > 0.0f) &&
+        (fabsf(rawTiltDeg) > profile.maxTiltDeg))
+    {
+        tiltDeg = BallBalance_Clamp(rawTiltDeg, profile.maxTiltDeg);
+        saturated = 1U;
+    }
+    if ((saturated == 0U) ||
+        ((velocityErrorMMps * rawTiltDeg) <= 0.0f))
+    {
+        s_context.velocityIntegralMM = candidateIntegralMM;
     }
 
     s_context.tiltCommandDeg = tiltDeg;
     BeamActuator_SetTiltDeg(tiltDeg);
-    BallBalance_UpdateSettle(positionMM);
+    BallBalance_UpdateSettle(positionMM, speedMMps);
 }
 
 void BallBalance_Stop(void)
@@ -291,6 +386,11 @@ float BallBalance_GetProfilePositionMM(void)
 float BallBalance_GetVelocityTargetMMps(void)
 {
     return s_context.velocityTargetMMps;
+}
+
+float BallBalance_GetVelocityLimitMMps(void)
+{
+    return s_context.velocityLimitMMps;
 }
 
 float BallBalance_GetTiltCommandDeg(void)

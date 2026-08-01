@@ -2,6 +2,7 @@
 #include "Application/Control/BallBalance.h"
 #include "Application/Control/BallSensor.h"
 #include "Application/Control/BeamActuator.h"
+#include "Application/Control/BallSequence.h"
 #include "Application/Control/MotionLane.h"
 #include "Application/Control/MotionLine.h"
 #include "Application/Control/MotionManager.h"
@@ -86,6 +87,26 @@ static float Telemetry_ReadBallTiltCommand(void)
 {
     return BallBalance_GetTiltCommandDeg();
 }
+static float Telemetry_ReadBallFrameSequence(void)
+{
+    return (float)BallSensor_GetFrameSequence();
+}
+static float Telemetry_ReadBallFresh(void)
+{
+    return (BallSensor_IsFresh() != 0U) ? 1.0f : 0.0f;
+}
+static float Telemetry_ReadKey2Phase(void)
+{
+    return (float)BallSequence_GetTelemetryPhaseCode();
+}
+static float Telemetry_ReadKey2Result(void)
+{
+    return (float)BallSequence_GetTelemetryResultCode();
+}
+static float Telemetry_ReadKey2Time(void)
+{
+    return (float)BallSequence_GetElapsedMilliseconds();
+}
 static float Telemetry_ReadBeamAppliedTilt(void)
 {
     return BeamActuator_GetTiltDeg();
@@ -136,6 +157,16 @@ static const Telemetry_Channel_t s_channels[] = {
       Telemetry_ReadBeamAppliedTilt },
     { TELEMETRY_CH_LACC,  "lacc",  TELEM_UNIT_MMPS2,
       Telemetry_ReadLineAcceleration },
+    { TELEMETRY_CH_K2PH,  "k2ph",  TELEM_UNIT_RAW,
+      Telemetry_ReadKey2Phase },
+    { TELEMETRY_CH_K2RS,  "k2rs",  TELEM_UNIT_RAW,
+      Telemetry_ReadKey2Result },
+    { TELEMETRY_CH_K2TM,  "k2tm",  TELEM_UNIT_RAW,
+      Telemetry_ReadKey2Time },
+    { TELEMETRY_CH_BFRM,  "bfrm",  TELEM_UNIT_RAW,
+      Telemetry_ReadBallFrameSequence },
+    { TELEMETRY_CH_BFSH,  "bfsh",  TELEM_UNIT_BITS,
+      Telemetry_ReadBallFresh },
 };
 
 #define TELEMETRY_CHANNEL_COUNT \

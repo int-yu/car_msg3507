@@ -17,7 +17,7 @@
  * 解析器上限必须覆盖该掩码，否则 M8375643 会被静默截成 M1000000，
  * 网页随后会一直等不到期望的 17 通道 schema。10e6 仍远低于 int32 溢出边界，
  * 并覆盖现有距离/角度参数范围。 */
-#define BLUETOOTH_VALUE_ACCUMULATOR_MAX 10000000L
+#define BLUETOOTH_VALUE_ACCUMULATOR_MAX 600000000L
 
 /* K 命令文本参数缓冲：最长形如 "16=-123.4567"，24 字节足够。 */
 #define BLUETOOTH_TEXT_ARGS_SIZE 24U

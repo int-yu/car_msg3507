@@ -16,12 +16,38 @@ float TimedLineRun_TuneCruiseSpeedMMps =
 float TimedLineRun_TuneDurationSeconds =
     TIMED_LINE_RUN_DURATION_SECONDS;
 
+/*
+ * KEY3 诊断路线的里程速度遮罩：
+ * 只在定时巡线里做，不改 MotionLine 的 PID 参数。
+ * 这两段窗口对应当前诊断路线里弧尾/出弧后最容易冒球偏移的区间。
+ */
+#define TIMED_LINE_RUN_CURVE_SLOWDOWN_FACTOR      0.90f
+#define TIMED_LINE_RUN_CURVE1_SLOWDOWN_START_MM  3050.0f
+#define TIMED_LINE_RUN_CURVE1_SLOWDOWN_END_MM    3550.0f
+#define TIMED_LINE_RUN_CURVE2_SLOWDOWN_START_MM  6250.0f
+#define TIMED_LINE_RUN_CURVE2_SLOWDOWN_END_MM    6800.0f
+
+typedef struct
+{
+    float startMM;
+    float endMM;
+} TimedLineRun_SpeedWindow_t;
+
 static TimedLineRun_State_t s_state;
 static TimedLineRun_Error_t s_error;
 static uint32_t s_elapsedTicks;
 static uint32_t s_runDurationTicks;
 static uint16_t s_settleTicks;
 static uint16_t s_settleElapsedTicks;
+static float s_runStartDistanceMM;
+static float s_lastRequestedSpeedMMps;
+
+static const TimedLineRun_SpeedWindow_t s_speedWindows[] = {
+    { TIMED_LINE_RUN_CURVE1_SLOWDOWN_START_MM,
+      TIMED_LINE_RUN_CURVE1_SLOWDOWN_END_MM },
+    { TIMED_LINE_RUN_CURVE2_SLOWDOWN_START_MM,
+      TIMED_LINE_RUN_CURVE2_SLOWDOWN_END_MM },
+};
 
 static uint16_t TimedLineRun_AddSaturating16(
     uint16_t current, uint8_t elapsedTicks)
@@ -82,6 +108,66 @@ static void TimedLineRun_BeginSoftStop(void)
     s_settleTicks = 0U;
     s_settleElapsedTicks = 0U;
     s_state = TIMED_LINE_RUN_STATE_SOFT_STOP;
+}
+
+static float TimedLineRun_GetTravelledDistanceMM(void)
+{
+    return Odometry_GetDistanceMM() - s_runStartDistanceMM;
+}
+
+static uint8_t TimedLineRun_IsInSpeedWindow(float travelledDistanceMM)
+{
+    uint8_t index;
+
+    for (index = 0U; index < (uint8_t)(sizeof(s_speedWindows) /
+                                       sizeof(s_speedWindows[0]));
+         index++)
+    {
+        if ((travelledDistanceMM >= s_speedWindows[index].startMM) &&
+            (travelledDistanceMM <= s_speedWindows[index].endMM))
+        {
+            return 1U;
+        }
+    }
+    return 0U;
+}
+
+static float TimedLineRun_GetTargetCruiseSpeedMMps(float travelledDistanceMM)
+{
+    if (TimedLineRun_IsInSpeedWindow(travelledDistanceMM) != 0U)
+    {
+        return TimedLineRun_TuneCruiseSpeedMMps *
+               TIMED_LINE_RUN_CURVE_SLOWDOWN_FACTOR;
+    }
+    return TimedLineRun_TuneCruiseSpeedMMps;
+}
+
+static void TimedLineRun_UpdateCruiseSpeed(float travelledDistanceMM)
+{
+    float targetSpeedMMps;
+
+    targetSpeedMMps =
+        TimedLineRun_GetTargetCruiseSpeedMMps(travelledDistanceMM);
+    if ((isfinite(targetSpeedMMps) == 0) ||
+        (targetSpeedMMps <= 0.0f))
+    {
+        TimedLineRun_Fail(TIMED_LINE_RUN_ERROR_START);
+        return;
+    }
+
+    if (fabsf(targetSpeedMMps - s_lastRequestedSpeedMMps) <= 0.5f)
+    {
+        return;
+    }
+
+    if (MotionManager_SetLineSpeed(targetSpeedMMps) !=
+        MOTION_MANAGER_RESULT_OK)
+    {
+        TimedLineRun_Fail(TIMED_LINE_RUN_ERROR_MOTION);
+        return;
+    }
+
+    s_lastRequestedSpeedMMps = targetSpeedMMps;
 }
 
 void TimedLineRun_Init(void)
@@ -145,6 +231,8 @@ uint8_t TimedLineRun_Start(void)
     s_elapsedTicks = 0U;
     s_settleTicks = 0U;
     s_settleElapsedTicks = 0U;
+    s_runStartDistanceMM = Odometry_GetDistanceMM();
+    s_lastRequestedSpeedMMps = TimedLineRun_TuneCruiseSpeedMMps;
     s_error = TIMED_LINE_RUN_ERROR_NONE;
     s_state = TIMED_LINE_RUN_STATE_RUNNING;
     TaskTimer_Start(TASK_TIMER_OWNER_LINE);
@@ -169,10 +257,18 @@ void TimedLineRun_Update(const App_UpdateContext_t *context)
 
     if (s_state == TIMED_LINE_RUN_STATE_RUNNING)
     {
+        float travelledDistanceMM;
+
         TimedLineRun_AddElapsed(context->elapsedTicks);
         if (s_elapsedTicks >= s_runDurationTicks)
         {
             TimedLineRun_BeginSoftStop();
+            return;
+        }
+        travelledDistanceMM = TimedLineRun_GetTravelledDistanceMM();
+        TimedLineRun_UpdateCruiseSpeed(travelledDistanceMM);
+        if (s_state != TIMED_LINE_RUN_STATE_RUNNING)
+        {
             return;
         }
         (void)TimedLineRun_LineIsHealthy();

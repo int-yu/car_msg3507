@@ -50,6 +50,18 @@ typedef enum
     BALL_BALANCE_STATE_ERROR
 } BallBalance_State_t;
 
+typedef struct
+{
+    float maxVelocityMMps;
+    float approachDistanceMM;
+    float terminalVelocityMMps;
+    float minimumVelocityMMps;
+    float minimumVelocityErrorMM;
+    float maxTiltDeg;
+    float integralLimitMM;
+    float settleSpeedMMps;
+} BallBalance_MotionProfile_t;
+
 typedef enum
 {
     BALL_BALANCE_ERROR_NONE = 0,
@@ -76,6 +88,9 @@ BallBalance_Result_t BallBalance_StartWithGains(
     float velocityKpDegPerMMps,
     float velocityKiDegPerMM);
 
+BallBalance_Result_t BallBalance_SetMotionProfile(
+    const BallBalance_MotionProfile_t *profile);
+
 /* Retarget the running PID controller to another hold position. */
 BallBalance_Result_t BallBalance_SetTarget(float targetMM);
 
@@ -89,6 +104,7 @@ float BallBalance_GetPositionMM(void);
 float BallBalance_GetTargetMM(void);
 float BallBalance_GetProfilePositionMM(void);
 float BallBalance_GetVelocityTargetMMps(void);
+float BallBalance_GetVelocityLimitMMps(void);
 float BallBalance_GetTiltCommandDeg(void);
 float BallBalance_GetIntegralMMs(void);
 

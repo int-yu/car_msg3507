@@ -22,6 +22,7 @@
 #define MAIN_TIMED_LINE_START_KEY_MASK 0x04U
 #define MAIN_KEY4_START_KEY_MASK  0x08U
 #define MAIN_EMERGENCY_CHORD_MASK (0x01U | 0x02U)
+#define MAIN_BALL_SWEEP_SIGNAL 2U
 #define MAIN_BALL_START_SIGNAL 3U
 #define MAIN_BALL_STOP_SIGNAL  4U
 static float s_ballTargetMM = BALL_SEQUENCE_DEFAULT_TARGET_MM;
@@ -327,6 +328,8 @@ int main(void)
                 Main_HasSignal(&updateContext, 0U);
             uint8_t ballStopRequested =
                 Main_HasSignal(&updateContext, MAIN_BALL_STOP_SIGNAL);
+            uint8_t ballSweepRequested =
+                Main_HasSignal(&updateContext, MAIN_BALL_SWEEP_SIGNAL);
             uint8_t ballStartRequested =
                 Main_HasSignal(&updateContext, MAIN_BALL_START_SIGNAL);
             uint8_t lineStartKeyPressed =
@@ -428,6 +431,14 @@ int main(void)
                 Main_CancelKey4Preparation();
                 BallSequence_Stop();
                 Serial1_SendString("OK BALL STOP\r\n");
+            }
+            else if ((startAllowed != 0U) &&
+                     (ballSweepRequested != 0U))
+            {
+                s_defaultBallHoldPending = 0U;
+                Main_CancelKey2Preparation();
+                Main_CancelKey4Preparation();
+                (void)Main_StartBallSweep();
             }
             else if ((startAllowed != 0U) &&
                      (ballStartKeyPressed != 0U))
