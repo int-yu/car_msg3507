@@ -1729,11 +1729,9 @@ function computeKey2Metrics(samples) {
 
     const NEG_TARGET = -50;
     const POS_TARGET = 50;
-    const NEG_TOL_MM = 2.0;
     const POS_TOL_MM = 3.0;
-    const NEG_SPEED_TOL = 2.5;
     const POS_SPEED_TOL = 3.5;
-    const STABLE_MS = 300;
+    const POS_STABLE_MS = 300;
     const targetOf = (phase) => phase === 1 ? NEG_TARGET :
         ((phase === 2 || phase === 3) ? POS_TARGET : 0);
     const speedOf = (sample) => Number.isFinite(sample.bvel) ? sample.bvel :
@@ -1742,7 +1740,6 @@ function computeKey2Metrics(samples) {
     let negStartMs = null;
     let posStartMs = null;
     let doneMs = null;
-    let negStableStartMs = null;
     let posStableStartMs = null;
     let negConvergeMs = null;
     let posConvergeMs = null;
@@ -1767,7 +1764,12 @@ function computeKey2Metrics(samples) {
         const absError = Math.abs(error);
 
         if (phase === 1 && negStartMs === null) negStartMs = sample.ms;
-        if (phase === 2 && posStartMs === null) posStartMs = sample.ms;
+        if (phase === 2 && posStartMs === null) {
+            posStartMs = sample.ms;
+            if (negConvergeMs === null && negStartMs !== null) {
+                negConvergeMs = posStartMs - negStartMs;
+            }
+        }
         if (phase === 3 && doneMs === null) doneMs = sample.ms;
         if (result !== null) resultCode = result;
 
@@ -1800,26 +1802,13 @@ function computeKey2Metrics(samples) {
             lastFrame = sample.bfrm;
         }
 
-        if (phase === 1) {
-            if ((Math.abs(sample.bpos - NEG_TARGET) <= NEG_TOL_MM) &&
-                (speed === null || Math.abs(speed) <= NEG_SPEED_TOL)) {
-                if (negStableStartMs === null) {
-                    negStableStartMs = sample.ms;
-                } else if (negConvergeMs === null &&
-                           sample.ms - negStableStartMs >= STABLE_MS) {
-                    negConvergeMs = negStableStartMs - negStartMs;
-                }
-            } else {
-                negStableStartMs = null;
-            }
-        }
         if (phase === 2 || phase === 3) {
             if ((Math.abs(sample.bpos - POS_TARGET) <= POS_TOL_MM) &&
                 (speed === null || Math.abs(speed) <= POS_SPEED_TOL)) {
                 if (posStableStartMs === null) {
                     posStableStartMs = sample.ms;
                 } else if (posConvergeMs === null &&
-                           sample.ms - posStableStartMs >= STABLE_MS) {
+                           sample.ms - posStableStartMs >= POS_STABLE_MS) {
                     posConvergeMs = posStableStartMs - posStartMs;
                 }
             } else {
@@ -2304,8 +2293,9 @@ const SESSIONS = {
         excite: () => 'C2', startReply: 'OK BALL SWEEP',
         stopCmd: 'C4', stopReply: 'OK BALL STOP',
         params: ['bgr', 'bzo', 'bhl', 'bkp', 'bvm', 'bkd', 'bki',
-                 'k2kp', 'k2kd', 'k2ki', 'k2pkp', 'k2pkd', 'k2pki'],
-        structure: 'KEY2 扫描覆盖 O->-50->+50 两套不同 PID；第一段 k2kp/k2kd/k2ki 盯住 -50 mm，第二段 k2pkp/k2pkd/k2pki 负责 +50 mm 回稳；数据同时看超调、次数、卡滞和回中时间。',
+                 'k2kp', 'k2kd', 'k2ki', 'k2vm', 'k2ad', 'k2tv', 'k2mt', 'k2il',
+                 'k2pkp', 'k2pkd', 'k2pki', 'k2pvm', 'k2pad', 'k2ptv', 'k2pmt', 'k2pil'],
+        structure: 'KEY2 扫描覆盖 O->-50->+50 两套独立 PID 与运动限制；阶段一使用 k2* 参数，阶段二使用 k2p* 参数；数据同时看超调、次数、卡滞和回中时间。',
         columnsNote: 'bpos/bref=实测/目标位置mm，bvel/bvref=实测/目标速度mm/s，sang=步进绝对角deg；另看 k2ph/k2rs/k2tm/bfrm/bfsh',
         expectation: '第一段不许低过 -50 mm 太多；第二段可以略过 +50 mm，但应很快回到终点并稳定住。',
     },
@@ -2319,7 +2309,8 @@ const SESSIONS = {
         stopCmd: 'C4', startReply: 'OK BALL START',
         stopReply: 'OK BALL STOP',
         params: ['bgr', 'bzo', 'bhl', 'bkp', 'bvm', 'bkd', 'bki',
-                 'k2kp', 'k2kd', 'k2ki', 'k2pkp', 'k2pkd', 'k2pki'],
+                 'k2kp', 'k2kd', 'k2ki', 'k2vm', 'k2ad', 'k2tv', 'k2mt', 'k2il',
+                 'k2pkp', 'k2pkd', 'k2pki', 'k2pvm', 'k2pad', 'k2ptv', 'k2pmt', 'k2pil'],
         structure: '球位误差 -> 位置外环 P(bkp) -> 目标速度(bvref，限幅bvm) -> 速度内环 PI(bkd,bki) -> 摆杆倾角；球速优先使用K230发送值，否则TI差分计算',
         columnsNote: 'bpos/bref=实测/目标位置mm，bvel/bvref=实测/目标速度mm/s，sang=步进绝对角度deg',
         expectation: '先令 bki=0，调 bkd 使速度跟随 bvref，再调 bkp/bvm 提高位置响应，最后少量增加 bki 克服静摩擦',
@@ -2448,8 +2439,8 @@ const TUNING_FOCUS = {
     ball: {
         label: '要求3摆球', defaultSide: 'main', defaultStage: 'geometry',
         stages: {
-            key2: { label: 'KEY2 阶段一 O→-50 PID', help: '只调整 KEY2 从 O 点到 -50 mm：k2kp 是位置外环 P，k2kd/k2ki 是速度内环 PI。' },
-            key2positive: { label: 'KEY2 阶段二 -50→+50 PID', help: '只调整 KEY2 从 -50 mm 到 +50 mm：k2pkp 是位置外环 P，k2pkd/k2pki 是速度内环 PI。两套参数都在下一次 KEY2 启动时生效。' },
+            key2: { label: 'KEY2 阶段一 O→-50', help: '调整阶段一 PID、最大球速、减速距离、末端速度、最大倾角和积分限幅；末端速度不得大于最大球速。控制目标仍是 -50 mm，但首次检测到球位到达或越过 -45 mm 便立即切换阶段二。' },
+            key2positive: { label: 'KEY2 阶段二 -50→+50', help: '调整阶段二 PID、最大球速、减速距离、末端速度、最大倾角和积分限幅；末端速度不得大于最大球速。两阶段参数均在下一次 KEY2 启动时整体生效。' },
             geometry: { label: '① 机械标定', help: '先调 bgr / bzo：确认传动比与水平零点，摆杆上电必须水平。' },
             sensor: { label: '② 视觉标定', help: '只调 bhl：把钢球放在已知刻度，校准 K230 千分比到毫米。' },
             position: { label: '③ 比例 P', help: '先调 bkp，让钢球能朝目标方向回收，避免倾角长期顶到限位。' },
@@ -2462,8 +2453,10 @@ const TUNING_FOCUS = {
                 label: '摆杆', series: ['bpos', 'bref', 'bvel', 'bvref', 'sang'],
                 mask: CH.bpos | CH.bref | CH.bvel | CH.bvref | CH.sang,
                 params: {
-                    key2: ['k2kp', 'k2kd', 'k2ki'],
-                    key2positive: ['k2pkp', 'k2pkd', 'k2pki'],
+                    key2: ['k2kp', 'k2kd', 'k2ki', 'k2vm', 'k2ad',
+                           'k2tv', 'k2mt', 'k2il'],
+                    key2positive: ['k2pkp', 'k2pkd', 'k2pki', 'k2pvm',
+                                   'k2pad', 'k2ptv', 'k2pmt', 'k2pil'],
                     geometry: ['bgr', 'bzo'], sensor: ['bhl'],
                     position: ['bkp', 'bvm'], damping: ['bkd'],
                     integral: ['bki'], verify: [],
@@ -2522,6 +2515,16 @@ const PARAM_LABELS = {
     k2pkp: 'KEY2 阶段二位置外环 Kp（1/s）',
     k2pkd: 'KEY2 阶段二速度内环 Kp（度/(mm/s)）',
     k2pki: 'KEY2 阶段二速度内环 Ki（度/mm）',
+    k2vm: 'KEY2 阶段一最大球速（mm/s）',
+    k2ad: 'KEY2 阶段一距目标多少 mm 开始减速',
+    k2tv: 'KEY2 阶段一末端速度上限（mm/s）',
+    k2mt: 'KEY2 阶段一最大倾角（度）',
+    k2il: 'KEY2 阶段一速度积分限幅（mm）',
+    k2pvm: 'KEY2 阶段二最大球速（mm/s）',
+    k2pad: 'KEY2 阶段二距目标多少 mm 开始减速',
+    k2ptv: 'KEY2 阶段二末端速度上限（mm/s）',
+    k2pmt: 'KEY2 阶段二最大倾角（度）',
+    k2pil: 'KEY2 阶段二速度积分限幅（mm）',
     wkp: '双轮批量Kp（兼容）', wki: '双轮批量Ki（兼容）',
     wil: '双轮批量积分限（兼容）', wff: '双轮批量前馈（兼容）',
     wsf: '双轮批量静摩擦（兼容）',
@@ -2558,6 +2561,16 @@ const PARAM_GROUPS = {
     k2pkp: 'KEY2 阶段二 -50→+50 PID',
     k2pkd: 'KEY2 阶段二 -50→+50 PID',
     k2pki: 'KEY2 阶段二 -50→+50 PID',
+    k2vm: 'KEY2 阶段一 O→-50 运动限制',
+    k2ad: 'KEY2 阶段一 O→-50 运动限制',
+    k2tv: 'KEY2 阶段一 O→-50 运动限制',
+    k2mt: 'KEY2 阶段一 O→-50 运动限制',
+    k2il: 'KEY2 阶段一 O→-50 运动限制',
+    k2pvm: 'KEY2 阶段二 -50→+50 运动限制',
+    k2pad: 'KEY2 阶段二 -50→+50 运动限制',
+    k2ptv: 'KEY2 阶段二 -50→+50 运动限制',
+    k2pmt: 'KEY2 阶段二 -50→+50 运动限制',
+    k2pil: 'KEY2 阶段二 -50→+50 运动限制',
     lwkp: '左轮速度 PI 与前馈', lwki: '左轮速度 PI 与前馈',
     lwil: '左轮速度 PI 与前馈', lwff: '左轮速度 PI 与前馈',
     lwsf: '左轮速度 PI 与前馈',
@@ -2591,6 +2604,8 @@ const WHEEL_MECHANICAL_BASELINE = {
 const PARAM_NUDGE_STEPS = {
     k2kp: 0.05, k2kd: 0.005, k2ki: 0.001,
     k2pkp: 0.05, k2pkd: 0.005, k2pki: 0.001,
+    k2vm: 1, k2ad: 1, k2tv: 0.5, k2mt: 0.5, k2il: 5,
+    k2pvm: 1, k2pad: 1, k2ptv: 0.5, k2pmt: 0.5, k2pil: 5,
     lwkp: 0.02, rwkp: 0.02,
     lwki: 0.001, rwki: 0.001,
     lwil: 5, rwil: 5,
@@ -3563,9 +3578,11 @@ function requestParameterWrite(entry, value, options = {}) {
         const startSnapshotParams = new Set([
             'h2cru', 'h2fin', 'h2clr', 'h2lap', 'h2app', 'h2arm',
             'h2max', 'h2off', 'lacc', 'ldec', 'lra', 'lki', 'lkd',
+            'k2kp', 'k2kd', 'k2ki', 'k2vm', 'k2ad', 'k2tv', 'k2mt', 'k2il',
+            'k2pkp', 'k2pkd', 'k2pki', 'k2pvm', 'k2pad', 'k2ptv', 'k2pmt', 'k2pil',
         ]);
         log(startSnapshotParams.has(entry.name) ?
-            '当前巡线保持启动快照；本次写入仅影响下一次 N/KEY1 启动' :
+            '当前任务保持启动快照；本次写入仅影响下一次任务启动' :
             '注意：试验进行中修改该参数会立即生效', 'err');
     }
     const independentPresent = paramByName('lwkp') && paramByName('rwkp');

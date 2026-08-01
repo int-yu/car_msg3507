@@ -5,22 +5,16 @@
 #include <math.h>
 
 #define BALL_SEQUENCE_TICK_MS 10U
-#define BALL_SEQUENCE_NEGATIVE_CONFIRM_TICKS 3U
+#define BALL_SEQUENCE_NEGATIVE_REVERSAL_POSITION_MM (-45.0f)
 #define BALL_SEQUENCE_POSITIVE_CONFIRM_TICKS 4U
 #define BALL_SEQUENCE_NEGATIVE_TIMEOUT_TICKS 2000U
 #define BALL_SEQUENCE_POSITIVE_TIMEOUT_TICKS 2200U
 #define BALL_SEQUENCE_TOTAL_TIMEOUT_TICKS 4500U
-#define BALL_SEQUENCE_NEGATIVE_OVERSHOOT_LIMIT_MM 2.5f
+#define BALL_SEQUENCE_NEGATIVE_OVERSHOOT_POSITION_MM (-65.0f)
 #define BALL_SEQUENCE_PHASE_STALL_TICKS 120U
 #define BALL_SEQUENCE_PHASE_STALL_PROGRESS_MM 1.0f
 #define BALL_SEQUENCE_PHASE_STALL_SPEED_MMPS 1.5f
 
-static const BallBalance_MotionProfile_t s_negativeProfile = {
-    16.0f, 24.0f, 5.0f, 4.0f, 6.0f, 8.0f, 140.0f, 2.5f
-};
-static const BallBalance_MotionProfile_t s_positiveProfile = {
-    20.0f, 28.0f, 6.0f, 8.0f, 8.0f, 10.0f, 160.0f, 3.5f
-};
 static const BallBalance_MotionProfile_t s_positiveRecoveryProfile = {
     28.0f, 30.0f, 8.0f, 12.0f, 5.0f, 14.0f, 220.0f, 4.0f
 };
@@ -36,6 +30,26 @@ float BallSequence_TunePositiveVelocityKpDegPerMMps =
     BALL_SEQUENCE_POSITIVE_VELOCITY_KP_DEG_PER_MMPS;
 float BallSequence_TunePositiveVelocityKiDegPerMM =
     BALL_SEQUENCE_POSITIVE_VELOCITY_KI_DEG_PER_MM;
+float BallSequence_TuneNegativeMaxVelocityMMps =
+    BALL_SEQUENCE_NEGATIVE_MAX_VELOCITY_MMPS;
+float BallSequence_TuneNegativeApproachDistanceMM =
+    BALL_SEQUENCE_NEGATIVE_APPROACH_DISTANCE_MM;
+float BallSequence_TuneNegativeTerminalVelocityMMps =
+    BALL_SEQUENCE_NEGATIVE_TERMINAL_VELOCITY_MMPS;
+float BallSequence_TuneNegativeMaxTiltDeg =
+    BALL_SEQUENCE_NEGATIVE_MAX_TILT_DEG;
+float BallSequence_TuneNegativeIntegralLimitMM =
+    BALL_SEQUENCE_NEGATIVE_INTEGRAL_LIMIT_MM;
+float BallSequence_TunePositiveMaxVelocityMMps =
+    BALL_SEQUENCE_POSITIVE_MAX_VELOCITY_MMPS;
+float BallSequence_TunePositiveApproachDistanceMM =
+    BALL_SEQUENCE_POSITIVE_APPROACH_DISTANCE_MM;
+float BallSequence_TunePositiveTerminalVelocityMMps =
+    BALL_SEQUENCE_POSITIVE_TERMINAL_VELOCITY_MMPS;
+float BallSequence_TunePositiveMaxTiltDeg =
+    BALL_SEQUENCE_POSITIVE_MAX_TILT_DEG;
+float BallSequence_TunePositiveIntegralLimitMM =
+    BALL_SEQUENCE_POSITIVE_INTEGRAL_LIMIT_MM;
 
 typedef struct
 {
@@ -43,13 +57,15 @@ typedef struct
     BallSequence_Error_t error;
     uint32_t elapsedTicks;
     uint32_t phaseElapsedTicks;
-    uint8_t stableFreshFrames;
+    uint8_t confirmTicks;
     uint8_t recoveryCount;
     float targetMM;
     float positivePositionKpPerS;
     float positiveVelocityKpDegPerMMps;
     float positiveVelocityKiDegPerMM;
     float phaseStartPositionMM;
+    BallBalance_MotionProfile_t negativeProfile;
+    BallBalance_MotionProfile_t positiveProfile;
 } BallSequence_Context_t;
 
 static BallSequence_Context_t s_context;
@@ -69,7 +85,7 @@ static uint8_t BallSequence_ApplyMotionProfile(
 static void BallSequence_ResetPhaseTracking(void)
 {
     s_context.phaseElapsedTicks = 0U;
-    s_context.stableFreshFrames = 0U;
+    s_context.confirmTicks = 0U;
     s_context.phaseStartPositionMM = BallBalance_GetPositionMM();
 }
 
@@ -91,7 +107,7 @@ static void BallSequence_Fail(BallSequence_Error_t error)
     s_context.error = error;
     s_context.state = BALL_SEQUENCE_STATE_ERROR;
     s_context.phaseElapsedTicks = 0U;
-    s_context.stableFreshFrames = 0U;
+    s_context.confirmTicks = 0U;
 }
 
 static uint8_t BallSequence_StartPositivePhase(uint8_t recovery)
@@ -110,7 +126,7 @@ static uint8_t BallSequence_StartPositivePhase(uint8_t recovery)
     }
 
     profile = (recovery != 0U) ? &s_positiveRecoveryProfile :
-        &s_positiveProfile;
+        &s_context.positiveProfile;
     if (BallSequence_ApplyMotionProfile(profile) == 0U)
     {
         return 0U;
@@ -129,7 +145,7 @@ void BallSequence_Init(void)
     s_context.error = BALL_SEQUENCE_ERROR_NONE;
     s_context.elapsedTicks = 0U;
     s_context.phaseElapsedTicks = 0U;
-    s_context.stableFreshFrames = 0U;
+    s_context.confirmTicks = 0U;
     s_context.recoveryCount = 0U;
     s_context.targetMM = BALL_SEQUENCE_DEFAULT_TARGET_MM;
     s_context.positivePositionKpPerS =
@@ -151,6 +167,26 @@ void BallSequence_Init(void)
         BALL_SEQUENCE_POSITIVE_VELOCITY_KP_DEG_PER_MMPS;
     BallSequence_TunePositiveVelocityKiDegPerMM =
         BALL_SEQUENCE_POSITIVE_VELOCITY_KI_DEG_PER_MM;
+    BallSequence_TuneNegativeMaxVelocityMMps =
+        BALL_SEQUENCE_NEGATIVE_MAX_VELOCITY_MMPS;
+    BallSequence_TuneNegativeApproachDistanceMM =
+        BALL_SEQUENCE_NEGATIVE_APPROACH_DISTANCE_MM;
+    BallSequence_TuneNegativeTerminalVelocityMMps =
+        BALL_SEQUENCE_NEGATIVE_TERMINAL_VELOCITY_MMPS;
+    BallSequence_TuneNegativeMaxTiltDeg =
+        BALL_SEQUENCE_NEGATIVE_MAX_TILT_DEG;
+    BallSequence_TuneNegativeIntegralLimitMM =
+        BALL_SEQUENCE_NEGATIVE_INTEGRAL_LIMIT_MM;
+    BallSequence_TunePositiveMaxVelocityMMps =
+        BALL_SEQUENCE_POSITIVE_MAX_VELOCITY_MMPS;
+    BallSequence_TunePositiveApproachDistanceMM =
+        BALL_SEQUENCE_POSITIVE_APPROACH_DISTANCE_MM;
+    BallSequence_TunePositiveTerminalVelocityMMps =
+        BALL_SEQUENCE_POSITIVE_TERMINAL_VELOCITY_MMPS;
+    BallSequence_TunePositiveMaxTiltDeg =
+        BALL_SEQUENCE_POSITIVE_MAX_TILT_DEG;
+    BallSequence_TunePositiveIntegralLimitMM =
+        BALL_SEQUENCE_POSITIVE_INTEGRAL_LIMIT_MM;
     BallBalance_Init();
 }
 
@@ -165,7 +201,7 @@ uint8_t BallSequence_Start(float targetMM)
 
     s_context.elapsedTicks = 0U;
     s_context.phaseElapsedTicks = 0U;
-    s_context.stableFreshFrames = 0U;
+    s_context.confirmTicks = 0U;
     s_context.recoveryCount = 0U;
     s_context.targetMM = targetMM;
     s_context.error = BALL_SEQUENCE_ERROR_NONE;
@@ -183,6 +219,24 @@ uint8_t BallSequence_StartSweep(void)
         BallSequence_TunePositiveVelocityKpDegPerMMps;
     s_context.positiveVelocityKiDegPerMM =
         BallSequence_TunePositiveVelocityKiDegPerMM;
+    s_context.negativeProfile = (BallBalance_MotionProfile_t) {
+        BallSequence_TuneNegativeMaxVelocityMMps,
+        BallSequence_TuneNegativeApproachDistanceMM,
+        BallSequence_TuneNegativeTerminalVelocityMMps,
+        4.0f, 6.0f,
+        BallSequence_TuneNegativeMaxTiltDeg,
+        BallSequence_TuneNegativeIntegralLimitMM,
+        2.5f
+    };
+    s_context.positiveProfile = (BallBalance_MotionProfile_t) {
+        BallSequence_TunePositiveMaxVelocityMMps,
+        BallSequence_TunePositiveApproachDistanceMM,
+        BallSequence_TunePositiveTerminalVelocityMMps,
+        8.0f, 8.0f,
+        BallSequence_TunePositiveMaxTiltDeg,
+        BallSequence_TunePositiveIntegralLimitMM,
+        3.5f
+    };
 
     result = BallBalance_StartWithGains(
         BALL_SEQUENCE_NEGATIVE_TARGET_MM,
@@ -195,7 +249,7 @@ uint8_t BallSequence_StartSweep(void)
         s_context.state = BALL_SEQUENCE_STATE_ERROR;
         return 0U;
     }
-    if (BallSequence_ApplyMotionProfile(&s_negativeProfile) == 0U)
+    if (BallSequence_ApplyMotionProfile(&s_context.negativeProfile) == 0U)
     {
         BallBalance_Stop();
         s_context.error = BALL_SEQUENCE_ERROR_BALANCE;
@@ -205,7 +259,7 @@ uint8_t BallSequence_StartSweep(void)
 
     s_context.elapsedTicks = 0U;
     s_context.phaseElapsedTicks = 0U;
-    s_context.stableFreshFrames = 0U;
+    s_context.confirmTicks = 0U;
     s_context.recoveryCount = 0U;
     s_context.targetMM = BALL_SEQUENCE_NEGATIVE_TARGET_MM;
     s_context.error = BALL_SEQUENCE_ERROR_NONE;
@@ -226,7 +280,7 @@ uint8_t BallSequence_SetTarget(float targetMM)
 
     s_context.targetMM = targetMM;
     s_context.state = BALL_SEQUENCE_STATE_HOLDING;
-    s_context.stableFreshFrames = 0U;
+    s_context.confirmTicks = 0U;
     s_context.phaseElapsedTicks = 0U;
     if (previousState != BALL_SEQUENCE_STATE_HOLDING)
     {
@@ -283,9 +337,7 @@ void BallSequence_Update(float dt)
 
     if (s_context.state == BALL_SEQUENCE_STATE_SWEEP_TO_NEGATIVE)
     {
-        if (positionMM <=
-            (BALL_SEQUENCE_NEGATIVE_TARGET_MM -
-             BALL_SEQUENCE_NEGATIVE_OVERSHOOT_LIMIT_MM))
+        if (positionMM <= BALL_SEQUENCE_NEGATIVE_OVERSHOOT_POSITION_MM)
         {
             BallSequence_Fail(BALL_SEQUENCE_ERROR_OVERSHOOT);
             return;
@@ -296,21 +348,9 @@ void BallSequence_Update(float dt)
             return;
         }
 
-        if (BallSequence_IsFreshStable(
-                positionMM, speedMMps, BALL_SEQUENCE_NEGATIVE_TARGET_MM,
-                2.0f, 2.5f) != 0U)
-        {
-            if (s_context.stableFreshFrames < UINT8_MAX)
-            {
-                s_context.stableFreshFrames++;
-            }
-        }
-        else
-        {
-            s_context.stableFreshFrames = 0U;
-        }
-
-        if (s_context.stableFreshFrames >= BALL_SEQUENCE_NEGATIVE_CONFIRM_TICKS)
+        /* The controller still aims at -50 mm, but phase 2 starts on the
+         * first sample at or beyond -45 mm. */
+        if (positionMM <= BALL_SEQUENCE_NEGATIVE_REVERSAL_POSITION_MM)
         {
             if (BallSequence_StartPositivePhase(0U) == 0U)
             {
@@ -357,24 +397,24 @@ void BallSequence_Update(float dt)
                 positionMM, speedMMps, BALL_SEQUENCE_POSITIVE_TARGET_MM,
                 3.0f, 3.5f) != 0U)
         {
-            if (s_context.stableFreshFrames < UINT8_MAX)
+            if (s_context.confirmTicks < UINT8_MAX)
             {
-                s_context.stableFreshFrames++;
+                s_context.confirmTicks++;
             }
         }
         else
         {
-            s_context.stableFreshFrames = 0U;
+            s_context.confirmTicks = 0U;
         }
 
-        if ((s_context.stableFreshFrames >=
+        if ((s_context.confirmTicks >=
              BALL_SEQUENCE_POSITIVE_CONFIRM_TICKS) &&
             (s_context.state == BALL_SEQUENCE_STATE_SWEEP_TO_POSITIVE))
         {
             s_context.state = BALL_SEQUENCE_STATE_SWEEP_HOLDING_POSITIVE;
             TaskTimer_Stop(TASK_TIMER_OWNER_BALL);
             s_context.phaseElapsedTicks = 0U;
-            s_context.stableFreshFrames = 0U;
+            s_context.confirmTicks = 0U;
             return;
         }
 
@@ -411,7 +451,7 @@ void BallSequence_Stop(void)
     TaskTimer_Stop(TASK_TIMER_OWNER_BALL);
     s_context.state = BALL_SEQUENCE_STATE_FINISHED;
     s_context.phaseElapsedTicks = 0U;
-    s_context.stableFreshFrames = 0U;
+    s_context.confirmTicks = 0U;
 }
 
 BallSequence_State_t BallSequence_GetState(void)

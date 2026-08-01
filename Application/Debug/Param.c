@@ -172,6 +172,26 @@ PARAM_VAR_ACCESSORS(Key2PositiveBallKd,
                     BallSequence_TunePositiveVelocityKpDegPerMMps)
 PARAM_VAR_ACCESSORS(Key2PositiveBallKi,
                     BallSequence_TunePositiveVelocityKiDegPerMM)
+PARAM_VAR_ACCESSORS(Key2NegativeMaxVelocity,
+                    BallSequence_TuneNegativeMaxVelocityMMps)
+PARAM_VAR_ACCESSORS(Key2NegativeApproachDistance,
+                    BallSequence_TuneNegativeApproachDistanceMM)
+PARAM_VAR_ACCESSORS(Key2NegativeTerminalVelocity,
+                    BallSequence_TuneNegativeTerminalVelocityMMps)
+PARAM_VAR_ACCESSORS(Key2NegativeMaxTilt,
+                    BallSequence_TuneNegativeMaxTiltDeg)
+PARAM_VAR_ACCESSORS(Key2NegativeIntegralLimit,
+                    BallSequence_TuneNegativeIntegralLimitMM)
+PARAM_VAR_ACCESSORS(Key2PositiveMaxVelocity,
+                    BallSequence_TunePositiveMaxVelocityMMps)
+PARAM_VAR_ACCESSORS(Key2PositiveApproachDistance,
+                    BallSequence_TunePositiveApproachDistanceMM)
+PARAM_VAR_ACCESSORS(Key2PositiveTerminalVelocity,
+                    BallSequence_TunePositiveTerminalVelocityMMps)
+PARAM_VAR_ACCESSORS(Key2PositiveMaxTilt,
+                    BallSequence_TunePositiveMaxTiltDeg)
+PARAM_VAR_ACCESSORS(Key2PositiveIntegralLimit,
+                    BallSequence_TunePositiveIntegralLimitMM)
 PARAM_VAR_ACCESSORS(BallHalfLength, BallSensor_TuneHalfLengthMM)
 PARAM_VAR_ACCESSORS(BeamGearRatio, BeamActuator_TuneGearRatio)
 PARAM_VAR_ACCESSORS(BeamZeroOffset, BeamActuator_TuneZeroOffsetDeg)
@@ -302,6 +322,27 @@ static const Param_Entry_t s_params[] = {
       0.0f, 1.0f },
     { "k2pki", Param_GetKey2PositiveBallKi, Param_SetKey2PositiveBallKi,
       0.0f, 0.2f },
+    /* KEY2 phase motion profiles are appended as K63-K72. */
+    { "k2vm", Param_GetKey2NegativeMaxVelocity,
+      Param_SetKey2NegativeMaxVelocity, 1.0f, 500.0f },
+    { "k2ad", Param_GetKey2NegativeApproachDistance,
+      Param_SetKey2NegativeApproachDistance, 0.0f, 200.0f },
+    { "k2tv", Param_GetKey2NegativeTerminalVelocity,
+      Param_SetKey2NegativeTerminalVelocity, 0.0f, 500.0f },
+    { "k2mt", Param_GetKey2NegativeMaxTilt,
+      Param_SetKey2NegativeMaxTilt, 0.1f, 30.0f },
+    { "k2il", Param_GetKey2NegativeIntegralLimit,
+      Param_SetKey2NegativeIntegralLimit, 1.0f, 1000.0f },
+    { "k2pvm", Param_GetKey2PositiveMaxVelocity,
+      Param_SetKey2PositiveMaxVelocity, 1.0f, 500.0f },
+    { "k2pad", Param_GetKey2PositiveApproachDistance,
+      Param_SetKey2PositiveApproachDistance, 0.0f, 200.0f },
+    { "k2ptv", Param_GetKey2PositiveTerminalVelocity,
+      Param_SetKey2PositiveTerminalVelocity, 0.0f, 500.0f },
+    { "k2pmt", Param_GetKey2PositiveMaxTilt,
+      Param_SetKey2PositiveMaxTilt, 0.1f, 30.0f },
+    { "k2pil", Param_GetKey2PositiveIntegralLimit,
+      Param_SetKey2PositiveIntegralLimit, 1.0f, 1000.0f },
 };
 
 #define PARAM_COUNT (sizeof(s_params) / sizeof(s_params[0]))

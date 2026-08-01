@@ -92,8 +92,8 @@ assert.match(main, /BallTargetCapture_Start\(\)/,
     'the first KEY4 press must start multi-frame target capture');
 assert.match(main, /BallTargetCapture_GetTargetMM\(\)/,
     'KEY4 must hold the captured arbitrary ball target');
-assert.match(main, /BallSequence_IsStable\(\)/,
-    'the second KEY4 press must wait until the ball is stable');
+assert.doesNotMatch(main, /ERR KEY4 BALL NOT STABLE|BallSequence_IsStable\(\)/,
+    'KEY4 line start must not wait for the captured ball to settle');
 assert.match(main,
     /Main_StartTimedLineAtBallTarget\([\s\S]*?BallTargetCapture_GetTargetMM\(\)/,
     'the second KEY4 press must reuse the KEY3 timed-line controller');
@@ -210,6 +210,8 @@ for (const name of [
     'lacc', 'ldec', 'lra', 'lki', 'lkd',
     'k3acc', 'k3cru', 'k3dur',
     'k2kp', 'k2kd', 'k2ki', 'k2pkp', 'k2pkd', 'k2pki',
+    'k2vm', 'k2ad', 'k2tv', 'k2mt', 'k2il',
+    'k2pvm', 'k2pad', 'k2ptv', 'k2pmt', 'k2pil',
 ]) {
     assert.ok(param.includes(`{ "${name}"`),
         `K parameter table must append ${name}`);
@@ -221,8 +223,8 @@ assert.match(param, /"lckd"[\s\S]*?Param_GetLineCurveKd/,
 assert.ok(param.indexOf('{ "bvm"') < param.indexOf('{ "lki"'),
     'bvm must retain its published K50 slot before the appended line Ki');
 assert.match(param,
-    /\{ "k3dur"[^]*?\{ "k2kp"[^]*?\{ "k2kd"[^]*?\{ "k2ki"[^]*?\{ "k2pkp"[^]*?\{ "k2pkd"[^]*?\{ "k2pki"/,
-    'both KEY2 PID sets must be appended after the published K56 slot');
+    /\{ "k3dur"[^]*?\{ "k2kp"[^]*?\{ "k2kd"[^]*?\{ "k2ki"[^]*?\{ "k2pkp"[^]*?\{ "k2pkd"[^]*?\{ "k2pki"[^]*?\{ "k2vm"[^]*?\{ "k2ad"[^]*?\{ "k2tv"[^]*?\{ "k2mt"[^]*?\{ "k2il"[^]*?\{ "k2pvm"[^]*?\{ "k2pad"[^]*?\{ "k2ptv"[^]*?\{ "k2pmt"[^]*?\{ "k2pil"/,
+    'both KEY2 PID and motion-profile sets must be appended after K56');
 assert.doesNotMatch(task + read('Application/Control/MotionManager.h') +
     read('Application/Control/MotionManager.c'), /SetLineDeceleration/,
     'H2 must keep the existing MotionLine control path without a runtime deceleration setter');

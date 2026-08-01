@@ -58,7 +58,7 @@ for (const required of [
     '#define TELEMETRY_CH_SANG   0x10000UL',
     '#define TELEMETRY_CH_BVEL   0x20000UL',
     '#define TELEMETRY_CH_BVREF  0x40000UL',
-    '#define TELEMETRY_CH_ALL    0x7FFFFUL',
+    '#define TELEMETRY_CH_ALL    0xFFFFFFFUL',
 ]) {
     assert.ok(telemetryHeader.includes(required),
         `Telemetry.h missing ${required}`);
@@ -91,7 +91,7 @@ for (const required of [
     'sang: 0x10000',
     'bvel: 0x20000',
     'bvref: 0x40000',
-    'const CH_ALL = 0x7FFFF',
+    'const CH_ALL = 0xFFFFFFF',
     "ampLabel: '目标位置 mm'",
     'mask: CH.bpos | CH.bref | CH.bvel | CH.bvref | CH.sang',
     "targetCommand: (target) => 'X' + Math.round(target)",
@@ -127,28 +127,32 @@ assert.ok(bluetoothHeader.includes(
 for (const name of [
     'bgr', 'bzo', 'bhl', 'bki', 'bkd', 'bkp', 'bvm',
     'k2kp', 'k2kd', 'k2ki', 'k2pkp', 'k2pkd', 'k2pki',
+    'k2vm', 'k2ad', 'k2tv', 'k2mt', 'k2il',
+    'k2pvm', 'k2pad', 'k2ptv', 'k2pmt', 'k2pil',
 ]) {
     assert.ok(html.includes(`${name}:`),
         `ball parameter metadata missing ${name}`);
 }
 assert.match(html,
-    /ball:\s*\{[^]*key2:[^]*\['k2kp', 'k2kd', 'k2ki'\]/,
-    'ball tuning focus must expose the KEY2 phase-1 PID stage');
+    /ball:\s*\{[^]*key2:[^]*\['k2kp', 'k2kd', 'k2ki', 'k2vm', 'k2ad',[^]*?'k2tv', 'k2mt', 'k2il'\]/,
+    'ball tuning focus must expose the KEY2 phase-1 PID and motion profile');
 assert.match(html,
-    /ball:\s*\{[^]*key2positive:[^]*\['k2pkp', 'k2pkd', 'k2pki'\]/,
-    'ball tuning focus must expose the KEY2 phase-2 PID stage');
+    /ball:\s*\{[^]*key2positive:[^]*\['k2pkp', 'k2pkd', 'k2pki', 'k2pvm',[^]*?'k2pad', 'k2ptv', 'k2pmt', 'k2pil'\]/,
+    'ball tuning focus must expose the KEY2 phase-2 PID and motion profile');
 assert.match(param,
     /"bzo"[\s\S]*?STEPPER_MIN_ANGLE_DEG,\s*STEPPER_MAX_ANGLE_DEG/,
     'bzo tuning must use the same absolute range as the stepper');
 for (const name of [
     'k2kp', 'k2kd', 'k2ki', 'k2pkp', 'k2pkd', 'k2pki',
+    'k2vm', 'k2ad', 'k2tv', 'k2mt', 'k2il',
+    'k2pvm', 'k2pad', 'k2ptv', 'k2pmt', 'k2pil',
 ]) {
     assert.ok(param.includes(`{ "${name}"`),
         `K parameter table missing KEY2-only gain ${name}`);
 }
 assert.match(param,
-    /\{ "k3dur"[^]*?\{ "k2kp"[^]*?\{ "k2kd"[^]*?\{ "k2ki"[^]*?\{ "k2pkp"[^]*?\{ "k2pkd"[^]*?\{ "k2pki"/,
-    'both KEY2 gain sets must remain appended after the existing K56 entry');
+    /\{ "k3dur"[^]*?\{ "k2kp"[^]*?\{ "k2kd"[^]*?\{ "k2ki"[^]*?\{ "k2pkp"[^]*?\{ "k2pkd"[^]*?\{ "k2pki"[^]*?\{ "k2vm"[^]*?\{ "k2ad"[^]*?\{ "k2tv"[^]*?\{ "k2mt"[^]*?\{ "k2il"[^]*?\{ "k2pvm"[^]*?\{ "k2pad"[^]*?\{ "k2ptv"[^]*?\{ "k2pmt"[^]*?\{ "k2pil"/,
+    'both KEY2 gain and motion-profile sets must remain appended after K56');
 
 for (const required of [
     "if (p.startReply)",

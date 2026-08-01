@@ -228,10 +228,6 @@ static void Main_HandleKey4Press(uint8_t startAllowed,
         {
             Serial1_SendString("ERR KEY4 BALL WAIT\r\n");
         }
-        else if (BallSequence_IsStable() == 0U)
-        {
-            Serial1_SendString("ERR KEY4 BALL NOT STABLE\r\n");
-        }
         else if (Main_LineCanStart() == 0U)
         {
             Serial1_SendString("ERR KEY4 LINE BUSY\r\n");

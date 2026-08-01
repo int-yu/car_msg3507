@@ -1,5 +1,6 @@
 #include "Application/Control/BallSequence.h"
 #include "Application/Control/BallBalance.h"
+#include "Application/Control/BallSensor.h"
 #include "Application/Control/TaskTimer.h"
 #include "tests/host/test_assert.h"
 
@@ -17,6 +18,11 @@ static uint8_t s_stable;
 static float s_positionKpPerS;
 static float s_velocityKpDegPerMMps;
 static float s_velocityKiDegPerMM;
+static float s_speedMMps;
+static float s_velocityTargetMMps;
+static uint8_t s_sensorFresh;
+static uint16_t s_motionProfileCount;
+static BallBalance_MotionProfile_t s_motionProfile;
 
 void BallBalance_Init(void)
 {
@@ -57,6 +63,18 @@ BallBalance_Result_t BallBalance_SetTarget(float targetMM)
     return s_setTargetResult;
 }
 
+BallBalance_Result_t BallBalance_SetMotionProfile(
+    const BallBalance_MotionProfile_t *profile)
+{
+    if (profile == NULL)
+    {
+        return BALL_BALANCE_RESULT_INVALID_ARGUMENT;
+    }
+    s_motionProfile = *profile;
+    s_motionProfileCount++;
+    return BALL_BALANCE_RESULT_OK;
+}
+
 void BallBalance_Update(float dt)
 {
     (void)dt;
@@ -72,7 +90,10 @@ void BallBalance_Stop(void)
 BallBalance_State_t BallBalance_GetState(void) { return s_balanceState; }
 BallBalance_Error_t BallBalance_GetError(void) { return s_balanceError; }
 float BallBalance_GetPositionMM(void) { return s_positionMM; }
+float BallBalance_GetVelocityTargetMMps(void) { return s_velocityTargetMMps; }
 uint8_t BallBalance_IsStable(void) { return s_stable; }
+uint8_t BallSensor_IsFresh(void) { return s_sensorFresh; }
+float BallSensor_GetSpeedMMps(void) { return s_speedMMps; }
 
 static void reset_fakes(void)
 {
@@ -87,6 +108,10 @@ static void reset_fakes(void)
     s_stopCount = 0U;
     s_updateCount = 0U;
     s_positionMM = 0.0f;
+    s_speedMMps = 0.0f;
+    s_velocityTargetMMps = 5.0f;
+    s_sensorFresh = 1U;
+    s_motionProfileCount = 0U;
     s_stable = 0U;
     BallSequence_Init();
 }
@@ -99,6 +124,36 @@ static void run_ticks(uint16_t ticks)
     {
         BallSequence_Update(0.01f);
     }
+}
+
+static void test_init_loads_key2_tuning_defaults(void)
+{
+    reset_fakes();
+
+    CHECK_NEAR(BallSequence_TunePositionKpPerS, 2.0f, 0.001f);
+    CHECK_NEAR(BallSequence_TuneVelocityKpDegPerMMps, 0.4f, 0.001f);
+    CHECK_NEAR(BallSequence_TuneVelocityKiDegPerMM, 0.1f, 0.001f);
+    CHECK_NEAR(BallSequence_TunePositivePositionKpPerS, 3.0f, 0.001f);
+    CHECK_NEAR(BallSequence_TunePositiveVelocityKpDegPerMMps,
+               0.4f, 0.001f);
+    CHECK_NEAR(BallSequence_TunePositiveVelocityKiDegPerMM,
+               0.1f, 0.001f);
+    CHECK_NEAR(BallSequence_TuneNegativeMaxVelocityMMps, 60.0f, 0.001f);
+    CHECK_NEAR(BallSequence_TuneNegativeApproachDistanceMM,
+               14.0f, 0.001f);
+    CHECK_NEAR(BallSequence_TuneNegativeTerminalVelocityMMps,
+               30.0f, 0.001f);
+    CHECK_NEAR(BallSequence_TuneNegativeMaxTiltDeg, 30.0f, 0.001f);
+    CHECK_NEAR(BallSequence_TuneNegativeIntegralLimitMM,
+               300.0f, 0.001f);
+    CHECK_NEAR(BallSequence_TunePositiveMaxVelocityMMps, 90.0f, 0.001f);
+    CHECK_NEAR(BallSequence_TunePositiveApproachDistanceMM,
+               10.0f, 0.001f);
+    CHECK_NEAR(BallSequence_TunePositiveTerminalVelocityMMps,
+               40.0f, 0.001f);
+    CHECK_NEAR(BallSequence_TunePositiveMaxTiltDeg, 30.0f, 0.001f);
+    CHECK_NEAR(BallSequence_TunePositiveIntegralLimitMM,
+               300.0f, 0.001f);
 }
 
 static void test_start_passes_requested_target(void)
@@ -176,6 +231,16 @@ static void test_sweep_switches_to_snapshotted_positive_phase_gains(void)
     BallSequence_TunePositivePositionKpPerS = 4.0f;
     BallSequence_TunePositiveVelocityKpDegPerMMps = 0.5f;
     BallSequence_TunePositiveVelocityKiDegPerMM = 0.15f;
+    BallSequence_TuneNegativeMaxVelocityMMps = 31.0f;
+    BallSequence_TuneNegativeApproachDistanceMM = 21.0f;
+    BallSequence_TuneNegativeTerminalVelocityMMps = 7.0f;
+    BallSequence_TuneNegativeMaxTiltDeg = 9.0f;
+    BallSequence_TuneNegativeIntegralLimitMM = 111.0f;
+    BallSequence_TunePositiveMaxVelocityMMps = 41.0f;
+    BallSequence_TunePositiveApproachDistanceMM = 31.0f;
+    BallSequence_TunePositiveTerminalVelocityMMps = 8.0f;
+    BallSequence_TunePositiveMaxTiltDeg = 11.0f;
+    BallSequence_TunePositiveIntegralLimitMM = 171.0f;
     CHECK(BallSequence_StartSweep() != 0U);
     TaskTimer_Start(TASK_TIMER_OWNER_BALL);
     CHECK(BallSequence_GetState() ==
@@ -184,18 +249,33 @@ static void test_sweep_switches_to_snapshotted_positive_phase_gains(void)
     CHECK_NEAR(s_positionKpPerS, 3.0f, 0.001f);
     CHECK_NEAR(s_velocityKpDegPerMMps, 0.4f, 0.001f);
     CHECK_NEAR(s_velocityKiDegPerMM, 0.1f, 0.001f);
+    CHECK(s_motionProfileCount == 1U);
+    CHECK_NEAR(s_motionProfile.maxVelocityMMps, 31.0f, 0.001f);
+    CHECK_NEAR(s_motionProfile.approachDistanceMM, 21.0f, 0.001f);
+    CHECK_NEAR(s_motionProfile.terminalVelocityMMps, 7.0f, 0.001f);
+    CHECK_NEAR(s_motionProfile.maxTiltDeg, 9.0f, 0.001f);
+    CHECK_NEAR(s_motionProfile.integralLimitMM, 111.0f, 0.001f);
 
     /* Web writes during phase 1 must not alter this active sweep's phase 2. */
     BallSequence_TunePositivePositionKpPerS = 9.0f;
     BallSequence_TunePositiveVelocityKpDegPerMMps = 0.9f;
     BallSequence_TunePositiveVelocityKiDegPerMM = 0.19f;
+    BallSequence_TunePositiveMaxVelocityMMps = 99.0f;
+    BallSequence_TunePositiveApproachDistanceMM = 99.0f;
+    BallSequence_TunePositiveTerminalVelocityMMps = 19.0f;
+    BallSequence_TunePositiveMaxTiltDeg = 19.0f;
+    BallSequence_TunePositiveIntegralLimitMM = 199.0f;
 
-    s_positionMM = BALL_SEQUENCE_REVERSAL_POSITION_MM + 1.0f;
+    /* High speed and stale vision do not block the first in-band sample. */
+    s_positionMM = -44.9f;
+    s_speedMMps = -80.0f;
+    s_sensorFresh = 0U;
     BallSequence_Update(0.01f);
     CHECK(s_startCount == 1U);
+    CHECK(BallSequence_GetState() ==
+          BALL_SEQUENCE_STATE_SWEEP_TO_NEGATIVE);
 
-    s_positionMM = BALL_SEQUENCE_REVERSAL_POSITION_MM;
-    s_stable = 0U;
+    s_positionMM = -45.0f;
     BallSequence_Update(0.01f);
     CHECK(s_startCount == 2U);
     CHECK(s_setTargetCount == 0U);
@@ -203,14 +283,19 @@ static void test_sweep_switches_to_snapshotted_positive_phase_gains(void)
     CHECK_NEAR(s_positionKpPerS, 4.0f, 0.001f);
     CHECK_NEAR(s_velocityKpDegPerMMps, 0.5f, 0.001f);
     CHECK_NEAR(s_velocityKiDegPerMM, 0.15f, 0.001f);
+    CHECK(s_motionProfileCount == 2U);
+    CHECK_NEAR(s_motionProfile.maxVelocityMMps, 41.0f, 0.001f);
+    CHECK_NEAR(s_motionProfile.approachDistanceMM, 31.0f, 0.001f);
+    CHECK_NEAR(s_motionProfile.terminalVelocityMMps, 8.0f, 0.001f);
+    CHECK_NEAR(s_motionProfile.maxTiltDeg, 11.0f, 0.001f);
+    CHECK_NEAR(s_motionProfile.integralLimitMM, 171.0f, 0.001f);
     CHECK(BallSequence_GetState() ==
           BALL_SEQUENCE_STATE_SWEEP_TO_POSITIVE);
 
-    BallSequence_Update(0.01f);
-    CHECK(BallSequence_GetState() ==
-          BALL_SEQUENCE_STATE_SWEEP_TO_POSITIVE);
-    s_stable = 1U;
-    BallSequence_Update(0.01f);
+    s_sensorFresh = 1U;
+    s_positionMM = BALL_SEQUENCE_POSITIVE_TARGET_MM;
+    s_speedMMps = 0.0f;
+    run_ticks(4U);
     CHECK(BallSequence_GetState() ==
           BALL_SEQUENCE_STATE_SWEEP_HOLDING_POSITIVE);
     CHECK(BallSequence_IsActive() != 0U);
@@ -288,6 +373,7 @@ static void test_update_before_start_does_nothing(void)
 
 int main(void)
 {
+    test_init_loads_key2_tuning_defaults();
     test_start_passes_requested_target();
     test_start_fails_without_vision_or_invalid_target();
     test_holds_closed_loop_until_stopped();
