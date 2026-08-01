@@ -24,7 +24,8 @@ typedef enum
     MOTION_MANAGER_MODE_BRAKE,
     MOTION_MANAGER_MODE_SPEED,
     MOTION_MANAGER_MODE_DRIVE,
-    MOTION_MANAGER_MODE_LANE
+    MOTION_MANAGER_MODE_LANE,
+    MOTION_MANAGER_MODE_REQUIREMENT2_LINE
 } MotionManager_Mode_t;
 
 typedef enum
@@ -37,7 +38,8 @@ typedef enum
     MOTION_MANAGER_ERROR_BRAKE,
     MOTION_MANAGER_ERROR_SPEED,
     MOTION_MANAGER_ERROR_DRIVE,
-    MOTION_MANAGER_ERROR_LANE
+    MOTION_MANAGER_ERROR_LANE,
+    MOTION_MANAGER_ERROR_REQUIREMENT2_LINE
 } MotionManager_Error_t;
 
 typedef enum
@@ -56,6 +58,9 @@ MotionManager_Result_t MotionManager_StartForward(
 MotionManager_Result_t MotionManager_StartBackward(
     uint32_t distanceMM, float speedMMps, float endSpeedMMps);
 MotionManager_Result_t MotionManager_StartLine(float speedMMps);
+MotionManager_Result_t MotionManager_StartRequirement2Line(float speedMMps);
+MotionManager_Result_t MotionManager_SetRequirement2LineSpeed(float speedMMps);
+MotionManager_Result_t MotionManager_RequestRequirement2LineStop(void);
 /* 仅在巡线模式中平滑修改速度或请求软停，不抢占当前巡线控制器。 */
 MotionManager_Result_t MotionManager_SetLineSpeed(float speedMMps);
 MotionManager_Result_t MotionManager_RequestLineStop(void);

@@ -360,7 +360,7 @@ Heading -> Odometry -> 六路红外 -> Stepper -> Key -> K230Link -> BallSensor
 | 71 | `k2pmt` | 阶段二最大倾角 | 度 | 0.1~30 |
 | 72 | `k2pil` | 阶段二速度积分限幅 | mm | 1~1000 |
 
-id 一经发布不得重排，新增参数只能在尾部追加。K1~K5 为旧上位机保留：写入会同时覆盖左右轮，读取返回两侧当前值的平均数；新调参应使用 K17~K26 分别设置左右轮。基础前馈公式为 `PWMbase = speed×ff + sign(speed)×sf`，再叠加该轮 PI 与上层 trim，最终夹到 ±1000；这是底层轮速环标定，不属于巡线层额外前馈。要求 2、KEY3 和巡线 PID 参数都在对应任务下次启动时快照，当前运行中写入不会切换本圈参数。巡线层只保留统一 PID，不再有弯道低速上限、压线降速、差速变化率限幅或弯道保持距离。`ldec` 沿用 MotionLine 统一减速度，同时负责终点降速和最终软停，不增加额外状态机配置。`gsc` 由 `E1`→原地转 N 圈→`Y<n>` 标定流程自动写入；`cpm` 建议用网页里程标定向导。
+id 一经发布不得重排，新增参数只能在尾部追加。K1~K5 为旧上位机保留：写入会同时覆盖左右轮，读取返回两侧当前值的平均数；新调参应使用 K17~K26 分别设置左右轮。基础前馈公式为 `PWMbase = speed×ff + sign(speed)×sf`，再叠加该轮 PI 与上层 trim，最终夹到 ±1000。要求2使用独立的 `h2lkp/h2lki/h2lkd/h2lac/h2lde`，顺时针弯道中右轮减速量再乘 `h2rr`；要求4/5/6继续使用公共 `lra/lki/lkd/lacc/ldec`。两套参数都在各自任务启动时快照，运行中写入只影响下一次启动。`gsc` 由 `E1`→原地转 N 圈→`Y<n>` 标定流程自动写入；`cpm` 建议用网页里程标定向导。
 
 K31~K36 是要求 3 摆球的标定量。上电前先手动把摆杆放到平衡位置，固件会自动捕获 `bzo`；如仍有机械水平误差，可在网页读取自动值后小幅微调。其余参数仍需实车标定：先确认 `bgr`，再用钢球放在 0/±25/±50 mm 处校准 `bhl`，然后调 `bkp` 让钢球能回目标，调 `bkd` 压住过冲和往复。固件中的 `bki` 初值为 0.20；实车首次整定建议先通过网页设为 0，只有确认 P/D 已经调顺且仍存在稳定偏差时再小量加入。
 
@@ -465,7 +465,8 @@ OLED默认只显示上电运行时间；K230钢球物理位置和步进 PWM 绝�
 | `Application/Comms/K230Link.c/.h` | 应用通信层 | 通过逻辑 `Serial3`、物理 UART0 运行 K230 帧、CRC8、握手、拍照 ACK 和目标解析；每拍 RX 解析有固定预算 |
 | `Application/Control/MotionManager.c/.h` | 统一运动调度 | 保证同一时刻只有直线、巡线、转向或刹车之一控制双轮 |
 | `Application/Control/MotionStraight.c/.h` | 直线控制 | 定距速度规划、连续航向保持和可选终点速度 |
-| `Application/Control/MotionLine.c/.h` | 巡线控制 | 六路红外 CH1~CH6 的离散权重差速和连续丢线确认 |
+| `Application/Control/MotionLine.c/.h` | 公共巡线控制 | 要求4/5/6使用的六路红外 PID、速度曲线和连续丢线确认 |
+| `Application/Control/MotionLineRequirement2.c/.h` | 要求2独立巡线控制 | 独立 PID、加减速、丢线计数，以及顺时针弯道右轮减速比例 `h2rr` |
 | `Application/Control/BallSensor.c/.h` | 钢球位置观测 | K230 千分比换算成毫米球位、按帧间隔估计滚动速度、视觉新鲜度 |
 | `Application/Control/BallBalance.c/.h` | 摆杆滚球控制 | 目标位置 PID 闭环，输出摆杆倾角；当前不加前馈 |
 | `Application/Control/BeamActuator.c/.h` | 摆杆倾角执行 | 倾角到步进角度的换算，独占传动比、零点、软限位和限斜率 |
@@ -585,7 +586,8 @@ uint8_t TestApp_Update(App_UpdateContext_t *context); /* 更新测试通道并�
 | `Application/Control/PID.c/.h` | 通用 PID 初始化、调参、复位和单步计算 |
 | `Application/Control/MotionStraight.c/.h` | 头文件顶部保存直线参数；源文件实现距离规划、5/6 末段减速、可选终点速度、MPU6050 航向 PD 和软停车状态机 |
 | `Application/Control/MotionWheel.c/.h` | 头文件顶部保存公共轮速参数；源文件实现 MotionStraight、MotionLine 与 Nav 共用的双轮速度 PI、前馈、差速修正合成和 PWM 限幅 |
-| `Application/Control/MotionLine.c/.h` | 头文件顶部保存巡线参数；源文件实现六路红外离散权重差速、连续丢线确认、丢线正常完成和状态管理；巡线层不使用 PID |
+| `Application/Control/MotionLine.c/.h` | 公共巡线参数与控制逻辑；只供要求4/5/6及调试命令使用 |
+| `Application/Control/MotionLineRequirement2.c/.h` | 要求2独立快照 `h2lkp/h2lki/h2lkd/h2lac/h2lde/h2rr`；顺时针弯道仅放大右轮减速量 |
 | `Application/Control/MotionManager.c/.h` | 统一包装直线、巡线、转向和短暂刹车；自动停止旧模式并只更新当前模式 |
 | `Application/Control/Nav.c/.h` | 头文件顶部保存转向参数；源文件实现连续航向目标、双轮等速反向转向和到角稳定判定 |
 | `Application/Debug/DebugDisplay.c/.h` | 组织要求菜单、阶段提示及 OLED 任务计时局部刷新 |
@@ -1204,9 +1206,9 @@ const Mission_GraphDefinition_t *BrushlessMotorTest_GetMissionGraph(void); /* �
 | `MOTION_LINE_KP/KI/KD_MMPS_PER_WEIGHT` | mm/s | `26 / 0 / 1` | 统一巡线 PID 初值；输出直接作为左右轮目标差速 |
 | `MOTION_LINE_ACCELERATION_MMPS2` / `DECELERATION` | mm/s² | `300` / `360` | 起步、终点降速和软停的基准速度斜坡 |
 | `MOTION_LINE_WEIGHT_FILTER_ALPHA` | — | `0.25` | 六路加权误差低通系数；循迹不使用 IMU |
-| `MOTION_LINE_LOST_CONFIRM_TICKS` | 100 Hz 节拍 | `8U` | 连续所有有效红外通道全白达到 8 次后确认丢线，当前约为 80 ms |
+| `MOTION_LINE_LOST_CONFIRM_TICKS` | 100 Hz 节拍 | `160U` | 要求4/5/6连续全白达到160次后确认丢线，约1.6秒；要求2独立控制器使用同样的160拍保护 |
 
-`lra/lki/lkd` 分别写入 `MotionLine_TuneKp/Ki/KdMMpsPerWeight`，由 `MotionLine_Start()` 快照。弯道和直线不再分区；CH2/CH5 只作为普通红外通道参与误差计算，不触发任何低速上限或保持距离。
+`lra/lki/lkd` 只写入公共 `MotionLine`，供要求4/5/6使用。要求2由 `MotionLineRequirement2` 快照 `h2lkp/h2lki/h2lkd/h2lac/h2lde/h2rr`；当 PID 输出要求左轮快于右轮时，右轮减速量乘 `h2rr`，默认 `2.0`，即右轮减速量是左轮加速量的两倍。
 
 ### 6.4 `Nav.h` 参数
 

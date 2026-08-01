@@ -1,0 +1,35 @@
+#ifndef APPLICATION_CONTROL_MOTION_LINE_REQUIREMENT2_H
+#define APPLICATION_CONTROL_MOTION_LINE_REQUIREMENT2_H
+
+#include "Application/Control/MotionLine.h"
+
+/* Requirement 2 owns a complete infrared line controller.  These defaults
+ * intentionally match the general line controller until they are tuned. */
+#define MOTION_LINE_REQUIREMENT2_KP_MMPS_PER_WEIGHT 26.0f
+#define MOTION_LINE_REQUIREMENT2_KI_MMPS_PER_WEIGHT 0.0f
+#define MOTION_LINE_REQUIREMENT2_KD_MMPS_PER_WEIGHT 1.0f
+#define MOTION_LINE_REQUIREMENT2_ACCELERATION_MMPS2 300.0f
+#define MOTION_LINE_REQUIREMENT2_DECELERATION_MMPS2 360.0f
+#define MOTION_LINE_REQUIREMENT2_LOST_CONFIRM_TICKS 160U
+#define MOTION_LINE_REQUIREMENT2_RIGHT_TURN_RIGHT_ADJUST_RATIO 2.0f
+
+extern float MotionLineRequirement2_TuneKpMMpsPerWeight;
+extern float MotionLineRequirement2_TuneKiMMpsPerWeight;
+extern float MotionLineRequirement2_TuneKdMMpsPerWeight;
+extern float MotionLineRequirement2_TuneAccelerationMMps2;
+extern float MotionLineRequirement2_TuneDecelerationMMps2;
+extern float MotionLineRequirement2_TuneRightTurnRightAdjustRatio;
+
+MotionLine_Result_t MotionLineRequirement2_Init(void);
+MotionLine_Result_t MotionLineRequirement2_Start(float speedMMps);
+MotionLine_Result_t MotionLineRequirement2_SetSpeed(float speedMMps);
+MotionLine_Result_t MotionLineRequirement2_RequestStop(void);
+void MotionLineRequirement2_Update(float dt);
+void MotionLineRequirement2_Stop(void);
+uint8_t MotionLineRequirement2_IsBusy(void);
+uint8_t MotionLineRequirement2_IsFinished(void);
+MotionLine_State_t MotionLineRequirement2_GetState(void);
+float MotionLineRequirement2_GetLineError(void);
+float MotionLineRequirement2_GetProfileAccelerationMMps2(void);
+
+#endif

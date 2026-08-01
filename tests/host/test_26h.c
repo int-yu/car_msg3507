@@ -30,13 +30,13 @@ float Odometry_GetDistanceMM(void) { return s_distanceMM; }
 float Odometry_GetSpeedL(void) { return s_speedLMMps; }
 float Odometry_GetSpeedR(void) { return s_speedRMMps; }
 
-MotionManager_Result_t MotionManager_StartLine(float speedMMps)
+MotionManager_Result_t MotionManager_StartRequirement2Line(float speedMMps)
 {
     s_startLineCount++;
     s_startLineSpeedMMps = speedMMps;
     if (s_startResult == MOTION_MANAGER_RESULT_OK)
     {
-        s_motionMode = MOTION_MANAGER_MODE_LINE;
+        s_motionMode = MOTION_MANAGER_MODE_REQUIREMENT2_LINE;
         s_motionBusy = 1U;
         s_motionFinished = 0U;
         s_motionError = MOTION_MANAGER_ERROR_NONE;
@@ -44,9 +44,9 @@ MotionManager_Result_t MotionManager_StartLine(float speedMMps)
     return s_startResult;
 }
 
-MotionManager_Result_t MotionManager_SetLineSpeed(float speedMMps)
+MotionManager_Result_t MotionManager_SetRequirement2LineSpeed(float speedMMps)
 {
-    if (s_motionMode != MOTION_MANAGER_MODE_LINE)
+    if (s_motionMode != MOTION_MANAGER_MODE_REQUIREMENT2_LINE)
     {
         return MOTION_MANAGER_RESULT_START_FAILED;
     }
@@ -55,9 +55,9 @@ MotionManager_Result_t MotionManager_SetLineSpeed(float speedMMps)
     return MOTION_MANAGER_RESULT_OK;
 }
 
-MotionManager_Result_t MotionManager_RequestLineStop(void)
+MotionManager_Result_t MotionManager_RequestRequirement2LineStop(void)
 {
-    if (s_motionMode != MOTION_MANAGER_MODE_LINE)
+    if (s_motionMode != MOTION_MANAGER_MODE_REQUIREMENT2_LINE)
     {
         return MOTION_MANAGER_RESULT_START_FAILED;
     }

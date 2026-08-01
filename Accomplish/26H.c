@@ -164,7 +164,7 @@ static uint8_t Accomplish26H_LineIsHealthy(void)
         return 0U;
     }
     if ((MotionManager_GetError() != MOTION_MANAGER_ERROR_NONE) ||
-        (MotionManager_GetMode() != MOTION_MANAGER_MODE_LINE) ||
+        (MotionManager_GetMode() != MOTION_MANAGER_MODE_REQUIREMENT2_LINE) ||
         (MotionManager_IsBusy() == 0U))
     {
         Accomplish26H_Fail(ACCOMPLISH_26H_ERROR_MOTION);
@@ -177,7 +177,8 @@ static void Accomplish26H_BeginSoftStop(
     Accomplish26H_Error_t finishError)
 {
     TaskTimer_Stop(TASK_TIMER_OWNER_LINE);
-    if (MotionManager_RequestLineStop() != MOTION_MANAGER_RESULT_OK)
+    if (MotionManager_RequestRequirement2LineStop() !=
+        MOTION_MANAGER_RESULT_OK)
     {
         Accomplish26H_Fail(ACCOMPLISH_26H_ERROR_MOTION);
         return;
@@ -217,7 +218,8 @@ static void Accomplish26H_Start(void)
         s_state = ACCOMPLISH_26H_STATE_ERROR;
         return;
     }
-    if (MotionManager_StartLine(s_runParameters.cruiseSpeedMMps) !=
+    if (MotionManager_StartRequirement2Line(
+            s_runParameters.cruiseSpeedMMps) !=
         MOTION_MANAGER_RESULT_OK)
     {
         MotionManager_Stop();
@@ -283,7 +285,7 @@ static void Accomplish26H_UpdateRunning(void)
     if ((finishApproachStartMM < 0.0f) ||
         (travelledDistanceMM >= finishApproachStartMM))
     {
-        if (MotionManager_SetLineSpeed(
+        if (MotionManager_SetRequirement2LineSpeed(
                 s_runParameters.finishCrawlSpeedMMps) !=
             MOTION_MANAGER_RESULT_OK)
         {

@@ -17,7 +17,8 @@ assert.ok(!params.includes('{ "h4ff"') && !params.includes('{ "h4to"'),
 
 for (const name of [
     'lra', 'lki', 'lkd', 'h2cru', 'h2fin', 'h2clr', 'h2lap', 'h2app',
-    'h2arm', 'h2max', 'h2off', 'lacc', 'ldec',
+    'h2arm', 'h2max', 'h2off', 'h2lkp', 'h2lki', 'h2lkd',
+    'h2lac', 'h2lde', 'h2rr', 'lacc', 'ldec',
 ]) {
     assert.ok(params.includes(`{ "${name}"`),
         `固件参数表必须保留 ${name}`);
@@ -37,12 +38,12 @@ for (const required of [
     'function renderLineMonitor()',
     'lostPct:',
     'wheelMaeMMps:',
-    "line: ['lra'], integral: ['lki'], damping: ['lkd']",
+    "line: ['h2lkp', 'h2rr'], integral: ['h2lki']",
     'lra: 1, lki: 0.1, lkd: 0.5',
     'CH.yaw | CH.lerr | CH.gray | CH.TL | CH.TR | CH.LV | CH.RV',
-    "start: ['h2cru', 'h2clr', 'lacc']",
+    "start: ['h2cru', 'h2clr', 'h2lac']",
     "position: ['h2lap', 'h2arm', 'h2max']",
-    "finish: ['h2app', 'h2fin', 'h2off', 'ldec']",
+    "finish: ['h2app', 'h2fin', 'h2off', 'h2lde']",
     '修改后下一次 KEY1 启动生效',
     'id="lineRunConfigSummary"',
     'function renderLineRunConfigSummary()',
@@ -57,14 +58,14 @@ for (const required of [
     assert.ok(html.includes(required), `巡线调参面板缺少 ${required}`);
 }
 
-assert.ok(html.includes('PID(lra,lki,lkd)'),
-    '巡线结构说明必须包含统一 PID');
+assert.ok(html.includes('PID(h2lkp,h2lki,h2lkd)'),
+    '要求2结构说明必须包含独立 PID');
 assert.ok(html.includes('不因压线或弯道额外降速'),
     '巡线面板必须说明不再区分弯道或按压线降速');
 assert.ok(!html.includes("'lcv'") && !html.includes("'lch'") &&
           !html.includes('curveSpeed'),
     '巡线面板不能继续暴露弯道低速参数');
-assert.ok(html.includes('全 0 连续 80 ms 判丢线'),
+assert.ok(html.includes('全 0 连续 1600 ms 判丢线'),
     '巡线面板必须说明当前固件的丢线确认时长');
 assert.ok(!html.includes('五路灰度离散权重(-6..+6)'),
     '巡线面板不能继续使用旧五路灰度说明');

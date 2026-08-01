@@ -1,6 +1,7 @@
 #include "Application/Control/MotionManager.h"
 #include "Application/Control/MotionLane.h"
 #include "Application/Control/MotionLine.h"
+#include "Application/Control/MotionLineRequirement2.h"
 #include "Application/Control/MotionStraight.h"
 #include "Application/Control/MotionWheel.h"
 #include "Application/Control/Nav.h"
@@ -177,6 +178,7 @@ MotionManager_Result_t MotionManager_Init(void)
     if ((MotionManager_BrakeParametersAreValid() == 0U) ||
         (MotionStraight_Init() != MOTION_STRAIGHT_RESULT_OK) ||
         (MotionLine_Init() != MOTION_LINE_RESULT_OK) ||
+        (MotionLineRequirement2_Init() != MOTION_LINE_RESULT_OK) ||
         (MotionLane_Init() != MOTION_LANE_RESULT_OK) ||
         (Nav_Init() != NAV_RESULT_OK))
     {
@@ -239,6 +241,49 @@ MotionManager_Result_t MotionManager_StartLine(float speedMMps)
     result = MotionManager_MapLineResult(MotionLine_Start(speedMMps));
     return MotionManager_FinishStart(
         result, MOTION_MANAGER_MODE_LINE, MOTION_MANAGER_ERROR_LINE);
+}
+
+MotionManager_Result_t MotionManager_StartRequirement2Line(float speedMMps)
+{
+    MotionManager_Result_t result;
+
+    if (s_context.configured == 0U)
+    {
+        return MOTION_MANAGER_RESULT_NOT_CONFIGURED;
+    }
+    MotionManager_Stop();
+    result = MotionManager_MapLineResult(
+        MotionLineRequirement2_Start(speedMMps));
+    return MotionManager_FinishStart(
+        result, MOTION_MANAGER_MODE_REQUIREMENT2_LINE,
+        MOTION_MANAGER_ERROR_REQUIREMENT2_LINE);
+}
+
+MotionManager_Result_t MotionManager_SetRequirement2LineSpeed(float speedMMps)
+{
+    MotionLine_Result_t result;
+
+    if (s_context.configured == 0U)
+    {
+        return MOTION_MANAGER_RESULT_NOT_CONFIGURED;
+    }
+    if (s_context.mode != MOTION_MANAGER_MODE_REQUIREMENT2_LINE)
+    {
+        return MOTION_MANAGER_RESULT_START_FAILED;
+    }
+    result = MotionLineRequirement2_SetSpeed(speedMMps);
+    return MotionManager_MapLineResult(result);
+}
+
+MotionManager_Result_t MotionManager_RequestRequirement2LineStop(void)
+{
+    if ((s_context.configured == 0U) ||
+        (s_context.mode != MOTION_MANAGER_MODE_REQUIREMENT2_LINE))
+    {
+        return MOTION_MANAGER_RESULT_START_FAILED;
+    }
+    return (MotionLineRequirement2_RequestStop() == MOTION_LINE_RESULT_OK) ?
+        MOTION_MANAGER_RESULT_OK : MOTION_MANAGER_RESULT_START_FAILED;
 }
 
 MotionManager_Result_t MotionManager_SetLineSpeed(float speedMMps)
@@ -437,6 +482,14 @@ void MotionManager_Update(float dt)
             }
             break;
 
+        case MOTION_MANAGER_MODE_REQUIREMENT2_LINE:
+            MotionLineRequirement2_Update(dt);
+            if (MotionLineRequirement2_GetState() == MOTION_LINE_STATE_ERROR)
+            {
+                s_context.error = MOTION_MANAGER_ERROR_REQUIREMENT2_LINE;
+            }
+            break;
+
         case MOTION_MANAGER_MODE_LANE:
             MotionLane_Update(dt);
             if (MotionLane_GetState() == MOTION_LANE_STATE_ERROR)
@@ -505,6 +558,10 @@ void MotionManager_Stop(void)
             MotionLine_Stop();
             break;
 
+        case MOTION_MANAGER_MODE_REQUIREMENT2_LINE:
+            MotionLineRequirement2_Stop();
+            break;
+
         case MOTION_MANAGER_MODE_LANE:
             MotionLane_Stop();
             break;
@@ -547,6 +604,8 @@ uint8_t MotionManager_IsBusy(void)
             return MotionStraight_IsBusy();
         case MOTION_MANAGER_MODE_LINE:
             return MotionLine_IsBusy();
+        case MOTION_MANAGER_MODE_REQUIREMENT2_LINE:
+            return MotionLineRequirement2_IsBusy();
         case MOTION_MANAGER_MODE_LANE:
             return MotionLane_IsBusy();
         case MOTION_MANAGER_MODE_TURN:
@@ -573,6 +632,8 @@ uint8_t MotionManager_IsFinished(void)
             return Nav_IsFinished();
         case MOTION_MANAGER_MODE_LINE:
             return MotionLine_IsFinished();
+        case MOTION_MANAGER_MODE_REQUIREMENT2_LINE:
+            return MotionLineRequirement2_IsFinished();
         case MOTION_MANAGER_MODE_LANE:
             return MotionLane_IsFinished();
         case MOTION_MANAGER_MODE_BRAKE:

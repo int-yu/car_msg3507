@@ -14,6 +14,9 @@ const timedLineHeader = read('Application/Control/TimedLineRun.h');
 const ballTargetCapture = read('Application/Control/BallTargetCapture.c');
 const ballTargetCaptureHeader = read('Application/Control/BallTargetCapture.h');
 const line = read('Application/Control/MotionLine.c');
+const lineHeader = read('Application/Control/MotionLine.h');
+const requirement2Line = read('Application/Control/MotionLineRequirement2.c');
+const requirement2LineHeader = read('Application/Control/MotionLineRequirement2.h');
 const timer = read('Application/Control/TaskTimer.c');
 const timerHeader = read('Application/Control/TaskTimer.h');
 const makeDefs = read('makefile.defs');
@@ -133,9 +136,9 @@ assert.match(app, /context->pressedKeys & APP_STOP_KEY_CHORD_MASK/,
     'App must require both keys to be held for physical emergency stop');
 
 for (const required of [
-    'MotionManager_StartLine(',
-    'MotionManager_SetLineSpeed(',
-    'MotionManager_RequestLineStop(',
+    'MotionManager_StartRequirement2Line(',
+    'MotionManager_SetRequirement2LineSpeed(',
+    'MotionManager_RequestRequirement2LineStop(',
     'MotionManager_StartBrake(',
     'Graydetect_IsOnline()',
     'Accomplish26H_CountActiveChannels()',
@@ -192,9 +195,24 @@ assert.ok(makeDefs.includes('Application/Control/TimedLineRun.c'),
     'CCS generated builds must include the KEY3 timed line module');
 assert.ok(makeDefs.includes('Application/Control/BallTargetCapture.c'),
     'CCS generated builds must include the KEY4 target capture module');
+assert.ok(makeDefs.includes('Application/Control/MotionLineRequirement2.c'),
+    'CCS builds must include the independent requirement-2 line module');
+assert.match(requirement2LineHeader,
+    /MOTION_LINE_REQUIREMENT2_LOST_CONFIRM_TICKS\s+160U/,
+    'requirement 2 line-loss delay must be twenty times the old 8 ticks');
+assert.match(requirement2LineHeader,
+    /MOTION_LINE_REQUIREMENT2_RIGHT_TURN_RIGHT_ADJUST_RATIO\s+2\.0f/,
+    'requirement 2 right-wheel reduction ratio must default to 2.0');
+assert.match(requirement2Line,
+    /speedAdjustMMps \* s_context\.rightTurnRightAdjustRatio/,
+    'requirement 2 clockwise turns must scale right-wheel reduction');
+assert.doesNotMatch(timedLine, /Requirement2|h2rr|H2Line/,
+    'requirements 4-6 must not depend on requirement-2 control settings');
 
 assert.ok(line.includes('MotionLine_SetSpeed'),
     'MotionLine must support in-place speed changes without PID reset');
+assert.match(lineHeader, /MOTION_LINE_LOST_CONFIRM_TICKS\s+160U/,
+    'general line-loss delay must be twenty times the old 8 ticks');
 assert.ok(line.includes('MotionLine_RequestStop'),
     'MotionLine must support a zero-speed soft-stop request');
 assert.ok(line.includes('MOTION_LINE_ACCELERATION_MMPS2'),
@@ -213,6 +231,7 @@ assert.ok(param.includes('"h2off"'),
     'K parameter table must expose the H2 parking-offset calibration');
 for (const name of [
     'h2cru', 'h2fin', 'h2clr', 'h2lap', 'h2app', 'h2arm', 'h2max',
+    'h2lkp', 'h2lki', 'h2lkd', 'h2lac', 'h2lde', 'h2rr',
     'lacc', 'ldec', 'lra', 'lki', 'lkd',
     'k3acc', 'k3cru', 'k3dur',
     'k2kp', 'k2kd', 'k2ki', 'k2pkp', 'k2pkd', 'k2pki',
@@ -231,6 +250,9 @@ assert.ok(param.indexOf('{ "bvm"') < param.indexOf('{ "lki"'),
 assert.match(param,
     /\{ "k3dur"[^]*?\{ "k2kp"[^]*?\{ "k2kd"[^]*?\{ "k2ki"[^]*?\{ "k2pkp"[^]*?\{ "k2pkd"[^]*?\{ "k2pki"[^]*?\{ "k2vm"[^]*?\{ "k2ad"[^]*?\{ "k2tv"[^]*?\{ "k2mt"[^]*?\{ "k2il"[^]*?\{ "k2pvm"[^]*?\{ "k2pad"[^]*?\{ "k2ptv"[^]*?\{ "k2pmt"[^]*?\{ "k2pil"/,
     'both KEY2 PID and motion-profile sets must be appended after K56');
+assert.match(param,
+    /\{ "k2pil"[^]*?\{ "h2lkp"[^]*?\{ "h2lki"[^]*?\{ "h2lkd"[^]*?\{ "h2lac"[^]*?\{ "h2lde"[^]*?\{ "h2rr"/,
+    'requirement-2 line settings must be appended after all published IDs');
 assert.doesNotMatch(task + read('Application/Control/MotionManager.h') +
     read('Application/Control/MotionManager.c'), /SetLineDeceleration/,
     'H2 must keep the existing MotionLine control path without a runtime deceleration setter');

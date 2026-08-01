@@ -5,6 +5,7 @@
 #include "Application/Control/BallSequence.h"
 #include "Application/Control/MotionLane.h"
 #include "Application/Control/MotionLine.h"
+#include "Application/Control/MotionLineRequirement2.h"
 #include "Application/Control/MotionManager.h"
 #include "Application/Control/MotionWheel.h"
 #include "Application/Control/Nav.h"
@@ -55,7 +56,12 @@ static float Telemetry_ReadNavE(void)
 {
     return (Heading_IsReady() != 0U) ? Nav_GetAngleErrorDeg() : NAN;
 }
-static float Telemetry_ReadLerr(void) { return MotionLine_GetLineError(); }
+static float Telemetry_ReadLerr(void)
+{
+    return (MotionManager_GetMode() ==
+            MOTION_MANAGER_MODE_REQUIREMENT2_LINE) ?
+        MotionLineRequirement2_GetLineError() : MotionLine_GetLineError();
+}
 static float Telemetry_ReadGray(void) { return (float)Graydetect_GetState(); }
 static float Telemetry_ReadLD(void)   { return Odometry_GetDistanceLMM(); }
 static float Telemetry_ReadRD(void)   { return Odometry_GetDistanceRMM(); }
@@ -113,7 +119,10 @@ static float Telemetry_ReadBeamAppliedTilt(void)
 }
 static float Telemetry_ReadLineAcceleration(void)
 {
-    return MotionLine_GetProfileAccelerationMMps2();
+    return (MotionManager_GetMode() ==
+            MOTION_MANAGER_MODE_REQUIREMENT2_LINE) ?
+        MotionLineRequirement2_GetProfileAccelerationMMps2() :
+        MotionLine_GetProfileAccelerationMMps2();
 }
 static float Telemetry_ReadStepperAngle(void)
 {

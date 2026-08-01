@@ -30,3 +30,13 @@ endif
 ifeq ($(findstring BallTargetCapture.o,$(ORDERED_OBJS)),)
 ORDERED_OBJS := "./Application/Control/BallTargetCapture.o" $(ORDERED_OBJS)
 endif
+
+ifeq ($(findstring MotionLineRequirement2.o,$(OBJS)),)
+C_SRCS += ../Application/Control/MotionLineRequirement2.c
+C_DEPS += ./Application/Control/MotionLineRequirement2.d
+OBJS += ./Application/Control/MotionLineRequirement2.o
+endif
+
+ifeq ($(findstring MotionLineRequirement2.o,$(ORDERED_OBJS)),)
+ORDERED_OBJS := "./Application/Control/MotionLineRequirement2.o" $(ORDERED_OBJS)
+endif

@@ -565,7 +565,7 @@ kbd {
         <div id="lineSessionTools" class="line-session-tools" style="display:none">
             <div class="line-monitor-head">
                 <b id="lineMonitorTitle">要求 2 巡线 · KEY1 启动快照</b>
-                <span class="hint">CH1 左 · CH6 右 · 全 0 连续 80 ms 判丢线</span>
+                <span class="hint">CH1 左 · CH6 右 · 全 0 连续 1600 ms 判丢线</span>
             </div>
             <div id="lineRunConfigSummary" class="line-run-summary">读取参数后显示下一次 KEY1 的速度与距离配置。</div>
             <div id="lineSensors" class="line-sensors">
@@ -2277,9 +2277,10 @@ const SESSIONS = {
         ampLabel: '请求速度 mm/s', ampDefault: 200, timed: true, durDefault: 5,
         excite: (amp) => 'N' + amp, stopCmd: 'N0',
         params: ['h2cru', 'h2fin', 'h2clr', 'h2lap', 'h2app', 'h2arm',
-                 'h2max', 'h2off', 'lacc', 'ldec', 'lra', 'lki', 'lkd',
+                 'h2max', 'h2off', 'h2lac', 'h2lde', 'h2lkp', 'h2lki',
+                 'h2lkd', 'h2rr',
                  'bff', 'bft', 'lwkp', 'lwki', 'rwkp', 'rwki'],
-        structure: 'KEY1 启动时快照现有 26H 阶段参数：以 h2cru 离开起点并巡航，距 h2lap 还剩 h2app 时按 ldec 降到 h2fin，h2arm 后任意三路黑线连续 3 拍判为终点横线，确认后再走 h2off 并按同一 ldec 软停，h2max 是未识别横线的保护距离；六路红外误差统一进入 PID(lra,lki,lkd) 生成左右轮目标差速，弯道和直线不再区分',
+        structure: '要求2使用独立巡线控制器和 PID(h2lkp,h2lki,h2lkd)，按 h2lac/h2lde 加减速；顺时针弯道中左轮保持正常 PID 加速量，右轮减速量额外乘 h2rr。要求4/5/6仍使用公共 lra/lki/lkd，不受这些参数影响。',
         columnsNote: 'gray=CH1~CH6 位图，yaw=航向角（网页据相邻样本显示偏航速率），lerr=滤波后巡线权重，(TL+TR)/2=当前基准速度，TL/TR=左右目标轮速，LV/RV=左右实测轮速',
         expectation: '正常压线时 gray 不应长时间全 0；lerr 过零时 TL/TR 差速方向应同步翻转，基准速度只跟随 h2cru/h2fin 与 lacc/ldec，不因压线或弯道额外降速',
     },
@@ -2411,13 +2412,13 @@ const TUNING_FOCUS = {
     line: {
         label: '巡线', defaultSide: 'main', defaultStage: 'start',
         stages: {
-            start: { label: '① 离开起点', help: '配置起步后的巡航速度 h2cru、离开横线距离 h2clr 和提速斜率 lacc；修改后下一次 KEY1 启动生效。', configOnly: true },
+            start: { label: '① 离开起点', help: '配置巡航速度 h2cru、离开横线距离 h2clr 和要求2独立提速斜率 h2lac；修改后下一次启动生效。', configOnly: true },
             key3: { label: '② KEY3 定时巡线', help: 'KEY3 不识别终点：以 k3acc 提速到 k3cru，持续 k3dur 秒后软停；修改后下一次 KEY3 启动生效。', configOnly: true },
             position: { label: '③ 终点位置', help: '配置理论圈长 h2lap、横线识别启用距离 h2arm 和漏检保护距离 h2max；修改后下一次 KEY1 启动生效。', configOnly: true },
-            finish: { label: '④ 减速停车', help: '配置提前减速距离 h2app、终点慢速 h2fin、横线后前移 h2off 和统一减速度 ldec；修改后下一次 KEY1 启动生效。', configOnly: true },
-            line: { label: '⑤ 巡线 P', help: 'lra 是误差到左右轮目标差速的比例项，单位 mm/s 每权重。' },
-            integral: { label: '⑥ 巡线 I', help: 'lki 默认 0；只有长时间稳定偏向一侧时再少量加入。' },
-            damping: { label: '⑦ 巡线 D', help: 'lkd 抑制压线通道切换造成的反复摆动，单位 mm/s 每权重/s。' },
+            finish: { label: '④ 减速停车', help: '配置提前减速距离 h2app、终点慢速 h2fin、横线后前移 h2off 和要求2独立减速度 h2lde。', configOnly: true },
+            line: { label: '⑤ 巡线 P/右轮比例', help: 'h2lkp 是要求2独立比例项；h2rr 仅放大顺时针弯道中的右轮减速量，固件默认 2.0，1.0 为对称差速。' },
+            integral: { label: '⑥ 巡线 I', help: 'h2lki 默认 0；只有长时间稳定偏向一侧时再少量加入。' },
+            damping: { label: '⑦ 巡线 D', help: 'h2lkd 抑制压线通道切换造成的反复摆动。' },
             wheel: { label: '⑧ 轮速底环', help: '目标正确但实测跟不上时检查左右轮 PI；轮速任务里仍可单独标定底层前馈。' },
             verify: { label: '⑨ 验证', help: '同时观察航向角、权重误差和目标/实测轮速 MAE。' },
         },
@@ -2426,11 +2427,12 @@ const TUNING_FOCUS = {
                 label: '整车', series: ['yaw', 'lerr', 'TL', 'TR', 'LV', 'RV'],
                 mask: CH.yaw | CH.lerr | CH.gray | CH.TL | CH.TR | CH.LV | CH.RV,
                 params: {
-                    start: ['h2cru', 'h2clr', 'lacc'],
+                    start: ['h2cru', 'h2clr', 'h2lac'],
                     key3: ['k3acc', 'k3cru', 'k3dur'],
                     position: ['h2lap', 'h2arm', 'h2max'],
-                    finish: ['h2app', 'h2fin', 'h2off', 'ldec'],
-                    line: ['lra'], integral: ['lki'], damping: ['lkd'],
+                    finish: ['h2app', 'h2fin', 'h2off', 'h2lde'],
+                    line: ['h2lkp', 'h2rr'], integral: ['h2lki'],
+                    damping: ['h2lkd'],
                     wheel: ['lwkp', 'lwki', 'rwkp', 'rwki'], verify: [],
                 },
             },
@@ -2541,6 +2543,12 @@ const PARAM_LABELS = {
     h2clr: '离开起点距离（mm）', h2lap: '理论圈长（mm）',
     h2app: '终点提前减速距离（mm）', h2arm: '横线识别启用距离（mm）',
     h2max: '漏检保护距离（mm）', h2off: '横线后前移距离（mm）',
+    h2lkp: '要求2巡线 Kp（mm/s/权重）',
+    h2lki: '要求2巡线 Ki（mm/s/(权重·s)）',
+    h2lkd: '要求2巡线 Kd（mm/s/(权重/s)）',
+    h2lac: '要求2独立加速度（mm/s²）',
+    h2lde: '要求2独立减速度（mm/s²）',
+    h2rr: '要求2顺时针弯道右轮减速比例',
     nvx: '转向最高速', nvn: '转向最低速', nsa: '转向减速角', ntl: '到角容差',
     gsc: '陀螺尺度', cpm: '编码计数/mm',
     bkp: '位置外环 Kp（1/s）', bvm: '最大目标速度（mm/s）',
@@ -2588,6 +2596,9 @@ const PARAM_GROUPS = {
     h2clr: '要求2单圈巡线', h2lap: '要求2单圈巡线',
     h2app: '要求2单圈巡线', h2arm: '要求2单圈巡线',
     h2max: '要求2单圈巡线', h2off: '要求2单圈巡线',
+    h2lkp: '要求2独立巡线', h2lki: '要求2独立巡线',
+    h2lkd: '要求2独立巡线', h2lac: '要求2独立巡线',
+    h2lde: '要求2独立巡线', h2rr: '要求2独立巡线',
     k3acc: 'KEY3 定时巡线', k3cru: 'KEY3 定时巡线',
     k3dur: 'KEY3 定时巡线',
     bkp: '摆杆滚球（要求3/4共用）', bkd: '摆杆滚球（要求3/4共用）',
@@ -2615,6 +2626,8 @@ const PARAM_NUDGE_STEPS = {
     bff: 0.005, bft: 10,
     h2cru: 10, h2fin: 10, h2clr: 10, h2lap: 10,
     h2app: 10, h2arm: 10, h2max: 10, h2off: 1,
+    h2lkp: 1, h2lki: 0.1, h2lkd: 0.5,
+    h2lac: 10, h2lde: 10, h2rr: 0.05,
     k3acc: 10, k3cru: 10, k3dur: 1,
     bkp: 0.05, bvm: 5, bkd: 0.005, bki: 0.001,
     bhl: 1, bgr: 0.1, bzo: 0.1,
@@ -3577,7 +3590,8 @@ function requestParameterWrite(entry, value, options = {}) {
     if (session) {
         const startSnapshotParams = new Set([
             'h2cru', 'h2fin', 'h2clr', 'h2lap', 'h2app', 'h2arm',
-            'h2max', 'h2off', 'lacc', 'ldec', 'lra', 'lki', 'lkd',
+            'h2max', 'h2off', 'h2lac', 'h2lde', 'h2lkp', 'h2lki',
+            'h2lkd', 'h2rr', 'lacc', 'ldec', 'lra', 'lki', 'lkd',
             'k2kp', 'k2kd', 'k2ki', 'k2vm', 'k2ad', 'k2tv', 'k2mt', 'k2il',
             'k2pkp', 'k2pkd', 'k2pki', 'k2pvm', 'k2pad', 'k2ptv', 'k2pmt', 'k2pil',
         ]);
@@ -3800,8 +3814,8 @@ function renderLineRunConfigSummary() {
     const arm = value('h2arm');
     const maximum = value('h2max');
     const rollout = value('h2off');
-    const acceleration = value('lacc');
-    const deceleration = value('ldec');
+    const acceleration = value('h2lac');
+    const deceleration = value('h2lde');
     if ([cruise, finish, clear, lap, approach, arm, maximum, rollout,
          acceleration, deceleration].some((item) => item === null)) {
         summary.textContent = '读取参数后显示下一次 KEY1 的速度与距离配置。';

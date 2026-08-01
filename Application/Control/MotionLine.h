@@ -15,10 +15,10 @@
 #define MOTION_LINE_ACCELERATION_MMPS2 300.0f
 #define MOTION_LINE_DECELERATION_MMPS2 360.0f
 #define MOTION_LINE_WEIGHT_FILTER_ALPHA 0.25f
-#define MOTION_LINE_LOST_CONFIRM_TICKS 8U
+#define MOTION_LINE_LOST_CONFIRM_TICKS 160U
 
-/* Runtime tunings. MotionLine_Start() snapshots these values; writes during a
- * run affect only the next KEY1/N start.
+/* Runtime tunings for the general line controller used outside requirement 2.
+ * MotionLine_Start() snapshots them; writes affect only the next start.
  */
 extern float MotionLine_TuneKpMMpsPerWeight;
 extern float MotionLine_TuneKiMMpsPerWeight;

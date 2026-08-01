@@ -6,6 +6,7 @@
 #include "Application/Control/BeamActuator.h"
 #include "Application/Control/MotionLane.h"
 #include "Application/Control/MotionLine.h"
+#include "Application/Control/MotionLineRequirement2.h"
 #include "Application/Control/MotionStraight.h"
 #include "Application/Control/MotionWheel.h"
 #include "Application/Control/TimedLineRun.h"
@@ -156,6 +157,15 @@ PARAM_VAR_ACCESSORS(H2MarkerArm,
 PARAM_VAR_ACCESSORS(H2MaxLap, Accomplish26H_TuneMaxLapDistanceMM)
 PARAM_VAR_ACCESSORS(LineAcceleration, MotionLine_TuneAccelerationMMps2)
 PARAM_VAR_ACCESSORS(LineDeceleration, MotionLine_TuneDecelerationMMps2)
+PARAM_VAR_ACCESSORS(H2LineKp, MotionLineRequirement2_TuneKpMMpsPerWeight)
+PARAM_VAR_ACCESSORS(H2LineKi, MotionLineRequirement2_TuneKiMMpsPerWeight)
+PARAM_VAR_ACCESSORS(H2LineKd, MotionLineRequirement2_TuneKdMMpsPerWeight)
+PARAM_VAR_ACCESSORS(H2LineAcceleration,
+                    MotionLineRequirement2_TuneAccelerationMMps2)
+PARAM_VAR_ACCESSORS(H2LineDeceleration,
+                    MotionLineRequirement2_TuneDecelerationMMps2)
+PARAM_VAR_ACCESSORS(H2RightTurnRightRatio,
+                    MotionLineRequirement2_TuneRightTurnRightAdjustRatio)
 /* Ball PID and beam calibration. */
 PARAM_VAR_ACCESSORS(BallKp, BallBalance_TunePositionKpPerS)
 PARAM_VAR_ACCESSORS(BallKi, BallBalance_TuneVelocityKiDegPerMM)
@@ -343,6 +353,16 @@ static const Param_Entry_t s_params[] = {
       Param_SetKey2PositiveMaxTilt, 0.1f, 30.0f },
     { "k2pil", Param_GetKey2PositiveIntegralLimit,
       Param_SetKey2PositiveIntegralLimit, 1.0f, 1000.0f },
+    /* Requirement 2 line parameters are independent from requirements 4-6. */
+    { "h2lkp", Param_GetH2LineKp, Param_SetH2LineKp, 0.0f, 200.0f },
+    { "h2lki", Param_GetH2LineKi, Param_SetH2LineKi, 0.0f, 50.0f },
+    { "h2lkd", Param_GetH2LineKd, Param_SetH2LineKd, 0.0f, 200.0f },
+    { "h2lac", Param_GetH2LineAcceleration,
+      Param_SetH2LineAcceleration, 10.0f, 5000.0f },
+    { "h2lde", Param_GetH2LineDeceleration,
+      Param_SetH2LineDeceleration, 10.0f, 5000.0f },
+    { "h2rr", Param_GetH2RightTurnRightRatio,
+      Param_SetH2RightTurnRightRatio, 0.1f, 5.0f },
 };
 
 #define PARAM_COUNT (sizeof(s_params) / sizeof(s_params[0]))
